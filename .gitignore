@@ -33,3 +33,9 @@ yolov8n.pt
 
 # Local install markers
 install_state.json
+
+# Manuscript drafts and LaTeX templates (kept local only)
+JOSS_Manuscript/
+JMLR_Manuscript/
+ACM_SIGCSE_Template/
+IEEE_Software_Template/
