@@ -51,7 +51,7 @@ Training a deep learning model in PyTorch takes 50–100 lines of Python — bef
 | **ONNX Export** | Export to ONNX + auto-generate FastAPI server, Docker bundle, Streamlit app, or model card |
 | **Batch Prediction** | Run inference on an entire folder; download results as CSV |
 | **Apple Silicon Native** | MPS acceleration with mixed precision; no Rosetta emulation |
-| **Cross-Compiled** | Windows installer built on macOS via Wine + Inno Setup — no Windows VM needed |
+| **Windows CI Build** | Windows installer validated in native GitHub Actions runners |
 
 ---
 
@@ -144,14 +144,15 @@ python3 packaging/sign_and_notarize_macos.py \
   --keychain-profile AC_PASSWORD
 ```
 
-### Windows (cross-compiled on macOS via Wine + Inno Setup)
+### Windows
 
-```bash
-brew install wine-stable
-python3 packaging/build_windows_installer.py --version 1.0.0
+Run the Windows packager on a Windows machine or in a Windows GitHub Actions runner:
+
+```powershell
+python packaging/build_windows_installer.py --version 1.0.0
 ```
 
-No Windows VM or CI runner required. See [`IEEE_Software_Template/`](IEEE_Software_Template/) for a detailed write-up of the packaging engineering.
+The build requires Inno Setup 6 (`iscc.exe`) to be installed and available on `PATH`.
 
 ---
 
