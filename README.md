@@ -1,7 +1,6 @@
 <div align="center">
 
-<!-- Replace with your actual logo -->
-<img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/logo.png" alt="NoCode Deep Learning Studio" width="200"/>
+<img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/logo.svg" alt="NoCode Deep Learning Studio" width="180"/>
 
 # NoCode Deep Learning Studio
 
@@ -21,8 +20,9 @@ A local-first, privacy-preserving desktop application for building ML pipelines 
 
 ---
 
-<!-- Replace with actual screenshot -->
 <img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-hero.png" alt="NoCode Deep Learning Studio screenshot" width="85%"/>
+
+> 📸 *Add a real screenshot to `assets/screenshot-hero.png` to display it here.*
 
 </div>
 
@@ -117,17 +117,17 @@ The interface is organised into sequential tabs that make the learning sequence 
 <div align="center">
 <table>
 <tr>
-<td align="center"><img src="assets/screenshot-data.png" width="300"/><br/><sub>Data tab with quality report</sub></td>
-<td align="center"><img src="assets/screenshot-train.png" width="300"/><br/><sub>Live training curves</sub></td>
+<td align="center"><img src="https://placehold.co/300x200/1a1a2e/4facfe?text=Data+Tab" width="300"/><br/><sub>Data tab with quality report</sub></td>
+<td align="center"><img src="https://placehold.co/300x200/1a1a2e/e94560?text=Training+Curves" width="300"/><br/><sub>Live training curves</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="assets/screenshot-evaluate.png" width="300"/><br/><sub>GradCAM + confusion matrix</sub></td>
-<td align="center"><img src="assets/screenshot-export.png" width="300"/><br/><sub>One-click ONNX export</sub></td>
+<td align="center"><img src="https://placehold.co/300x200/1a1a2e/f5a623?text=GradCAM+%2B+Confusion" width="300"/><br/><sub>GradCAM + confusion matrix</sub></td>
+<td align="center"><img src="https://placehold.co/300x200/1a1a2e/00f2fe?text=ONNX+Export" width="300"/><br/><sub>One-click ONNX export</sub></td>
 </tr>
 </table>
 </div>
 
-> *Screenshot placeholders — replace with actual images in `assets/`.*
+> 📸 *Replace placeholders with actual screenshots by adding images to `assets/` and updating the paths above.*
 
 ---
 

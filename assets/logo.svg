@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" width="220" height="220">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#e94560"/>
+      <stop offset="100%" style="stop-color:#f5a623"/>
+    </linearGradient>
+    <linearGradient id="node1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4facfe"/>
+      <stop offset="100%" style="stop-color:#00f2fe"/>
+    </linearGradient>
+    <linearGradient id="node2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#e94560"/>
+      <stop offset="100%" style="stop-color:#f5a623"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="110" cy="105" r="100" fill="url(#bg)"/>
+  <circle cx="110" cy="105" r="100" fill="none" stroke="url(#accent)" stroke-width="2" opacity="0.6"/>
+
+  <!-- Network edges - input to hidden -->
+  <line x1="45" y1="68" x2="95" y2="68" stroke="#4facfe" stroke-width="1.2" opacity="0.4"/>
+  <line x1="45" y1="68" x2="95" y2="95" stroke="#4facfe" stroke-width="1.2" opacity="0.4"/>
+  <line x1="45" y1="68" x2="95" y2="122" stroke="#4facfe" stroke-width="1.2" opacity="0.3"/>
+  <line x1="45" y1="95" x2="95" y2="68" stroke="#4facfe" stroke-width="1.2" opacity="0.4"/>
+  <line x1="45" y1="95" x2="95" y2="95" stroke="#4facfe" stroke-width="1.2" opacity="0.5"/>
+  <line x1="45" y1="95" x2="95" y2="122" stroke="#4facfe" stroke-width="1.2" opacity="0.4"/>
+  <line x1="45" y1="122" x2="95" y2="68" stroke="#4facfe" stroke-width="1.2" opacity="0.3"/>
+  <line x1="45" y1="122" x2="95" y2="95" stroke="#4facfe" stroke-width="1.2" opacity="0.4"/>
+  <line x1="45" y1="122" x2="95" y2="122" stroke="#4facfe" stroke-width="1.2" opacity="0.5"/>
+
+  <!-- Network edges - hidden to output -->
+  <line x1="95" y1="68" x2="145" y2="81" stroke="#e94560" stroke-width="1.2" opacity="0.4"/>
+  <line x1="95" y1="68" x2="145" y2="108" stroke="#e94560" stroke-width="1.2" opacity="0.3"/>
+  <line x1="95" y1="95" x2="145" y2="81" stroke="#e94560" stroke-width="1.2" opacity="0.5"/>
+  <line x1="95" y1="95" x2="145" y2="108" stroke="#e94560" stroke-width="1.2" opacity="0.4"/>
+  <line x1="95" y1="122" x2="145" y2="81" stroke="#e94560" stroke-width="1.2" opacity="0.4"/>
+  <line x1="95" y1="122" x2="145" y2="108" stroke="#e94560" stroke-width="1.2" opacity="0.5"/>
+
+  <!-- Output to final -->
+  <line x1="145" y1="81" x2="175" y2="95" stroke="#f5a623" stroke-width="1.5" opacity="0.6"/>
+  <line x1="145" y1="108" x2="175" y2="95" stroke="#f5a623" stroke-width="1.5" opacity="0.6"/>
+
+  <!-- Input nodes -->
+  <circle cx="45" cy="68" r="8" fill="url(#node1)" filter="url(#glow)"/>
+  <circle cx="45" cy="95" r="8" fill="url(#node1)" filter="url(#glow)"/>
+  <circle cx="45" cy="122" r="8" fill="url(#node1)" filter="url(#glow)"/>
+
+  <!-- Hidden nodes -->
+  <circle cx="95" cy="68" r="8" fill="url(#node1)" filter="url(#glow)" opacity="0.85"/>
+  <circle cx="95" cy="95" r="8" fill="url(#node1)" filter="url(#glow)" opacity="0.85"/>
+  <circle cx="95" cy="122" r="8" fill="url(#node1)" filter="url(#glow)" opacity="0.85"/>
+
+  <!-- Output nodes -->
+  <circle cx="145" cy="81" r="8" fill="url(#node2)" filter="url(#glow)"/>
+  <circle cx="145" cy="108" r="8" fill="url(#node2)" filter="url(#glow)"/>
+
+  <!-- Final output node -->
+  <circle cx="175" cy="95" r="10" fill="url(#accent)" filter="url(#glow)"/>
+
+  <!-- "NC" text badge -->
+  <rect x="30" y="143" width="36" height="18" rx="4" fill="url(#accent)" opacity="0.9"/>
+  <text x="48" y="156" font-family="'Helvetica Neue', Arial, sans-serif" font-size="10" font-weight="800" fill="white" text-anchor="middle">NC</text>
+
+  <!-- Lock icon (privacy) -->
+  <text x="82" y="157" font-family="'Helvetica Neue', Arial, sans-serif" font-size="12" fill="white" opacity="0.7">🔒</text>
+
+  <!-- Bottom label -->
+  <text x="110" y="185" font-family="'Helvetica Neue', Arial, sans-serif" font-size="9.5" font-weight="600" fill="white" text-anchor="middle" opacity="0.85" letter-spacing="1">NoCode Deep Learning</text>
+</svg>
