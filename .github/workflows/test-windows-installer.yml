@@ -70,8 +70,7 @@ jobs:
             "install.py",
             "run_local.py",
             "runtime_setup.py",
-            "requirements.txt",
-            "icon.ico"
+            "requirements.txt"
           )
 
           foreach ($file in $requiredFiles) {
