@@ -192,7 +192,7 @@ Runs on your machine. Your data stays with you.
 If this project saves you time, consider buying me a coffee ☕
 
 <a href="https://buymeacoffee.com/bampel">
-  <img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=☕&slug=bampel&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" height="50"/>
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"/>
 </a>
 
 </div>
