@@ -8,16 +8,20 @@ import plistlib
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import zlib
 from datetime import datetime
 from pathlib import Path
 
-from data_pipeline.network_utils import download_file
-
 
 APP_NAME = "NoCode-DL"
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from data_pipeline.network_utils import download_file
+
 BUILD_ROOT = Path(tempfile.gettempdir()) / "NoCode-DL-macos-installer"
 DIST_ROOT = ROOT / "dist"
 COMPONENT_ROOT = BUILD_ROOT / "component-root"
