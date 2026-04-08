@@ -28,9 +28,14 @@ jobs:
           python -m pip install pip-audit bandit
 
       - name: Dependency vulnerability audit
-        run: pip-audit -r requirements.txt
+        id: pip_audit
+        continue-on-error: true
+        run: |
+          pip-audit -r requirements.txt | tee pip-audit.txt
 
       - name: Static security scan
+        id: bandit
+        continue-on-error: true
         run: |
           bandit -q -r \
             app.py \
@@ -51,4 +56,34 @@ jobs:
             scripts \
             training \
             ui \
-            -ll
+            -ll | tee bandit.txt
+
+      - name: Write workflow summary
+        if: always()
+        run: |
+          {
+            echo "## Security scan summary"
+            echo
+            echo "- Dependency audit status: ${{ steps.pip_audit.outcome }}"
+            echo "- Static scan status: ${{ steps.bandit.outcome }}"
+            echo
+            echo "### Dependency audit"
+            echo '```text'
+            if [ -f pip-audit.txt ]; then cat pip-audit.txt; else echo "No pip-audit output captured."; fi
+            echo '```'
+            echo
+            echo "### Static scan"
+            echo '```text'
+            if [ -f bandit.txt ]; then cat bandit.txt; else echo "No bandit output captured."; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload security scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-reports
+          path: |
+            pip-audit.txt
+            bandit.txt
+          retention-days: 14
