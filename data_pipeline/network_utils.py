@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import urlopen
 
-import requests
 
 
 def validate_https_url(url: str, *, allowed_hosts: set[str]) -> None:
@@ -27,13 +27,14 @@ def download_file(
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     hasher = hashlib.sha256() if expected_sha256 else None
-    with requests.get(url, stream=True, timeout=timeout) as response:
-        response.raise_for_status()
-        validate_https_url(response.url, allowed_hosts=allowed_hosts)
+    with urlopen(url, timeout=timeout) as response:
+        final_url = response.geturl()
+        validate_https_url(final_url, allowed_hosts=allowed_hosts)
         with destination.open("wb") as fh:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
+            while True:
+                chunk = response.read(1024 * 1024)
                 if not chunk:
-                    continue
+                    break
                 fh.write(chunk)
                 if hasher is not None:
                     hasher.update(chunk)
