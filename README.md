@@ -247,7 +247,7 @@ Please read [`SETUP.md`](SETUP.md) for environment details and [`RELEASE_CHECKLI
 
 ## License
 
-[MIT](LICENSE) © Benjamin Ampel, University of Arizona
+[MIT](LICENSE) © Dr. Benjamin M. Ampel, Georgia State University
 
 ---
 
