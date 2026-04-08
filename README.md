@@ -8,6 +8,7 @@
 
 [![macOS Installer](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-macos-installer.yml/badge.svg)](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-macos-installer.yml)
 [![Windows Installer](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-windows-installer.yml/badge.svg)](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-windows-installer.yml)
+[![Security Scan](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/security-scan.yml/badge.svg)](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/security-scan.yml)
 [![Latest Release](https://img.shields.io/github/v/release/BenAmpel/NoCode-Deep-Learning?display_name=tag)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/BenAmpel/NoCode-Deep-Learning?style=social)](https://github.com/BenAmpel/NoCode-Deep-Learning/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)

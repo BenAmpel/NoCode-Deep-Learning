@@ -1,0 +1,14 @@
+site_name: NoCode Deep Learning Studio
+site_description: Local-first no-code deep learning documentation
+site_url: https://github.com/BenAmpel/NoCode-Deep-Learning
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Tutorials: tutorials.md
+  - Architecture: architecture.md

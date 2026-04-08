@@ -33,7 +33,7 @@ APP_PKG = PACKAGES_DIR / f"{APP_NAME}-app.pkg"
 PYTHON_VERSION = "3.12.10"
 PYTHON_PKG_NAME = f"python-{PYTHON_VERSION}-macos11.pkg"
 PYTHON_PKG_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/{PYTHON_PKG_NAME}"
-PYTHON_PKG_MD5 = "8f4989592c9412e51fcad70273442c22"
+PYTHON_PKG_SHA256 = "8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4"
 VENDOR_DIR = ROOT / "packaging" / "vendor"
 VENDOR_PYTHON_PKG = VENDOR_DIR / PYTHON_PKG_NAME
 RUNTIME_ITEMS = [
@@ -95,8 +95,8 @@ def clean_build_root() -> None:
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def file_md5(path: Path) -> str:
-    digest = hashlib.md5()
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -108,11 +108,11 @@ def ensure_python_pkg() -> Path:
     if not VENDOR_PYTHON_PKG.exists():
         print(f"Downloading official Python installer from {PYTHON_PKG_URL}")
         urllib.request.urlretrieve(PYTHON_PKG_URL, VENDOR_PYTHON_PKG)
-    md5_value = file_md5(VENDOR_PYTHON_PKG)
-    if md5_value != PYTHON_PKG_MD5:
+    sha256_value = file_sha256(VENDOR_PYTHON_PKG)
+    if sha256_value != PYTHON_PKG_SHA256:
         raise RuntimeError(
             f"Embedded Python installer checksum mismatch for {VENDOR_PYTHON_PKG}: "
-            f"expected {PYTHON_PKG_MD5}, got {md5_value}"
+            f"expected {PYTHON_PKG_SHA256}, got {sha256_value}"
         )
     return VENDOR_PYTHON_PKG
 
@@ -452,6 +452,14 @@ if [ ! -x "$PYTHON_BIN" ]; then
   TMPDIR_PKG="$(mktemp -d)"
   PYTHON_PKG="$TMPDIR_PKG/{PYTHON_PKG_NAME}"
   curl -fsSL "{PYTHON_PKG_URL}" -o "$PYTHON_PKG"
+  EXPECTED_SHA256="{PYTHON_PKG_SHA256}"
+  ACTUAL_SHA256="$(shasum -a 256 "$PYTHON_PKG" | awk '{{print $1}}')"
+  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+    echo "Python installer checksum mismatch"
+    echo "Expected: $EXPECTED_SHA256"
+    echo "Actual:   $ACTUAL_SHA256"
+    exit 1
+  fi
   /usr/sbin/installer -pkg "$PYTHON_PKG" -target /
   rm -rf "$TMPDIR_PKG"
 fi
