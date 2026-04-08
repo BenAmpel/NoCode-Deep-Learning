@@ -11,7 +11,6 @@ import csv
 import math
 import random
 import tempfile
-import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -112,8 +111,14 @@ def prepare_audio_tutorial(dest: Path) -> None:
         (dest / str(d)).mkdir(exist_ok=True)
 
     with tempfile.TemporaryDirectory() as tmp:
+        from data_pipeline.network_utils import download_file
+
         zip_path = Path(tmp) / "fsdd.zip"
-        urllib.request.urlretrieve(url, zip_path)
+        download_file(
+            url,
+            zip_path,
+            allowed_hosts={"github.com", "codeload.github.com"},
+        )
         with zipfile.ZipFile(zip_path) as zf:
             for name in zf.namelist():
                 if not name.endswith(".wav"):

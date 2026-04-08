@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
+from http.client import HTTPConnection
 from pathlib import Path
 
 
@@ -81,11 +81,21 @@ def _fmt_eta(elapsed: float, typical: float) -> str:
 def _wait_for_server(timeout: float = POLL_TIMEOUT) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
+        conn = None
         try:
-            urllib.request.urlopen(SERVER_URL, timeout=1)
-            return True
+            conn = HTTPConnection("127.0.0.1", 7860, timeout=1)
+            conn.request("GET", "/")
+            response = conn.getresponse()
+            if 200 <= response.status < 500:
+                return True
         except Exception:
             time.sleep(POLL_INTERVAL)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     return False
 
 

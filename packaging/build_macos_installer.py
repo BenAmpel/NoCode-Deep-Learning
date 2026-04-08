@@ -9,10 +9,11 @@ import shutil
 import stat
 import subprocess
 import tempfile
-import urllib.request
 import zlib
 from datetime import datetime
 from pathlib import Path
+
+from data_pipeline.network_utils import download_file
 
 
 APP_NAME = "NoCode-DL"
@@ -107,7 +108,12 @@ def ensure_python_pkg() -> Path:
     VENDOR_DIR.mkdir(parents=True, exist_ok=True)
     if not VENDOR_PYTHON_PKG.exists():
         print(f"Downloading official Python installer from {PYTHON_PKG_URL}")
-        urllib.request.urlretrieve(PYTHON_PKG_URL, VENDOR_PYTHON_PKG)
+        download_file(
+            PYTHON_PKG_URL,
+            VENDOR_PYTHON_PKG,
+            allowed_hosts={"www.python.org"},
+            expected_sha256=PYTHON_PKG_SHA256,
+        )
     sha256_value = file_sha256(VENDOR_PYTHON_PKG)
     if sha256_value != PYTHON_PKG_SHA256:
         raise RuntimeError(

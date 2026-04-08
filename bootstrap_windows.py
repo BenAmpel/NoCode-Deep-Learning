@@ -71,7 +71,7 @@ def _bootstrap_without_venv(app_root: Path, venv_dir: Path) -> None:
     pip into the embeddable Python itself, then pip-install requirements
     into a target directory that acts as the "venv".
     """
-    import urllib.request
+    from data_pipeline.network_utils import download_file
 
     python = sys.executable
     requirements = app_root / "requirements.txt"
@@ -84,7 +84,11 @@ def _bootstrap_without_venv(app_root: Path, venv_dir: Path) -> None:
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("[bootstrap] downloading get-pip.py ...", flush=True)
         get_pip = app_root / "get-pip.py"
-        urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", get_pip)
+        download_file(
+            "https://bootstrap.pypa.io/get-pip.py",
+            get_pip,
+            allowed_hosts={"bootstrap.pypa.io"},
+        )
         subprocess.run([python, str(get_pip)], cwd=app_root, check=True)
 
     # 2. Upgrade pip
