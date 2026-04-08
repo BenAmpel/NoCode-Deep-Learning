@@ -16,7 +16,7 @@ A local-first, privacy-preserving desktop application for building ML pipelines 
 [![Windows Installer](https://img.shields.io/badge/Windows-2.3%20MB%20.exe-blue?logo=windows)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest)
 [![JOSS](https://joss.theoj.org/papers/YOUR_JOSS_DOI/status.svg)](https://joss.theoj.org/papers/YOUR_JOSS_DOI)
 
-[**Download**](#installation) · [**Documentation**](#usage) · [**Cite**](#citation) · [**Contribute**](#contributing)
+[**Download**](#installation) · [**Documentation**](#usage) · [**Contribute**](#contributing)
 
 ---
 
@@ -149,77 +149,6 @@ python packaging/build_windows_installer.py --version 1.0.0
 ```
 
 The build requires Inno Setup 6 (`iscc.exe`) to be installed and available on `PATH`.
-
----
-
-## Academic Publications
-
-This project has been written up for multiple venues. Manuscript drafts are included in this repository:
-
-| Venue | Focus | Folder |
-|---|---|---|
-| [JOSS](https://joss.theoj.org/) | Open-source software description | [`JOSS_Manuscript/`](JOSS_Manuscript/) |
-| [JMLR MLOSS](https://jmlr.org/mloss/) | ML system design and architecture | [`JMLR_Manuscript/`](JMLR_Manuscript/) |
-| [ACM SIGCSE ERT](https://sigcse.org/) | Computing education pedagogy | [`ACM_SIGCSE_Template/`](ACM_SIGCSE_Template/) |
-| [IEEE Software](https://www.computer.org/csdl/magazine/so) | Packaging engineering lessons | [`IEEE_Software_Template/`](IEEE_Software_Template/) |
-
----
-
-## Citation
-
-If you use NoCode Deep Learning Studio in your research or teaching, please cite:
-
-### General / JOSS
-
-```bibtex
-@article{ampel2025nocode,
-  title   = {{NoCode Deep Learning Studio}: A Local-First, No-Code Desktop Application
-             for Multi-Modal Machine Learning},
-  author  = {Ampel, Benjamin},
-  journal = {Journal of Open Source Software},
-  year    = {2025},
-  note    = {Under review}
-}
-```
-
-### JMLR Machine Learning Open Source Software
-
-```bibtex
-@article{ampel2025nocode_jmlr,
-  title   = {{NoCode Deep Learning Studio}: A Multi-Modal, Local-First Machine Learning
-             Workbench for Non-Developer Users},
-  author  = {Ampel, Benjamin},
-  journal = {Journal of Machine Learning Research},
-  year    = {2025},
-  note    = {Under review (MLOSS track)}
-}
-```
-
-### ACM SIGCSE (Education)
-
-```bibtex
-@inproceedings{ampel2025nocode_sigcse,
-  title     = {Removing the {Python} Barrier: A No-Code Desktop Application for
-               Teaching Multi-Modal Deep Learning},
-  author    = {Ampel, Benjamin},
-  booktitle = {Proceedings of the ACM SIGCSE Technical Symposium on Computer Science Education},
-  year      = {2025},
-  note      = {Under review}
-}
-```
-
-### IEEE Software (Packaging Engineering)
-
-```bibtex
-@article{ampel2025nocode_ieee,
-  title   = {Packaging a {Python} {ML} Application as a Native Desktop Installer:
-             Lessons Learned},
-  author  = {Ampel, Benjamin},
-  journal = {IEEE Software},
-  year    = {2025},
-  note    = {Under review}
-}
-```
 
 ---
 
