@@ -1,135 +1,151 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/logo.svg" alt="NoCode Deep Learning Studio" width="180"/>
+<img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/banner.svg" alt="NoCode Deep Learning Studio" width="100%"/>
 
 # NoCode Deep Learning Studio
 
-**Train, evaluate, and export deep learning models — no Python required.**
+**A local-first desktop studio for training, evaluating, and exporting deep learning models without writing code.**
 
-A local-first, privacy-preserving desktop application for building ML pipelines across six data modalities, designed for researchers, educators, and domain experts.
-
+[![Windows Installer](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-windows-installer.yml/badge.svg)](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-windows-installer.yml)
+[![Latest Release](https://img.shields.io/github/v/release/BenAmpel/NoCode-Deep-Learning?display_name=tag)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest)
+[![GitHub Stars](https://img.shields.io/github/stars/BenAmpel/NoCode-Deep-Learning?style=social)](https://github.com/BenAmpel/NoCode-Deep-Learning/stargazers)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch 2.8](https://img.shields.io/badge/PyTorch-2.8-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Platform: macOS | Windows](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?logo=apple)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases)
-[![macOS Installer](https://img.shields.io/badge/macOS-797%20KB%20.pkg-blue?logo=apple)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest)
-[![Windows Installer](https://img.shields.io/badge/Windows-2.3%20MB%20.exe-blue?logo=windows)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest)
-[![JOSS](https://joss.theoj.org/papers/YOUR_JOSS_DOI/status.svg)](https://joss.theoj.org/papers/YOUR_JOSS_DOI)
 
-[**Download**](#installation) · [**Documentation**](#usage) · [**Contribute**](#contributing)
+[Download](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest) · [Quickstart](#quickstart) · [Documentation](docs/index.md) · [Contributing](CONTRIBUTING.md)
 
----
-
-<img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-hero.png" alt="NoCode Deep Learning Studio hero" width="85%"/>
+<img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-hero.png" alt="NoCode Deep Learning Studio hero" width="88%"/>
 
 </div>
 
 ---
 
-## Why NoCode Deep Learning Studio?
+## Why This Project Exists
 
-Training a deep learning model in PyTorch takes 50–100 lines of Python — before you even think about data loading, GPU configuration, or evaluation. For domain experts in biology, journalism, medicine, or business, that barrier is insurmountable.
+Most machine learning tools either assume you can code, or hide the modeling process so deeply that it becomes hard to learn from. **NoCode Deep Learning Studio** is designed to sit in the middle: it gives you a visual workflow for serious local model development, while still exposing the concepts that matter.
 
-**NoCode Deep Learning Studio** provides a guided, tab-based interface that mirrors the conceptual stages of a machine learning workflow: **Data → Model → Train → Evaluate → Export**. It runs entirely on your own machine, requires no Python installation, no cloud account, and no command-line experience.
+It runs entirely on your own machine and walks through the full workflow:
 
-> *"Your data never leaves this machine."*
-
----
-
-## Features
-
-| | |
-|---|---|
-| **6 Data Modalities** | Image, Tabular, Text, Audio, Time Series, Video |
-| **40+ Architectures** | ResNet, ViT, MobileNet, BERT, Whisper, XGBoost, and more |
-| **Built-in Tutorials** | One-click datasets for every modality — no manual download needed |
-| **Zero Prerequisites** | Ships a 2.3 MB installer; bootstraps Python + dependencies on first launch |
-| **Fully Local** | No cloud account, no data upload, no billing |
-| **Explainability** | GradCAM, SHAP, token importance — shown by default, not buried in menus |
-| **ONNX Export** | Export to ONNX + auto-generate FastAPI server, Docker bundle, Streamlit app, or model card |
-| **Batch Prediction** | Run inference on an entire folder; download results as CSV |
-| **Apple Silicon Native** | MPS acceleration with mixed precision; no Rosetta emulation |
-| **Windows CI Build** | Windows installer validated in native GitHub Actions runners |
-
----
-
-## Installation
-
-### Desktop Installers (recommended for non-developers)
-
-Download the latest installer from the [Releases page](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest):
-
-| Platform | File | Size | Notes |
-|---|---|---|---|
-| macOS (Intel + Apple Silicon) | `NoCode-DL-x.x.x.pkg` | 797 KB | Signed & notarised; works with Gatekeeper |
-| Windows (x64 + ARM64) | `NoCode-DL-Setup-x.x.x.exe` | 2.3 MB | Detects architecture automatically |
-
-On first launch the app downloads Python 3.12 and installs all dependencies (~5 min on typical WiFi). Subsequent launches take 3–5 seconds.
-
-### Developer Install
-
-```bash
-git clone https://github.com/BenAmpel/NoCode-Deep-Learning.git
-cd NoCode-Deep-Learning
-python3 install.py       # creates .venv and installs requirements
-python3 run_local.py     # launches at http://127.0.0.1:7860
+```text
+Data → Model → Train → Evaluate → Dashboard → Try Your Model → Export
 ```
 
-> **Requirements:** Python 3.12, macOS 12+ or Windows 10+. GPU optional (MPS on Apple Silicon, CUDA on NVIDIA).
+That means you can move from raw files to a trained model, inspect the results, compare runs, and export a local deployment bundle without leaving the app.
 
----
+## What Makes It Different
+
+- Local-first: data never leaves the machine unless you choose to export it.
+- Multi-modal: image, tabular, text, audio, time-series, and video workflows in one interface.
+- Guided: recommendations, quality checks, and “why this matters” hints are built into the workflow.
+- Practical: exports include ONNX bundles and generated deployment scaffolds.
+- Teachable: the interface is designed to make modeling decisions visible rather than hidden.
+
+## Quickstart
+
+### 1. Install
+
+Download the latest installer from the [Releases page](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest).
+
+| Platform | Package | Notes |
+|---|---|---|
+| macOS | `NoCode-DL-x.x.x.pkg` | Signed and notarized |
+| Windows | `NoCode-DL-Setup-x.x.x.exe` | Built and tested in native Windows CI |
+
+On first launch, the app downloads Python 3.12 and installs its runtime dependencies.
+
+### 2. Launch the built-in tutorial
+
+Open the app and use the built-in `Load MNIST Tutorial` workflow to try the full experience with a prepared dataset.
+
+### 3. Train a baseline model
+
+Preview the data, accept or override the recommended settings, and run a short baseline training pass.
+
+### 4. Review and export
+
+Inspect metrics and visual diagnostics, then export the trained model as ONNX or a generated app/server bundle.
+
+## Feature Overview
+
+| Area | Highlights |
+|---|---|
+| Data | Schema inference, feature selection, quality reports, random subsets for quick experiments |
+| Modeling | 40+ architectures across multiple modalities, guided defaults, multi-model sweeps |
+| Training | Live telemetry, ETA, logs, cross-validation, significance testing |
+| Evaluation | Confusion matrices, ROC curves, explainability views, diagnostics by task |
+| Inference | Single-file prediction, batch prediction, saved preprocessing reuse |
+| Export | ONNX bundles, FastAPI generation, Docker scaffolds, model cards |
 
 ## Supported Modalities
 
-| Modality | Task Types | Example Architectures | Built-in Tutorial |
+| Modality | Example Tasks | Example Models | Built-in Tutorial |
 |---|---|---|---|
-| **Image** | Classification, Object Detection | ResNet, ViT, MobileNetV3, YOLOv8 | MNIST digits (10 classes) |
-| **Tabular** | Classification, Regression | XGBoost, LightGBM, MLP, RandomForest | Iris species (3 classes) |
-| **Text** | Classification, Sentiment | BERT, DistilBERT, TF-IDF + LR | 20 Newsgroups (3 classes) |
-| **Audio** | Classification | CNN-Spectrogram, Whisper features | Free Spoken Digit Dataset |
-| **Time Series** | Classification, Forecasting | 1D-CNN, LSTM, Transformer | Synthetic sinusoidal signals |
-| **Video** | Classification | 3D-CNN, SlowFast | Synthetic shape clips |
+| Image | Classification, object detection | ResNet, ViT, MobileNetV3, YOLOv8 | MNIST digits |
+| Tabular | Classification, regression | XGBoost, RandomForest, MLP | Iris species |
+| Text | Classification, sentiment | BERT, DistilBERT, TF-IDF + LR | 20 Newsgroups subset |
+| Audio | Classification | CNN-spectrogram, Whisper features | Spoken digits |
+| Time Series | Classification, forecasting | LSTM, GRU, CNN1D, TCN | Synthetic signals |
+| Video | Classification | 3D CNN, SlowFast-style baselines | Synthetic shape clips |
 
----
-
-## Workflow
-
-The interface is organised into sequential tabs that make the learning sequence explicit:
-
-```
- Data  →  Model  →  Train  →  Evaluate  →  Dashboard  →  Try Your Model  →  Export
-```
-
-1. **Data** — Upload or select a dataset. Validates structure, infers schema, reports class balance, flags quality issues.
-2. **Model** — Choose from 40+ architectures. A recommendation engine suggests models based on dataset size and modality.
-3. **Train** — Configure hyperparameters (learning rate, batch size, epochs, augmentation). Watch live loss and accuracy curves.
-4. **Evaluate** — Review confusion matrices, ROC curves, GradCAM saliency maps, SHAP plots, and misclassification tables.
-5. **Dashboard** — Executive summary: KPI cards, primary diagnostic chart, explainability plot, and auto-generated action items.
-6. **Try Your Model** — Single-file inference with ranked confidence bars, or batch-predict a folder and download results as CSV.
-7. **Export** — Save as ONNX, generate a FastAPI server, Docker bundle, Streamlit dashboard, or model card.
-
----
-
-## Screenshots
+## Product Tour
 
 <div align="center">
 <table>
 <tr>
-<td align="center"><img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-data.png" width="340"/><br/><sub>Data tab — auto-detected schema & class balance</sub></td>
-<td align="center"><img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-train.png" width="340"/><br/><sub>Train tab — run configuration & live telemetry</sub></td>
+<td align="center"><img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-data.png" width="340"/><br/><sub>Data tab: schema detection, feature mapping, quality reporting</sub></td>
+<td align="center"><img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-train.png" width="340"/><br/><sub>Train tab: live telemetry, ETA, logs, and training curves</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-evaluate.png" width="340"/><br/><sub>Evaluate tab — metrics, GradCAM & confusion matrix</sub></td>
-<td align="center"><img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-export.png" width="340"/><br/><sub>Export tab — FastAPI, Docker & model card generation</sub></td>
+<td align="center"><img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-evaluate.png" width="340"/><br/><sub>Evaluate tab: metrics, explainability, and diagnostics</sub></td>
+<td align="center"><img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-export.png" width="340"/><br/><sub>Export tab: deployment bundles and sharing artifacts</sub></td>
 </tr>
 </table>
 </div>
 
----
+## Architecture at a Glance
+
+```mermaid
+flowchart LR
+    A["Local data"] --> B["Data preview + quality report"]
+    B --> C["Model recommendations"]
+    C --> D["Training pipeline"]
+    D --> E["Evaluation + diagnostics"]
+    E --> F["Try your model"]
+    E --> G["Export bundles"]
+    G --> H["ONNX / FastAPI / Docker / model card"]
+```
+
+## Installation for Developers
+
+```bash
+git clone https://github.com/BenAmpel/NoCode-Deep-Learning.git
+cd NoCode-Deep-Learning
+python3 install.py
+python3 run_local.py
+```
+
+Requirements:
+- Python 3.12
+- macOS 12+ or Windows 10+
+- Optional GPU support through MPS or CUDA
+
+More detail:
+- [Developer setup](SETUP.md)
+- [Documentation index](docs/index.md)
+- [Release checklist](RELEASE_CHECKLIST.md)
+
+## Documentation
+
+- [Overview](docs/index.md)
+- [Installation](docs/installation.md)
+- [Quickstart and tutorials](docs/tutorials.md)
+- [Architecture and packaging](docs/architecture.md)
+- [Contributing guide](CONTRIBUTING.md)
 
 ## Building Installers
 
-### macOS (signed + notarised)
+### macOS
 
 ```bash
 python3 packaging/build_macos_installer.py --version 1.0.0
@@ -142,48 +158,32 @@ python3 packaging/sign_and_notarize_macos.py \
 
 ### Windows
 
-Run the Windows packager on a Windows machine or in a Windows GitHub Actions runner:
-
 ```powershell
 python packaging/build_windows_installer.py --version 1.0.0
 ```
 
-The build requires Inno Setup 6 (`iscc.exe`) to be installed and available on `PATH`.
+The Windows build expects Inno Setup 6 (`iscc.exe`) to be installed and available on `PATH`.
 
----
+## Repository Standards
 
-## Contributing
+This repository includes:
+- [Contributing guidelines](CONTRIBUTING.md)
+- [Code of conduct](.github/CODE_OF_CONDUCT.md)
+- [Security policy](.github/SECURITY.md)
+- Issue templates and a pull request template under `.github/`
 
-Contributions are welcome. Please open an issue first to discuss the change you have in mind.
+## Academic Context
 
-```bash
-git clone https://github.com/BenAmpel/NoCode-Deep-Learning.git
-cd NoCode-Deep-Learning
-python3 install.py
-python3 run_local.py
-```
-
-Areas where help is especially welcome:
-- **New modalities** — video segmentation, graph data, multi-label classification
-- **Additional architectures** — add entries to `models/registry.py`
-- **Localisation** — interface currently English-only
-- **Controlled evaluation** — classroom studies measuring learning outcomes
-- **Accessibility** — keyboard navigation, screen-reader support
-
-Please read [`SETUP.md`](SETUP.md) for environment details and [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) for the release process.
-
----
+This project is also being written up for academic dissemination. Manuscript drafts and venue-specific materials live alongside the software source in this repository.
 
 ## License
 
 [MIT](LICENSE) © Dr. Benjamin M. Ampel, Georgia State University
 
----
-
 <div align="center">
 
 Built with [PyTorch](https://pytorch.org/) · [Gradio](https://gradio.app/) · [scikit-learn](https://scikit-learn.org/) · [ONNX Runtime](https://onnxruntime.ai/)
 
-*Runs on your machine. Your data stays with you.*
+Runs on your machine. Your data stays with you.
 
 </div>

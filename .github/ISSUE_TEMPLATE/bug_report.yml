@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a problem with the app, installer, or workflow
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the issue and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the shortest path that reproduces the issue.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, installer version, and any hardware details that matter.
+      placeholder: macOS 14 / Windows 11, version 1.0.x, MPS or CUDA if relevant
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant output or attach screenshots.
