@@ -12,6 +12,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch 2.8](https://img.shields.io/badge/PyTorch-2.8-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-☕-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/bampel)
 
 [Download](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest) · [Quickstart](#quickstart) · [Documentation](docs/index.md) · [Contributing](CONTRIBUTING.md)
 
@@ -185,5 +186,13 @@ This project is also being written up for academic dissemination. Manuscript dra
 Built with [PyTorch](https://pytorch.org/) · [Gradio](https://gradio.app/) · [scikit-learn](https://scikit-learn.org/) · [ONNX Runtime](https://onnxruntime.ai/)
 
 Runs on your machine. Your data stays with you.
+
+---
+
+If this project saves you time, consider buying me a coffee ☕
+
+<a href="https://buymeacoffee.com/bampel">
+  <img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=☕&slug=bampel&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" height="50"/>
+</a>
 
 </div>
