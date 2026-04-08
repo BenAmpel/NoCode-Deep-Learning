@@ -6,6 +6,7 @@
 
 **A local-first desktop studio for training, evaluating, and exporting deep learning models without writing code.**
 
+[![macOS Installer](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-macos-installer.yml/badge.svg)](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-macos-installer.yml)
 [![Windows Installer](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-windows-installer.yml/badge.svg)](https://github.com/BenAmpel/NoCode-Deep-Learning/actions/workflows/test-windows-installer.yml)
 [![Latest Release](https://img.shields.io/github/v/release/BenAmpel/NoCode-Deep-Learning?display_name=tag)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/BenAmpel/NoCode-Deep-Learning?style=social)](https://github.com/BenAmpel/NoCode-Deep-Learning/stargazers)

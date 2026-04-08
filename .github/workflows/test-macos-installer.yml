@@ -1,0 +1,74 @@
+name: macOS Installer
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build macOS installer (unsigned)
+        run: python packaging/build_macos_installer.py --version 1.0.0-ci
+
+      - name: Show installer size
+        run: |
+          pkg=$(ls dist/NoCode-DL-*.pkg | head -1)
+          echo "Installer: $pkg"
+          du -sh "$pkg"
+
+      - name: Run installer silently
+        run: |
+          pkg=$(ls dist/NoCode-DL-*.pkg | head -1)
+          sudo installer -pkg "$pkg" -target /
+
+      - name: Verify installed app bundle
+        run: |
+          APP="/Applications/NoCode-DL.app"
+          echo "Checking app bundle: $APP"
+          test -d "$APP"                                      && echo "OK NoCode-DL.app"
+          test -f "$APP/Contents/Info.plist"                  && echo "OK Info.plist"
+          test -x "$APP/Contents/MacOS/NoCode-DL"             && echo "OK launcher (executable)"
+          test -f "$APP/Contents/Resources/app/bootstrap_macos.py"  && echo "OK bootstrap_macos.py"
+          test -f "$APP/Contents/Resources/app/install.py"   && echo "OK install.py"
+          test -f "$APP/Contents/Resources/app/run_local.py"  && echo "OK run_local.py"
+          test -f "$APP/Contents/Resources/app/runtime_setup.py" && echo "OK runtime_setup.py"
+          test -f "$APP/Contents/Resources/app/requirements.txt"  && echo "OK requirements.txt"
+          test -f "$APP/Contents/Resources/app/.bundle_version"   && echo "OK .bundle_version"
+          cat "$APP/Contents/Resources/app/.bundle_version"
+
+      - name: Smoke-test Python modules from install
+        run: |
+          APP_DIR="/Applications/NoCode-DL.app/Contents/Resources/app"
+          python - <<'EOF'
+          import sys
+          from pathlib import Path
+          install_dir = Path("/Applications/NoCode-DL.app/Contents/Resources/app")
+          sys.path.insert(0, str(install_dir))
+          from runtime_setup import install_is_current
+          print("runtime_setup imported OK")
+          ok, reason = install_is_current(install_dir / ".venv")
+          print(f"install_is_current on fresh install: ok={ok}, reason={reason}")
+          assert not ok, "Expected fresh install to need setup"
+          version = (install_dir / ".bundle_version").read_text().strip()
+          print(f"Bundle version: {version}")
+          assert version
+          EOF
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoCode-DL-macos
+          path: dist/NoCode-DL-*.pkg
+          retention-days: 30
