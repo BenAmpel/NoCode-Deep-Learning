@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+.python-version
+
+# Build and installer outputs
+build/
+dist/
+packaging/vendor/
+packages/
+
+# Runtime / local app state
+outputs/
+*.log
+.playwright-cli/
+yolov8n.pt
+
+# Notebook / editor noise
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# Local install markers
+install_state.json

@@ -1,0 +1,100 @@
+name: Windows Installer
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Wine + Inno Setup (cached) ──────────────────────────────────────
+      - name: Cache Wine prefix
+        id: cache-wine
+        uses: actions/cache@v4
+        with:
+          path: ~/.wine
+          key: wine-innosetup-6-${{ runner.os }}-v1
+
+      - name: Install Wine
+        run: brew install wine-stable
+
+      - name: Install Inno Setup into Wine
+        if: steps.cache-wine.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/innosetup.exe https://jrsoftware.org/download.php/is.exe
+          WINEPREFIX=~/.wine wine /tmp/innosetup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART 2>/dev/null
+          echo "Inno Setup installed"
+
+      # ── Build ───────────────────────────────────────────────────────────
+      - name: Build Windows installer
+        run: python3 packaging/build_windows_installer.py --version 1.0.0-ci
+
+      - name: Show installer size
+        run: ls -lh dist/Output/NoCode-DL-Setup-*.exe
+
+      # ── Install via Wine ────────────────────────────────────────────────
+      - name: Run installer under Wine
+        run: |
+          EXE=$(ls dist/Output/NoCode-DL-Setup-*.exe)
+          echo "Installing: $EXE"
+          WINEPREFIX=~/.wine wine "$EXE" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          echo "Done."
+
+      # ── Verify installed files ──────────────────────────────────────────
+      - name: Verify installed files
+        run: |
+          # Wine maps {localappdata} → ~/.wine/drive_c/users/$USER/AppData/Local
+          INSTALL_DIR="$HOME/.wine/drive_c/users/$USER/AppData/Local/NoCode-DL"
+          echo "Checking: $INSTALL_DIR"
+          FAILED=0
+          for f in NoCode-DL.bat NoCode-DL.ps1 bootstrap_windows.py \
+                   .bundle_version install.py run_local.py \
+                   runtime_setup.py requirements.txt icon.ico; do
+            if [ -f "$INSTALL_DIR/$f" ]; then
+              echo "  OK  $f"
+            else
+              echo "  MISSING  $f"
+              FAILED=1
+            fi
+          done
+          echo "Bundle version: $(cat "$INSTALL_DIR/.bundle_version" 2>/dev/null || echo 'NOT FOUND')"
+          exit $FAILED
+
+      # ── Python smoke-test ───────────────────────────────────────────────
+      - name: Smoke-test Python modules from install
+        run: |
+          INSTALL_DIR="$HOME/.wine/drive_c/users/$USER/AppData/Local/NoCode-DL"
+          python3 - <<'EOF'
+          import sys, os
+          from pathlib import Path
+
+          install_dir = Path(os.environ["HOME"]) / ".wine/drive_c/users" / os.environ["USER"] / "AppData/Local/NoCode-DL"
+          sys.path.insert(0, str(install_dir))
+
+          from runtime_setup import install_is_current, venv_python_path
+          print("runtime_setup imported OK")
+
+          ok, reason = install_is_current(install_dir / ".venv")
+          print(f"install_is_current on fresh install: ok={ok}, reason={reason}")
+          assert not ok, "Expected install_is_current=False on fresh install"
+
+          ver = (install_dir / ".bundle_version").read_text().strip()
+          print(f"Bundle version: {ver}")
+          assert ver, "Bundle version must not be empty"
+
+          print("All checks passed.")
+          EOF
+
+      # ── Upload installer artifact ───────────────────────────────────────
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoCode-DL-Setup-windows
+          path: dist/Output/NoCode-DL-Setup-*.exe
+          retention-days: 30
