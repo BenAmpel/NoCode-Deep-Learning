@@ -1,7 +1,7 @@
 <div align="center">
 
 <!-- Replace with your actual logo -->
-<img src="https://raw.githubusercontent.com/BenAmpel/nocode-deep-learning/main/assets/logo.png" alt="NoCode Deep Learning Studio" width="200"/>
+<img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/logo.png" alt="NoCode Deep Learning Studio" width="200"/>
 
 # NoCode Deep Learning Studio
 
@@ -12,9 +12,9 @@ A local-first, privacy-preserving desktop application for building ML pipelines 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch 2.8](https://img.shields.io/badge/PyTorch-2.8-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Platform: macOS | Windows](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?logo=apple)](https://github.com/BenAmpel/nocode-deep-learning/releases)
-[![macOS Installer](https://img.shields.io/badge/macOS-797%20KB%20.pkg-blue?logo=apple)](https://github.com/BenAmpel/nocode-deep-learning/releases/latest)
-[![Windows Installer](https://img.shields.io/badge/Windows-2.3%20MB%20.exe-blue?logo=windows)](https://github.com/BenAmpel/nocode-deep-learning/releases/latest)
+[![Platform: macOS | Windows](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?logo=apple)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases)
+[![macOS Installer](https://img.shields.io/badge/macOS-797%20KB%20.pkg-blue?logo=apple)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest)
+[![Windows Installer](https://img.shields.io/badge/Windows-2.3%20MB%20.exe-blue?logo=windows)](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest)
 [![JOSS](https://joss.theoj.org/papers/YOUR_JOSS_DOI/status.svg)](https://joss.theoj.org/papers/YOUR_JOSS_DOI)
 
 [**Download**](#installation) · [**Documentation**](#usage) · [**Cite**](#citation) · [**Contribute**](#contributing)
@@ -22,7 +22,7 @@ A local-first, privacy-preserving desktop application for building ML pipelines 
 ---
 
 <!-- Replace with actual screenshot -->
-<img src="https://raw.githubusercontent.com/BenAmpel/nocode-deep-learning/main/assets/screenshot-hero.png" alt="NoCode Deep Learning Studio screenshot" width="85%"/>
+<img src="https://raw.githubusercontent.com/BenAmpel/NoCode-Deep-Learning/main/assets/screenshot-hero.png" alt="NoCode Deep Learning Studio screenshot" width="85%"/>
 
 </div>
 
@@ -59,7 +59,7 @@ Training a deep learning model in PyTorch takes 50–100 lines of Python — bef
 
 ### Desktop Installers (recommended for non-developers)
 
-Download the latest installer from the [Releases page](https://github.com/BenAmpel/nocode-deep-learning/releases/latest):
+Download the latest installer from the [Releases page](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest):
 
 | Platform | File | Size | Notes |
 |---|---|---|---|
@@ -71,8 +71,8 @@ On first launch the app downloads Python 3.12 and installs all dependencies (~5 
 ### Developer Install
 
 ```bash
-git clone https://github.com/BenAmpel/nocode-deep-learning.git
-cd nocode-deep-learning
+git clone https://github.com/BenAmpel/NoCode-Deep-Learning.git
+cd NoCode-Deep-Learning
 python3 install.py       # creates .venv and installs requirements
 python3 run_local.py     # launches at http://127.0.0.1:7860
 ```
@@ -231,8 +231,8 @@ If you use NoCode Deep Learning Studio in your research or teaching, please cite
 Contributions are welcome. Please open an issue first to discuss the change you have in mind.
 
 ```bash
-git clone https://github.com/BenAmpel/nocode-deep-learning.git
-cd nocode-deep-learning
+git clone https://github.com/BenAmpel/NoCode-Deep-Learning.git
+cd NoCode-Deep-Learning
 python3 install.py
 python3 run_local.py
 ```
