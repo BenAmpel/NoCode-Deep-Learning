@@ -43,10 +43,10 @@ jobs:
           test -d "$APP"                                      && echo "OK NoCode-DL.app"
           test -f "$APP/Contents/Info.plist"                  && echo "OK Info.plist"
           test -x "$APP/Contents/MacOS/NoCode-DL"             && echo "OK launcher (executable)"
-          test -f "$APP/Contents/Resources/app/bootstrap_macos.py"  && echo "OK bootstrap_macos.py"
+          test -f "$APP/Contents/Resources/app/runtime/bootstrap_macos.py"  && echo "OK bootstrap_macos.py"
           test -f "$APP/Contents/Resources/app/install.py"   && echo "OK install.py"
           test -f "$APP/Contents/Resources/app/run_local.py"  && echo "OK run_local.py"
-          test -f "$APP/Contents/Resources/app/runtime_setup.py" && echo "OK runtime_setup.py"
+          test -f "$APP/Contents/Resources/app/runtime/runtime_setup.py" && echo "OK runtime_setup.py"
           test -f "$APP/Contents/Resources/app/requirements.txt"  && echo "OK requirements.txt"
           test -f "$APP/Contents/Resources/app/.bundle_version"   && echo "OK .bundle_version"
           cat "$APP/Contents/Resources/app/.bundle_version"
@@ -58,7 +58,7 @@ jobs:
           import sys
           from pathlib import Path
           install_dir = Path("/Applications/NoCode-DL.app/Contents/Resources/app")
-          sys.path.insert(0, str(install_dir))
+          sys.path.insert(0, str(install_dir / "runtime"))
           from runtime_setup import install_is_current
           print("runtime_setup imported OK")
           ok, reason = install_is_current(install_dir / ".venv")
