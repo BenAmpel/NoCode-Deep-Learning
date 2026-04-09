@@ -888,6 +888,151 @@ body.dark,
   color-scheme: dark;
 }
 
+html.dark,
+[data-theme="dark"],
+[data-color-mode="dark"] {
+  --color-text-primary: #eff7f3;
+  --color-text-secondary: #b9cbc4;
+  --color-text-muted: #89a49b;
+  --color-text-on-primary: #f5fffb;
+  --color-text-on-surface: #d9ece5;
+
+  --color-accent: #52d6ac;
+  --color-accent-dark: #2aa17f;
+  --color-gold: #f0bc4f;
+
+  --color-surface: #162126;
+  --color-surface-soft: #1b282d;
+  --color-surface-tint: #213137;
+  --color-surface-strong: #27393f;
+  --color-surface-raised: rgba(22, 33, 38, 0.92);
+  --color-page-start: #091114;
+  --color-page-end: #0e181c;
+
+  --color-border: rgba(78, 112, 104, 0.72);
+  --color-border-soft: rgba(98, 136, 126, 0.6);
+  --color-border-row: rgba(63, 91, 84, 0.72);
+
+  --color-tab-text: #b2c6be;
+  --color-tab-active: #f3fffb;
+  --color-tab-active-border: rgba(92, 177, 148, 0.95);
+  --color-label: #d8e8e2;
+
+  --color-input-bg: #0f181c;
+  --color-input-border: #3a5650;
+  --color-input-text: #edf8f4;
+  --color-placeholder: #7b958c;
+  --color-table-bg: #111a1e;
+  --color-table-text: #e7f3ef;
+  --color-table-border: #304742;
+  --color-code-bg: #0d1518;
+  --color-code-text: #ddf0ea;
+  --color-code-border: #2b423d;
+  --color-hr: rgba(76, 106, 98, 0.66);
+
+  --shadow-xl: 0 28px 80px rgba(0, 0, 0, 0.48);
+  --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.26);
+  --shadow-sm: 0 8px 18px rgba(0, 0, 0, 0.2);
+}
+
+/* Gradio-level overrides when dark mode is forced via class (not just OS preference) */
+html.dark gradio-app,
+[data-theme="dark"] gradio-app,
+[data-color-mode="dark"] gradio-app {
+  --block-background-fill: #162126 !important;
+  --background-fill-primary: #162126 !important;
+  --background-fill-secondary: #1b282d !important;
+  --body-background-fill: #091114 !important;
+  --block-border-color: rgba(78, 112, 104, 0.72) !important;
+  --block-label-background-fill: #162126 !important;
+  --block-title-text-color: #eff7f3 !important;
+  --body-text-color: #edf8f4 !important;
+  --input-background-fill: #0f181c !important;
+  --input-border-color: #3a5650 !important;
+  --color-accent: #52d6ac !important;
+  --color-accent-soft: #173c33 !important;
+}
+
+html.dark body,
+html.dark .gradio-container,
+[data-theme="dark"] body,
+[data-theme="dark"] .gradio-container {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(59, 154, 125, 0.22), transparent 34%),
+    radial-gradient(circle at 90% 10%, rgba(36, 86, 74, 0.18), transparent 28%),
+    linear-gradient(180deg, var(--color-page-start) 0%, var(--color-page-end) 100%) !important;
+  color: var(--color-text-primary) !important;
+}
+
+html.dark .studio-hero,
+[data-theme="dark"] .studio-hero {
+  border-color: rgba(105, 140, 129, 0.42);
+  background:
+    radial-gradient(circle at 8% 0%, rgba(58, 170, 134, 0.18), transparent 28%),
+    radial-gradient(circle at 88% 8%, rgba(33, 77, 67, 0.28), transparent 28%),
+    linear-gradient(135deg, #0f1a1d 0%, #132126 48%, #17292d 100%);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.42);
+}
+
+html.dark .studio-hero__title,
+[data-theme="dark"] .studio-hero__title {
+  color: #f4fcf8 !important;
+}
+
+html.dark .studio-hero__subtitle,
+[data-theme="dark"] .studio-hero__subtitle {
+  color: #c6d7d1 !important;
+}
+
+html.dark .studio-hero__eyebrow,
+html.dark .studio-hero__pill,
+html.dark .studio-hero__meta-card,
+[data-theme="dark"] .studio-hero__eyebrow,
+[data-theme="dark"] .studio-hero__pill,
+[data-theme="dark"] .studio-hero__meta-card {
+  border-color: rgba(95, 128, 118, 0.58);
+  background: rgba(20, 31, 35, 0.92) !important;
+}
+
+html.dark .studio-hero__pill,
+html.dark .studio-hero__meta-value,
+[data-theme="dark"] .studio-hero__pill,
+[data-theme="dark"] .studio-hero__meta-value {
+  color: #edf8f4 !important;
+}
+
+html.dark .studio-banner,
+html.dark .studio-panel,
+html.dark .studio-card,
+html.dark .studio-kpi,
+html.dark .studio-report-chip,
+html.dark .studio-report-table-wrap,
+[data-theme="dark"] .studio-banner,
+[data-theme="dark"] .studio-panel,
+[data-theme="dark"] .studio-card,
+[data-theme="dark"] .studio-kpi,
+[data-theme="dark"] .studio-report-chip,
+[data-theme="dark"] .studio-report-table-wrap {
+  border-color: var(--color-border) !important;
+  background: linear-gradient(180deg, rgba(22, 33, 38, 0.96) 0%, rgba(17, 27, 31, 0.98) 100%) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+
+html.dark button[role="tab"],
+[data-theme="dark"] button[role="tab"] {
+  border-color: rgba(82, 117, 108, 0.7) !important;
+  background: rgba(17, 28, 32, 0.9) !important;
+  color: #b9cec6 !important;
+}
+
+html.dark button[role="tab"][aria-selected="true"],
+[data-theme="dark"] button[role="tab"][aria-selected="true"] {
+  border-color: var(--color-tab-active-border) !important;
+  background: linear-gradient(180deg, rgba(24, 70, 60, 0.98) 0%, rgba(21, 91, 73, 0.98) 100%) !important;
+  color: #f2fffb !important;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --color-text-primary: #eff7f3;
@@ -1182,6 +1327,32 @@ body.dark,
   .studio-shell .block-title,
   .studio-shell .block-label {
     color: var(--color-label) !important;
+  }
+
+  /* Markdown headings: brighter than body text for visual hierarchy */
+  .studio-shell .gr-markdown h1,
+  .studio-shell .gr-markdown h2,
+  .studio-shell .gr-markdown h3,
+  .studio-shell .gr-markdown h4,
+  .studio-shell .gradio-markdown h1,
+  .studio-shell .gradio-markdown h2,
+  .studio-shell .gradio-markdown h3,
+  .studio-shell .gradio-markdown h4,
+  .studio-shell .prose h1,
+  .studio-shell .prose h2,
+  .studio-shell .prose h3,
+  .studio-shell .prose h4 {
+    color: var(--color-text-primary) !important;
+  }
+
+  /* Markdown body text: secondary tone to distinguish from headings */
+  .studio-shell .gr-markdown p,
+  .studio-shell .gr-markdown li,
+  .studio-shell .gradio-markdown p,
+  .studio-shell .gradio-markdown li,
+  .studio-shell .prose p,
+  .studio-shell .prose li {
+    color: var(--color-text-secondary) !important;
   }
 
   .studio-shell .gradio-textbox label,
