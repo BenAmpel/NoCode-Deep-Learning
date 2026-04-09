@@ -44,20 +44,17 @@ VENDOR_PYTHON_PKG = VENDOR_DIR / PYTHON_PKG_NAME
 RUNTIME_ITEMS = [
     "SETUP.md",
     "app.py",
-    "bootstrap_macos.py",
-    "bootstrap_windows.py",
     "config.py",
     "data_pipeline",
     "detection",
     "eval",
     "export",
-    "healthcheck.py",
     "install.py",
     "modalities",
     "models",
     "requirements.txt",
     "run_local.py",
-    "runtime_setup.py",
+    "runtime",
     "training",
     "ui",
 ]
@@ -421,9 +418,9 @@ mkdir -p "$LOG_DIR"
 # detect the CPU and only use it when needed.
 ARCH="$(uname -m)"
 if [ "$ARCH" = "arm64" ]; then
-  exec arch -arm64 "$PYTHON" "$RESOURCE_APP/bootstrap_macos.py" >>"$LOG_FILE" 2>&1
+  exec arch -arm64 "$PYTHON" "$RESOURCE_APP/runtime/bootstrap_macos.py" >>"$LOG_FILE" 2>&1
 else
-  exec "$PYTHON" "$RESOURCE_APP/bootstrap_macos.py" >>"$LOG_FILE" 2>&1
+  exec "$PYTHON" "$RESOURCE_APP/runtime/bootstrap_macos.py" >>"$LOG_FILE" 2>&1
 fi
 """
     launcher_path = MACOS_DIR / APP_NAME

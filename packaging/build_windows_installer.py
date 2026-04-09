@@ -37,19 +37,17 @@ PYTHON_INSTALLER_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/pyth
 RUNTIME_ITEMS = [
     "SETUP.md",
     "app.py",
-    "bootstrap_windows.py",
     "config.py",
     "data_pipeline",
     "detection",
     "eval",
     "export",
-    "healthcheck.py",
     "install.py",
     "modalities",
     "models",
     "requirements.txt",
     "run_local.py",
-    "runtime_setup.py",
+    "runtime",
     "training",
     "ui",
 ]
@@ -135,7 +133,7 @@ def stage_files(staging: Path, version: str) -> None:
     # Write bundle version
     (staging / ".bundle_version").write_text(version, encoding="utf-8")
 
-    # PowerShell launcher: finds/installs Python then runs bootstrap_windows.py.
+    # PowerShell launcher: finds/installs Python then runs runtime/bootstrap_windows.py.
     # Architecture-aware: downloads amd64 or arm64 installer from python.org.
     amd64_url = PYTHON_INSTALLER_URL.format(arch="amd64")
     arm64_url  = PYTHON_INSTALLER_URL.format(arch="arm64")
@@ -205,7 +203,7 @@ def stage_files(staging: Path, version: str) -> None:
         f'}}\r\n'
         f'\r\n'
         f'Write-Host "[{APP_NAME}] Using Python: $python"\r\n'
-        f'& $python bootstrap_windows.py\r\n'
+        f'& $python runtime\\bootstrap_windows.py\r\n'
         f'$code = $LASTEXITCODE\r\n'
         f'if ($code -ne 0) {{\r\n'
         f'    Write-Host ""\r\n'

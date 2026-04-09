@@ -31,6 +31,8 @@ def compute_stats(
 
     if modality in ("image", "audio", "video"):
         return _folder_stats(data_path, modality)
+    if modality == "graph":
+        return _graph_stats(data_path, label_col, subset_enabled=subset_enabled, subset_percent=subset_percent, subset_seed=subset_seed)
     else:
         return _csv_stats(data_path, label_col, subset_enabled=subset_enabled, subset_percent=subset_percent, subset_seed=subset_seed)
 
@@ -82,6 +84,47 @@ def _csv_stats(
             f"ℹ️  Previewing a random subset of {sampled_rows} rows ({float(subset_percent):.2f}% of the cleaned dataset)."
         )
         stats["summary"] += f"\nSubset preview : {sampled_rows} rows ({float(subset_percent):.2f}%)"
+    return stats
+
+
+def _graph_stats(
+    data_path: Path,
+    label_col: str,
+    *,
+    subset_enabled: bool = False,
+    subset_percent: float = 100.0,
+    subset_seed: int = 42,
+) -> dict:
+    from data_pipeline.io_utils import read_structured_file
+    nodes_path = data_path / "nodes.csv"
+    edges_path = data_path / "edges.csv"
+    if not nodes_path.is_file() or not edges_path.is_file():
+        return {"error": "Graph datasets must contain nodes.csv and edges.csv."}
+    try:
+        nodes_df = read_structured_file(nodes_path)
+        edges_df = read_structured_file(edges_path)
+    except Exception as e:
+        return {"error": f"Could not read graph files: {e}"}
+    if label_col not in nodes_df.columns:
+        return {"error": f"Label column '{label_col}' not found in nodes.csv. Available: {list(nodes_df.columns)}"}
+
+    labelled = nodes_df[nodes_df[label_col].notna()].copy()
+    if labelled.empty:
+        return {"error": f"No labelled nodes remain after dropping missing labels from '{label_col}'."}
+    sampled_rows = len(labelled)
+    if subset_enabled and subset_percent < 100:
+        labelled = labelled.sample(
+            n=max(1, int(round(len(labelled) * (float(subset_percent) / 100.0)))),
+            random_state=int(subset_seed),
+        )
+        sampled_rows = len(labelled)
+    class_counts = dict(labelled[label_col].astype(str).value_counts())
+    stats = _build_stats(class_counts, n_features=max(0, len(nodes_df.columns) - 2))
+    stats["summary"] += f"\nNodes         : {len(nodes_df)}\nEdges         : {len(edges_df)}"
+    if subset_enabled and subset_percent < 100:
+        stats.setdefault("warnings", []).append(
+            f"ℹ️  Previewing a random subset of {sampled_rows} labelled nodes ({float(subset_percent):.2f}% of labelled nodes)."
+        )
     return stats
 
 def _build_stats(class_counts: dict, n_features: Optional[int] = None) -> dict:

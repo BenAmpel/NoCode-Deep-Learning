@@ -7,7 +7,13 @@ import sys
 import venv
 from pathlib import Path
 
-from runtime_setup import PROJECT_ROOT, REQUIREMENTS_FILE, resolve_venv_dir, save_install_state, venv_python_path
+from runtime.runtime_setup import (
+    PROJECT_ROOT,
+    REQUIREMENTS_FILE,
+    resolve_venv_dir,
+    save_install_state,
+    venv_python_path,
+)
 
 
 def run(cmd: list[str]) -> None:

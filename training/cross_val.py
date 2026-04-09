@@ -166,6 +166,8 @@ def cross_validate(
     optimizer_name: str = "adam",
     task: str = "classification",
     batch_size: int = 32,
+    splits: list[tuple[np.ndarray, np.ndarray]] | None = None,
+    split_strategy_name: str | None = None,
 ) -> Generator[dict, None, None]:
     """Run stratification-free k-fold cross-validation on *dataset*.
 
@@ -210,36 +212,40 @@ def cross_validate(
     if k > n:
         raise ValueError(f"k ({k}) cannot exceed dataset size ({n})")
 
+    if splits is not None:
+        k = len(splits)
+
     fold_accs: list[float]         = []
     fold_histories: list[list[dict]] = []
     fold_metrics: list[dict[str, float | None]] = []
 
     labels = _extract_labels(dataset)
     split_warning = None
-    split_strategy = "kfold"
-    if task == "classification" and labels is not None:
-        from sklearn.model_selection import StratifiedKFold
-        unique, counts = np.unique(labels, return_counts=True)
-        min_class_size = int(counts.min()) if len(counts) else 0
-        if min_class_size >= k:
-            splitter = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
-            splits = list(splitter.split(np.zeros(n), labels))
-            split_strategy = "stratified_kfold"
+    split_strategy = split_strategy_name or "kfold"
+    if splits is None:
+        if task == "classification" and labels is not None:
+            from sklearn.model_selection import StratifiedKFold
+            unique, counts = np.unique(labels, return_counts=True)
+            min_class_size = int(counts.min()) if len(counts) else 0
+            if min_class_size >= k:
+                splitter = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
+                splits = list(splitter.split(np.zeros(n), labels))
+                split_strategy = "stratified_kfold"
+            else:
+                from sklearn.model_selection import KFold
+
+                splitter = KFold(n_splits=k, shuffle=True, random_state=42)
+                splits = list(splitter.split(np.zeros(n)))
+                split_strategy = "kfold"
+                split_warning = (
+                    f"Using plain K-Fold instead of StratifiedKFold because the smallest class "
+                    f"has only {min_class_size} samples, which is fewer than k={k}."
+                )
         else:
             from sklearn.model_selection import KFold
 
             splitter = KFold(n_splits=k, shuffle=True, random_state=42)
             splits = list(splitter.split(np.zeros(n)))
-            split_strategy = "kfold"
-            split_warning = (
-                f"Using plain K-Fold instead of StratifiedKFold because the smallest class "
-                f"has only {min_class_size} samples, which is fewer than k={k}."
-            )
-    else:
-        from sklearn.model_selection import KFold
-
-        splitter = KFold(n_splits=k, shuffle=True, random_state=42)
-        splits = list(splitter.split(np.zeros(n)))
 
     for fold, (train_idx, val_idx) in enumerate(splits):
         train_idx = train_idx.tolist()

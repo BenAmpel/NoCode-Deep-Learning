@@ -5,7 +5,7 @@ import os
 import sys
 import time
 
-from runtime_setup import install_is_current, resolve_venv_dir, running_inside_venv, venv_python_path
+from runtime.runtime_setup import install_is_current, resolve_venv_dir, running_inside_venv, venv_python_path
 
 
 def _parse_args() -> argparse.Namespace:
@@ -47,7 +47,7 @@ def main() -> int:
     if not running_inside_venv(venv_dir):
         _reexec_into_venv(venv_dir)
 
-    from healthcheck import run_healthcheck
+    from runtime.healthcheck import run_healthcheck
 
     for line in run_healthcheck(server_port=args.server_port):
         print(f"[health] {line}")

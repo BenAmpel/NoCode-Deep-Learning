@@ -6,20 +6,20 @@ Used to populate help text (?) next to each Gradio component.
 TOOLTIPS: dict[str, str] = {
     # Data
     "modality":
-        "The type of data you're working with. Each modality uses a specialised pipeline.",
+        "The type of data you're working with. Each modality uses a specialised pipeline. Graph mode expects a folder with nodes.csv and edges.csv for node-level learning.",
     "project_mode":
         "Beginner hides most advanced controls, Guided keeps the main workflow visible with curated options, and Advanced exposes the full workspace.",
     "data_upload":
         "Upload a ZIP or structured file to populate the workspace quickly. Use this when you do not want to paste a local path manually.",
     "data_path":
         "Path to your dataset folder (for images/audio/video: subfolders = classes) "
-        "or CSV file (for text/tabular/timeseries).",
+        "or CSV file (for text/tabular/timeseries). Graph mode expects a folder containing nodes.csv and edges.csv.",
     "label_col":
-        "The CSV column name that contains your class labels.",
+        "The column that contains your class labels. In graph mode, this should be a column in nodes.csv.",
     "text_col":
         "The CSV column name that contains the raw text to classify.",
     "feature_cols":
-        "Choose which input columns should be used as X features. Any columns you leave out will be ignored during training.",
+        "Choose which input columns should be used as X features. Any columns you leave out will be ignored during training. In graph mode these are node feature columns from nodes.csv.",
     "time_col":
         "Optional: CSV column with timestamps. Rows will be sorted by this column before windowing.",
     "window_size":
@@ -71,6 +71,14 @@ TOOLTIPS: dict[str, str] = {
         "Sort the rows before windowing so each training sample follows the real time order of the series.",
     "timeseries_fill_strategy":
         "Choose how gaps in numeric time-series values should be handled before windows are created.",
+    "timeseries_forecast_mode":
+        "Treat the selected target as the future value to forecast instead of predicting the label inside the current window. Use this with regression targets.",
+    "timeseries_forecast_horizon":
+        "How many steps ahead to forecast. A horizon of 1 predicts the next timestep after the input window.",
+    "timeseries_lag_steps":
+        "Adds lagged copies of each feature so the model can compare the current value against recent history explicitly.",
+    "timeseries_rolling_window":
+        "Adds rolling summary statistics over this many timesteps. Larger windows capture slower-moving trends but smooth out short spikes.",
     "image_verify_files":
         "Checks that image files can actually be opened before training. This avoids crashes from a few broken files at the cost of a slower startup scan.",
     "image_aug_flip":
@@ -117,7 +125,7 @@ TOOLTIPS: dict[str, str] = {
     "task":
         "Classification: predict which class a sample belongs to.\n"
         "Clustering: group similar samples without labels (uses learned embeddings + KMeans).\n"
-        "Regression: predict a continuous numeric value.",
+        "Regression: predict a continuous numeric value. For time-series forecasting, keep this on regression and enable forecasting mode in the data settings. Graph mode currently focuses on node classification.",
     "n_clusters":
         "How many groups the clustering workflow should try to discover. Use this when you already have a rough expectation of the number of natural groups.",
     "use_class_weights":
@@ -248,6 +256,30 @@ TOOLTIPS: dict[str, str] = {
         "How many passes YOLO training should make over the dataset.",
     "yolo_batch":
         "Batch size used during YOLO training. Increase it when you have memory headroom; reduce it if the run runs out of memory.",
+
+    # Annotation studio
+    "annotation_image_dir":
+        "Folder-organised image dataset. Each subfolder name is treated as the current class label for relabeling.",
+    "annotation_image_sample":
+        "Choose a concrete image sample to inspect and relabel. The list refreshes from the dataset folder.",
+    "annotation_image_new_label":
+        "Select an existing label or type a new one. Saving will move the image into that class folder.",
+    "annotation_text_path":
+        "CSV, TSV, or JSON file containing text and labels. The selected row can be relabeled and saved back into the file.",
+    "annotation_text_sample":
+        "Pick a specific row from the structured text dataset to inspect and relabel.",
+    "annotation_text_new_label":
+        "New label for the selected text row. Saving updates the source file directly.",
+    "annotation_audio_dir":
+        "Folder-organised audio dataset. Each subfolder name is treated as the current class label for relabeling.",
+    "annotation_audio_sample":
+        "Choose a concrete audio clip to inspect and relabel.",
+    "annotation_audio_new_label":
+        "Select an existing label or type a new one. Saving will move the clip into that class folder.",
+    "annotation_det_image":
+        "Image to review with YOLO-assisted object suggestions before saving annotation files.",
+    "annotation_det_table":
+        "Editable review table for detected boxes. You can keep or drop boxes and adjust labels or coordinates before saving.",
 }
 
 GUIDANCE: dict[str, str] = {

@@ -26,6 +26,8 @@ def validate_dataset(
 
     if modality in ("image", "audio", "video"):
         issues += _validate_folder(path, modality)
+    elif modality == "graph":
+        issues += _validate_graph(path, label_col)
     else:
         issues += _validate_csv(
             path,
@@ -36,6 +38,41 @@ def validate_dataset(
             subset_seed=subset_seed,
         )
 
+    return issues
+
+
+def _validate_graph(path: Path, label_col: str) -> list[str]:
+    from data_pipeline.io_utils import read_structured_file
+    issues = []
+    nodes_path = path / "nodes.csv"
+    edges_path = path / "edges.csv"
+    if not nodes_path.is_file() or not edges_path.is_file():
+        return ["❌  Graph datasets must be folders containing nodes.csv and edges.csv."]
+    try:
+        nodes_df = read_structured_file(nodes_path)
+        edges_df = read_structured_file(edges_path)
+    except Exception as e:
+        return [f"❌  Cannot read graph dataset: {e}"]
+
+    if "node_id" not in nodes_df.columns:
+        issues.append("❌  nodes.csv must contain a 'node_id' column.")
+    if not {"source", "target"}.issubset(edges_df.columns):
+        issues.append("❌  edges.csv must contain 'source' and 'target' columns.")
+    if label_col not in nodes_df.columns:
+        issues.append(f"❌  Column '{label_col}' not found in nodes.csv.")
+        return issues
+    labelled = nodes_df[nodes_df[label_col].notna()]
+    if labelled.empty:
+        issues.append(f"❌  No labelled nodes found in '{label_col}'.")
+        return issues
+    n_classes = labelled[label_col].nunique()
+    if n_classes < 2:
+        issues.append(f"❌  Only {n_classes} class(es) found across labelled nodes. Need at least 2.")
+    per_class = labelled[label_col].astype(str).value_counts()
+    if not per_class.empty and int(per_class.min()) < 2:
+        issues.append("⚠️  At least one graph class has fewer than 2 labelled nodes, so validation may be unstable.")
+    if len(edges_df) < len(nodes_df) - 1:
+        issues.append("⚠️  The graph is very sparse. Message-passing models may underperform without richer connectivity.")
     return issues
 
 def _validate_folder(path: Path, modality: str) -> list[str]:

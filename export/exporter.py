@@ -33,6 +33,7 @@ def export_bundle(
     sample_batch=None,
     is_sklearn: bool = False,
     clustering_result: Optional[dict] = None,
+    evaluation_artifacts: Optional[dict] = None,
 ) -> tuple[str, list[str]]:
     """Export model bundle to disk.
 
@@ -68,8 +69,16 @@ def export_bundle(
             }, indent=2)
         )
 
+    if evaluation_artifacts:
+        (bundle_path / "evaluation_artifacts.json").write_text(
+            json.dumps(_to_json_safe(evaluation_artifacts), indent=2)
+        )
+
     # Export model
-    if is_sklearn:
+    if preprocessing_config.get("modality") == "graph":
+        w = _export_graph_bundle(model, bundle_path, preprocessing_config, is_sklearn=is_sklearn)
+        warnings.extend(w)
+    elif is_sklearn:
         w = _export_sklearn(model, bundle_path, preprocessing_config)
         warnings.extend(w)
     else:
@@ -153,6 +162,12 @@ def _export_sklearn(model, bundle_path: Path, prep: dict) -> list[str]:
     joblib.dump(model, bundle_path / "model.joblib")
     warnings: list[str] = []
 
+    if prep.get("modality") == "graph":
+        warnings.append(
+            "⚠️ Graph baseline bundle saved as joblib. Portable ONNX graph inference is not enabled for this first graph export path."
+        )
+        return warnings
+
     try:
         from skl2onnx import convert_sklearn
         from skl2onnx.common.data_types import FloatTensorType
@@ -170,6 +185,17 @@ def _export_sklearn(model, bundle_path: Path, prep: dict) -> list[str]:
         logger.warning("sklearn → ONNX export failed: %s", exc)
         warnings.append(msg)
 
+    return warnings
+
+
+def _export_graph_bundle(model, bundle_path: Path, prep: dict, *, is_sklearn: bool) -> list[str]:
+    warnings: list[str] = []
+    if is_sklearn:
+        return _export_sklearn(model, bundle_path, prep)
+    torch.save(model.state_dict(), bundle_path / "model.pt")
+    warnings.append(
+        "⚠️ Graph neural network bundle saved as a PyTorch state dict. The generic ONNX export and 'Try Your Model' flow are not yet enabled for graph models."
+    )
     return warnings
 
 
@@ -191,6 +217,22 @@ def _to_json_safe(obj):
 
 def _write_inference_script(bundle_path: Path, prep: dict, classes: list[str]) -> None:
     modality = prep.get("modality", "unknown")
+    if modality == "graph":
+        script = '''\
+"""
+Auto-generated graph bundle note.
+
+Graph model bundles in this first release are intended for reproducible storage,
+dashboard export, and future fine-tuning inside NoCode-DL. Standalone graph
+inference scripts are not generated yet because graph inference needs the full
+nodes.csv + edges.csv context used during training.
+"""
+
+print("Graph bundle saved successfully.")
+print("Use this bundle inside NoCode-DL or the exported Streamlit dashboard.")
+'''
+        (bundle_path / "inference.py").write_text(script)
+        return
     script = f'''\
 """
 Auto-generated inference script — {modality} model.

@@ -27,11 +27,11 @@ SYNC_EXCLUDES = {
 SERVER_URL = "http://127.0.0.1:7860"
 POLL_INTERVAL = 0.5
 POLL_TIMEOUT = 180
-SERVER_TYPICAL_SECS = 45  # used for ETA display
+SERVER_TYPICAL_SECS = 45
 
 
 def _bundled_root() -> Path:
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def _read_version(root: Path) -> str:
@@ -74,7 +74,6 @@ def _fmt_eta(elapsed: float, typical: float) -> str:
         return f"~{_fmt_elapsed(remaining)} remaining"
     if remaining > -10:
         return "almost ready\u2026"
-    # Past expected time — just show elapsed, no ETA
     return "taking longer than usual\u2026"
 
 
@@ -102,7 +101,6 @@ def _wait_for_server(timeout: float = POLL_TIMEOUT) -> bool:
 def main() -> int:
     try:
         import tkinter as tk
-        from tkinter import ttk
         has_tk = True
     except ImportError:
         has_tk = False
@@ -111,11 +109,10 @@ def main() -> int:
     USER_ROOT.mkdir(parents=True, exist_ok=True)
 
     error_holder: list[Exception] = []
-    # [0] = main status line, [1] = detail/timing line, [2] = phase start timestamp or -1
     status_holder: list[str] = ["Preparing\u2026"]
     detail_holder: list[str] = [""]
     phase_start: list[float] = [time.time()]
-    phase_typical: list[float] = [-1.0]  # -1 means no ETA
+    phase_typical: list[float] = [-1.0]
     done_event = threading.Event()
 
     def set_phase(msg: str, typical_secs: float = -1.0) -> None:
@@ -132,7 +129,7 @@ def main() -> int:
             if str(RUNTIME_APP_ROOT) not in sys.path:
                 sys.path.insert(0, str(RUNTIME_APP_ROOT))
 
-            from runtime_setup import install_is_current
+            from runtime.runtime_setup import install_is_current
 
             install_script = RUNTIME_APP_ROOT / "install.py"
             run_script = RUNTIME_APP_ROOT / "run_local.py"
@@ -156,19 +153,17 @@ def main() -> int:
                 )
                 for line in proc.stdout:
                     line = line.rstrip()
-                    m = pkg_pattern.match(line)
-                    if m:
-                        raw = m.group(1).strip()
-                        # Shorten long package lists
+                    match = pkg_pattern.match(line)
+                    if match:
+                        raw = match.group(1).strip()
                         if line.startswith("Installing collected") or line.startswith("Successfully"):
-                            pkgs = [p.strip() for p in raw.split(",")]
+                            pkgs = [pkg.strip() for pkg in raw.split(",")]
                             summary = ", ".join(pkgs[:3])
                             if len(pkgs) > 3:
                                 summary += f" +{len(pkgs) - 3} more"
                             verb = "Installed" if line.startswith("Successfully") else "Finalizing"
                             detail_holder[0] = f"{verb}: {summary}"
                         else:
-                            # Trim version specifiers for display
                             pkg_name = raw.split("==")[0].split(">=")[0].split("~=")[0].strip()
                             detail_holder[0] = f"Installing: {pkg_name}"
                 proc.wait()
@@ -194,17 +189,15 @@ def main() -> int:
                 text=True,
             )
 
-            # Stream server output so the user can see what it's doing
-            _server_ready = threading.Event()
+            server_ready = threading.Event()
 
             def _stream_server() -> None:
                 skip = re.compile(r"^\s*$|uvicorn|httpx|HTTP Request")
                 for line in server_proc.stdout:
-                    if _server_ready.is_set():
+                    if server_ready.is_set():
                         break
                     line = line.rstrip()
                     if line and not skip.search(line):
-                        # Strip log prefix (timestamp + level + logger)
                         clean = re.sub(r"^\S+\s+\S+\s+\S+\s+", "", line).strip()
                         if clean:
                             detail_holder[0] = clean[:80]
@@ -212,7 +205,7 @@ def main() -> int:
             threading.Thread(target=_stream_server, daemon=True).start()
 
             ready = _wait_for_server()
-            _server_ready.set()
+            server_ready.set()
 
             if ready:
                 status_holder[0] = "Opening browser\u2026"
@@ -223,7 +216,7 @@ def main() -> int:
                 status_holder[0] = "Done"
             else:
                 status_holder[0] = "Server did not start in time."
-                detail_holder[0] = f"Check ~/Library/Logs/NoCode-DL/launcher.log for details."
+                detail_holder[0] = "Check ~/Library/Logs/NoCode-DL/launcher.log for details."
 
         except Exception as exc:
             error_holder.append(exc)
@@ -241,89 +234,43 @@ def main() -> int:
         root.resizable(False, False)
         root.configure(bg="#1a1a2e")
 
-        w, h = 460, 200
+        width, height = 460, 200
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
-        root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+        root.geometry(f"{width}x{height}+{(sw - width) // 2}+{(sh - height) // 2}")
 
-        tk.Label(
-            root,
-            text="NoCode-DL",
-            font=("Helvetica Neue", 22, "bold"),
-            fg="#ffffff",
-            bg="#1a1a2e",
-        ).pack(pady=(22, 4))
-
+        tk.Label(root, text="NoCode-DL", font=("Helvetica Neue", 22, "bold"), fg="#ffffff", bg="#1a1a2e").pack(pady=(22, 4))
         status_var = tk.StringVar(value="Preparing\u2026")
-        tk.Label(
-            root,
-            textvariable=status_var,
-            font=("Helvetica Neue", 13, "bold"),
-            fg="#ccccee",
-            bg="#1a1a2e",
-            wraplength=420,
-        ).pack()
-
         detail_var = tk.StringVar(value="")
-        tk.Label(
-            root,
-            textvariable=detail_var,
-            font=("Helvetica Neue", 11),
-            fg="#7777aa",
-            bg="#1a1a2e",
-            wraplength=420,
-        ).pack(pady=(2, 10))
+        tk.Label(root, textvariable=status_var, font=("Helvetica Neue", 13, "bold"), fg="#e9fff8", bg="#1a1a2e").pack(pady=(10, 2))
+        tk.Label(root, textvariable=detail_var, font=("Helvetica Neue", 11), fg="#b7d3cb", bg="#1a1a2e", wraplength=400, justify="center").pack(pady=(0, 12))
+        progress = tk.ttk.Progressbar(root, orient="horizontal", mode="indeterminate", length=360)
+        progress.pack(pady=(0, 16))
+        progress.start(10)
 
-        style = ttk.Style(root)
-        style.theme_use("clam")
-        style.configure(
-            "NCD.Horizontal.TProgressbar",
-            troughcolor="#2d2d4e",
-            background="#6c63ff",
-            darkcolor="#6c63ff",
-            lightcolor="#6c63ff",
-            bordercolor="#1a1a2e",
-            thickness=8,
-        )
-        bar = ttk.Progressbar(
-            root,
-            mode="indeterminate",
-            style="NCD.Horizontal.TProgressbar",
-            length=400,
-        )
-        bar.pack(pady=(0, 16))
-        bar.start(10)
-
-        def poll() -> None:
-            elapsed = time.time() - phase_start[0]
-            typical = phase_typical[0]
-
+        def _poll() -> None:
             status_var.set(status_holder[0])
-
-            # Build detail line: user-set detail + timing suffix
-            base_detail = detail_holder[0]
-            if typical > 0:
-                timing = f"{_fmt_elapsed(elapsed)} elapsed \u2014 {_fmt_eta(elapsed, typical)}"
-                detail_var.set(f"{base_detail}\n{timing}" if base_detail else timing)
+            elapsed = time.time() - phase_start[0]
+            if phase_typical[0] > 0 and not detail_holder[0]:
+                detail_var.set(_fmt_eta(elapsed, phase_typical[0]))
             else:
-                detail_var.set(base_detail)
-
+                detail_var.set(detail_holder[0])
             if done_event.is_set():
-                bar.stop()
+                progress.stop()
                 if error_holder:
-                    import tkinter.messagebox as mb
-                    mb.showerror("NoCode-DL Error", str(error_holder[0]))
-                root.destroy()
+                    status_var.set(f"Error: {error_holder[0]}")
+                root.after(1200, root.destroy)
                 return
-            root.after(500, poll)
+            root.after(200, _poll)
 
-        root.after(500, poll)
+        root.after(50, _poll)
         root.mainloop()
     else:
-        done_event.wait()
-        if error_holder:
-            raise error_holder[0]
+        while not done_event.is_set():
+            time.sleep(0.2)
 
+    if error_holder:
+        raise RuntimeError(str(error_holder[0]))
     return 0
 
 

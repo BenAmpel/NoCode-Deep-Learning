@@ -596,10 +596,12 @@ def _preprocess_timeseries(
     window_values: Any,
     prep: dict,
 ) -> np.ndarray:
-    feature_cols = prep.get("feature_columns", [])
+    feature_cols = prep.get("raw_feature_columns") or prep.get("feature_columns", [])
     window_size = int(prep.get("window_size", 1))
     mean = np.array(prep.get("mean", []), dtype=np.float32)
     std = np.array(prep.get("std", []), dtype=np.float32)
+    lag_steps = int(prep.get("lag_steps", 0))
+    rolling_window = int(prep.get("rolling_window", 0))
 
     data = json.loads(window_values) if isinstance(window_values, str) else window_values
     if not isinstance(data, list) or not data:
@@ -620,6 +622,22 @@ def _preprocess_timeseries(
 
     if feature_cols and arr.shape[1] != len(feature_cols):
         raise ValueError(f"Expected {len(feature_cols)} features per step, got {arr.shape[1]}.")
+
+    min_required = window_size + max(lag_steps, max(0, rolling_window - 1))
+    if arr.shape[0] < min_required:
+        pad = np.repeat(arr[:1, :], min_required - arr.shape[0], axis=0)
+        arr = np.concatenate([pad, arr], axis=0)
+
+    if lag_steps > 0 or rolling_window > 1:
+        from modalities.timeseries import build_temporal_feature_matrix
+
+        arr, trim = build_temporal_feature_matrix(
+            arr,
+            lag_steps=lag_steps,
+            rolling_window=rolling_window,
+        )
+        if trim > 0:
+            arr = arr[trim:]
 
     if arr.shape[0] < window_size:
         pad = np.repeat(arr[-1:, :], window_size - arr.shape[0], axis=0)

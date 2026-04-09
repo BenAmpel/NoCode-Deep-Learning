@@ -4,9 +4,8 @@ import importlib
 import shutil
 import socket
 import sys
-from pathlib import Path
 
-from runtime_setup import PROJECT_ROOT
+from runtime.runtime_setup import PROJECT_ROOT
 
 
 REQUIRED_IMPORTS = [

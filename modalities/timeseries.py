@@ -17,6 +17,62 @@ from config import DEFAULTS
 from data_pipeline.io_utils import drop_missing_label_rows, read_structured_file
 
 
+def build_temporal_feature_matrix(
+    values: np.ndarray,
+    *,
+    lag_steps: int = 0,
+    rolling_window: int = 0,
+) -> tuple[np.ndarray, int]:
+    """Expand base time-series features with lag and rolling statistics.
+
+    Returns the engineered feature matrix and the number of leading rows that
+    must be discarded to avoid NaNs caused by lagging/rolling windows.
+    """
+    engineered = [values]
+    trim = 0
+
+    if int(lag_steps) > 0:
+        trim = max(trim, int(lag_steps))
+        for lag in range(1, int(lag_steps) + 1):
+            lagged = np.roll(values, shift=lag, axis=0)
+            lagged[:lag, :] = np.nan
+            engineered.append(lagged)
+
+    if int(rolling_window) > 1:
+        window = int(rolling_window)
+        trim = max(trim, window - 1)
+        means = np.full_like(values, np.nan, dtype=np.float32)
+        stds = np.full_like(values, np.nan, dtype=np.float32)
+        mins = np.full_like(values, np.nan, dtype=np.float32)
+        maxs = np.full_like(values, np.nan, dtype=np.float32)
+        for idx in range(window - 1, len(values)):
+            chunk = values[idx - window + 1: idx + 1]
+            means[idx] = chunk.mean(axis=0)
+            stds[idx] = chunk.std(axis=0)
+            mins[idx] = chunk.min(axis=0)
+            maxs[idx] = chunk.max(axis=0)
+        engineered.extend([means, stds, mins, maxs])
+
+    matrix = np.concatenate(engineered, axis=1).astype(np.float32)
+    return matrix, trim
+
+
+def _engineered_feature_names(
+    feature_cols: list[str],
+    *,
+    lag_steps: int = 0,
+    rolling_window: int = 0,
+) -> list[str]:
+    names = list(feature_cols)
+    if int(lag_steps) > 0:
+        for lag in range(1, int(lag_steps) + 1):
+            names.extend([f"{col}_lag_{lag}" for col in feature_cols])
+    if int(rolling_window) > 1:
+        for stat in ("roll_mean", "roll_std", "roll_min", "roll_max"):
+            names.extend([f"{col}_{stat}_{int(rolling_window)}" for col in feature_cols])
+    return names
+
+
 def prepare_timeseries_windows(
     data_path: str,
     label_col: str,
@@ -27,6 +83,10 @@ def prepare_timeseries_windows(
     task: str = "classification",
     subset_percent: float = 100.0,
     subset_seed: int = 42,
+    forecast_mode: bool = False,
+    forecast_horizon: int = 1,
+    lag_steps: int = 0,
+    rolling_window: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, list[str], dict, int]:
     import pandas as pd
 
@@ -45,27 +105,53 @@ def prepare_timeseries_windows(
         feature_cols = [c for c in df.columns if c not in {label_col, time_col}]
     if not feature_cols:
         raise ValueError("No valid feature columns were selected for time-series training.")
-    X = df[feature_cols].fillna(0).values.astype(np.float32)
+    base_features = df[feature_cols].fillna(0).values.astype(np.float32)
+    engineered_feature_names = _engineered_feature_names(
+        feature_cols,
+        lag_steps=int(lag_steps),
+        rolling_window=int(rolling_window),
+    )
+    X, trim_rows = build_temporal_feature_matrix(
+        base_features,
+        lag_steps=int(lag_steps),
+        rolling_window=int(rolling_window),
+    )
 
     # Standardize per feature
-    mean = X.mean(axis=0)
-    std = X.std(axis=0) + 1e-8
-    X = (X - mean) / std
-
-    if task == "regression":
-        targets = pd.to_numeric(df[label_col], errors="coerce").fillna(0).values.astype(np.float32)
+    if task == "regression" or bool(forecast_mode):
+        target_series = pd.to_numeric(df[label_col], errors="coerce")
+        if bool(forecast_mode):
+            if task != "regression":
+                raise ValueError("Forecast mode currently supports regression targets only. Switch the task to regression for forecasting.")
+            target_series = target_series.shift(-int(forecast_horizon))
+        target_mask = target_series.notna().values
+        targets = target_series.fillna(0).values.astype(np.float32)
         classes = ["target"]
     else:
         labels_raw = df[label_col].tolist()
         classes = sorted(set(str(l) for l in labels_raw))
         class_to_idx = {c: i for i, c in enumerate(classes)}
         targets = np.array([class_to_idx[str(l)] for l in labels_raw], dtype=np.int64)
+        target_mask = np.ones(len(targets), dtype=bool)
+
+    valid_mask = np.isfinite(X).all(axis=1) & target_mask
+    if int(trim_rows) > 0:
+        valid_mask[:int(trim_rows)] = False
+
+    X = X[valid_mask]
+    targets = targets[valid_mask]
+    if X.size == 0:
+        raise ValueError("No valid rows remain after applying time-series lag/rolling features. Reduce the lag steps or rolling window.")
+
+    mean = X.mean(axis=0)
+    std = X.std(axis=0) + 1e-8
+    X = (X - mean) / std
 
     windows, window_labels = [], []
     for i in range(0, len(X) - window_size + 1, stride):
         windows.append(X[i: i + window_size])
         segment = targets[i: i + window_size]
-        if task == "regression":
+        if task == "regression" or bool(forecast_mode):
             window_labels.append(float(segment[-1]))
         else:
             window_labels.append(int(np.bincount(segment).argmax()))
@@ -94,8 +180,9 @@ def prepare_timeseries_windows(
 
     preprocessing_config = {
         "modality": "timeseries",
-        "task": task,
-        "feature_columns": feature_cols,
+        "task": "forecasting" if bool(forecast_mode) else task,
+        "raw_feature_columns": feature_cols,
+        "feature_columns": engineered_feature_names,
         "window_size": window_size,
         "stride": stride,
         "mean": mean.tolist(),
@@ -105,6 +192,10 @@ def prepare_timeseries_windows(
         "dropped_missing_labels": dropped_missing,
         "subset_rows": sampled_windows,
         "subset_percent": float(subset_percent),
+        "forecast_mode": bool(forecast_mode),
+        "forecast_horizon": int(forecast_horizon),
+        "lag_steps": int(lag_steps),
+        "rolling_window": int(rolling_window),
     }
 
     return windows, window_labels, classes, preprocessing_config, X.shape[1]
@@ -123,6 +214,10 @@ def load_timeseries_data(
     task: str = "classification",
     subset_percent: float = 100.0,
     subset_seed: int = 42,
+    forecast_mode: bool = False,
+    forecast_horizon: int = 1,
+    lag_steps: int = 0,
+    rolling_window: int = 0,
 ) -> tuple[DataLoader, DataLoader, list[str], dict, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     windows, window_labels, classes, preprocessing_config, input_size = prepare_timeseries_windows(
         data_path=data_path,
@@ -134,14 +229,16 @@ def load_timeseries_data(
         task=task,
         subset_percent=subset_percent,
         subset_seed=subset_seed,
+        forecast_mode=forecast_mode,
+        forecast_horizon=forecast_horizon,
+        lag_steps=lag_steps,
+        rolling_window=rolling_window,
     )
 
-    indices = list(range(len(windows)))
-    random.seed(42)
-    random.shuffle(indices)
-    n_val      = max(1, int(len(windows) * val_split))
-    val_idx    = indices[:n_val]
-    train_idx  = indices[n_val:]
+    n_val = max(1, int(len(windows) * val_split))
+    split_at = max(1, len(windows) - n_val)
+    train_idx = list(range(0, split_at))
+    val_idx = list(range(split_at, len(windows)))
 
     # Apply timeseries augmentation to training windows only
     try:

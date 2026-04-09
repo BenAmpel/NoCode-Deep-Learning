@@ -51,6 +51,14 @@ def get_timeseries_model(
             num_layers=num_layers,
             dropout=dropout,
         )
+    if model_name == "Transformer-Small":
+        return TimeSeriesTransformer(
+            input_size=input_size,
+            num_classes=num_classes,
+            hidden_size=max(hidden_size, 128),
+            num_layers=max(num_layers, 3),
+            dropout=dropout,
+        )
     raise ValueError(f"Unknown time-series model: {model_name}")
 
 

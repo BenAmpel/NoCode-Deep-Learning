@@ -4,6 +4,15 @@ and modality → compatible tasks.
 """
 
 REGISTRY: dict[str, dict[str, dict]] = {
+    "graph": {
+        "fine-tune": {},
+        "from_scratch": {
+            "Node2Vec":         {"params": ["hidden_size", "max_iter"]},
+            "GCN":              {"params": ["learning_rate", "epochs", "hidden_size", "num_layers", "dropout", "optimizer"]},
+            "GraphSAGE":        {"params": ["learning_rate", "epochs", "hidden_size", "num_layers", "dropout", "optimizer"]},
+            "GraphTransformer": {"params": ["learning_rate", "epochs", "hidden_size", "num_layers", "dropout", "optimizer"]},
+        },
+    },
     "image": {
         "fine-tune": {
             "MobileNetV3-Small": {"params": ["learning_rate", "batch_size", "epochs", "dropout", "optimizer"]},
@@ -60,8 +69,13 @@ REGISTRY: dict[str, dict[str, dict]] = {
             "CNN1D":            {"params": ["learning_rate", "batch_size", "epochs", "hidden_size", "dropout", "optimizer"]},
             "TCN":              {"params": ["learning_rate", "batch_size", "epochs", "hidden_size", "num_layers", "dropout", "optimizer"]},
             "Transformer-Tiny": {"params": ["learning_rate", "batch_size", "epochs", "hidden_size", "num_layers", "dropout", "optimizer"]},
+            "Transformer-Small": {"params": ["learning_rate", "batch_size", "epochs", "hidden_size", "num_layers", "dropout", "optimizer"]},
             "RandomForest":     {"params": ["n_estimators", "max_depth"]},
+            "ExtraTrees":       {"params": ["n_estimators", "max_depth"]},
             "LogisticRegression": {"params": ["C", "max_iter"]},
+            "KNeighbors":       {"params": []},
+            "LinearRegression": {"params": []},
+            "Ridge":            {"params": ["C"]},
             "XGBoost":          {"params": ["n_estimators", "max_depth", "learning_rate"]},
         },
     },
@@ -95,12 +109,20 @@ REGISTRY: dict[str, dict[str, dict]] = {
     },
 }
 
-SKLEARN_MODELS = {"RandomForest", "LogisticRegression", "XGBoost"}
+SKLEARN_MODELS = {
+    "RandomForest",
+    "ExtraTrees",
+    "LogisticRegression",
+    "KNeighbors",
+    "LinearRegression",
+    "Ridge",
+    "XGBoost",
+}
 VIT_MODELS     = {"ViT-Tiny", "ViT-Small"}
 WHISPER_MODELS = {"Whisper-Tiny", "Whisper-Base"}
 
 TASK_MODALITY_SUPPORT: dict[str, list[str]] = {
-    "classification":  ["image", "text", "tabular", "timeseries", "audio", "video"],
+    "classification":  ["graph", "image", "text", "tabular", "timeseries", "audio", "video"],
     "multi-label":     ["image", "text", "tabular", "audio"],
     "clustering":      ["image", "text", "tabular", "timeseries", "audio"],
     "regression":      ["tabular", "timeseries"],

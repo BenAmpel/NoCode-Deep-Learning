@@ -82,6 +82,42 @@ def run_image_detection(
     return annotated, stats, n
 
 
+def review_image_detections(
+    image_path: str,
+    model_key: str,
+    conf: float = 0.25,
+    iou: float = 0.45,
+) -> tuple[np.ndarray, list[dict], str]:
+    """Run detection on one image and return editable box rows for review."""
+    model = _get_model(model_key)
+    results = model(image_path, conf=conf, iou=iou, verbose=False)[0]
+    annotated = results.plot()[:, :, ::-1]
+    rows: list[dict] = []
+    if results.boxes is not None:
+        for idx, box in enumerate(results.boxes):
+            cls_id = int(box.cls[0])
+            cls_name = results.names.get(cls_id, str(cls_id))
+            conf_val = float(box.conf[0])
+            x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
+            rows.append(
+                {
+                    "keep": True,
+                    "label": cls_name,
+                    "confidence": round(conf_val, 3),
+                    "x1": round(x1, 1),
+                    "y1": round(y1, 1),
+                    "x2": round(x2, 1),
+                    "y2": round(y2, 1),
+                }
+            )
+    markdown = (
+        "### Object box review\n\n"
+        f"- **Detected boxes**: `{len(rows)}`\n"
+        "- Edit labels or coordinates in the table if needed, then save the review as YOLO annotations."
+    )
+    return annotated, rows, markdown
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # H.264 re-encoding for browser playback
 # ─────────────────────────────────────────────────────────────────────────────

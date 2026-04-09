@@ -19,17 +19,17 @@ from config import DEVICE
 # Batch helpers
 # ---------------------------------------------------------------------------
 
-def _forward(model: nn.Module, batch) -> tuple[torch.Tensor, torch.Tensor]:
+def _forward(model: nn.Module, batch, device: str = DEVICE) -> tuple[torch.Tensor, torch.Tensor]:
     inputs, labels = batch
-    labels = labels.to(DEVICE)
+    labels = labels.to(device)
     if isinstance(inputs, dict):
-        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+        inputs = {k: v.to(device) for k, v in inputs.items()}
         if "attention_mask" in inputs:
             logits = model(inputs["input_ids"], inputs["attention_mask"])
         else:
             logits = model(inputs["input_ids"])
     else:
-        logits = model(inputs.to(DEVICE))
+        logits = model(inputs.to(device))
     return logits, labels
 
 # ---------------------------------------------------------------------------
@@ -70,6 +70,7 @@ def train_pytorch(
     class_weights: torch.Tensor | None = None,
     checkpoint_dir: str | None         = None,
     checkpoint_every: int              = 0,   # 0 = only save best
+    device: str                        = DEVICE,
 ) -> Generator[dict, None, None]:
     """
     Unified training generator.
@@ -83,14 +84,14 @@ def train_pytorch(
     checkpoint_dir : if set, saves checkpoints here
     checkpoint_every : save a checkpoint every N epochs (0 = best-only)
     """
-    model     = model.to(DEVICE)
+    model     = model.to(device)
     is_clf    = (task == "classification")
     is_multi  = (task == "multi-label")
     is_reg    = (task == "regression")
 
     # Loss function
     if is_clf:
-        w = class_weights.to(DEVICE) if class_weights is not None else None
+        w = class_weights.to(device) if class_weights is not None else None
         criterion = nn.CrossEntropyLoss(weight=w)
     elif is_multi:
         criterion = nn.BCEWithLogitsLoss()
@@ -101,8 +102,8 @@ def train_pytorch(
     scheduler = _make_scheduler(optimizer, scheduler_name, epochs, len(train_loader))
 
     # AMP on CUDA (with GradScaler) and MPS (autocast only, no scaler)
-    _cuda_amp   = use_amp and DEVICE == "cuda" and torch.cuda.is_available()
-    _mps_amp    = use_amp and DEVICE == "mps" and torch.backends.mps.is_available()
+    _cuda_amp   = use_amp and device == "cuda" and torch.cuda.is_available()
+    _mps_amp    = use_amp and device == "mps" and torch.backends.mps.is_available()
     amp_enabled = _cuda_amp or _mps_amp
     scaler      = torch.cuda.amp.GradScaler() if _cuda_amp else None
 
@@ -122,8 +123,8 @@ def train_pytorch(
         for batch in train_loader:
             optimizer.zero_grad()
             if amp_enabled:
-                with torch.autocast(DEVICE):
-                    logits, labels = _forward(model, batch)
+                with torch.autocast(device):
+                    logits, labels = _forward(model, batch, device=device)
                     loss = _compute_loss(criterion, logits, labels, task)
                 if scaler:
                     scaler.scale(loss).backward()
@@ -133,7 +134,7 @@ def train_pytorch(
                     loss.backward()
                     optimizer.step()
             else:
-                logits, labels = _forward(model, batch)
+                logits, labels = _forward(model, batch, device=device)
                 loss = _compute_loss(criterion, logits, labels, task)
                 loss.backward()
                 optimizer.step()
@@ -147,7 +148,7 @@ def train_pytorch(
         n_correct = n_total = 0
         with torch.no_grad():
             for batch in val_loader:
-                logits, labels = _forward(model, batch)
+                logits, labels = _forward(model, batch, device=device)
                 lv = _compute_loss(criterion, logits, labels, task)
                 val_loss += lv.item()
                 if is_clf:
@@ -209,7 +210,7 @@ def train_pytorch(
             break
 
     if best_state:
-        model.load_state_dict({k: v.to(DEVICE) for k, v in best_state.items()})
+        model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
 
     yield {"done": True, "model": model, "history": history,
            "best_epoch": best_epoch, "best_val": best_val}

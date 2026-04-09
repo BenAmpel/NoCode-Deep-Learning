@@ -15,6 +15,68 @@ from sklearn.metrics import (
 from sklearn.exceptions import UndefinedMetricWarning
 from sklearn.preprocessing import label_binarize
 
+
+def compute_confusion_matrix_from_arrays(y_true, y_pred, classes) -> tuple[plt.Figure | None, str]:
+    """Build a confusion matrix figure and report text from arrays."""
+    if y_true is None or y_pred is None or len(y_true) == 0:
+        return None, "Evaluation data is unavailable."
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    acc = (y_true == y_pred).mean() * 100
+    label_space = list(range(len(classes)))
+    report = classification_report(
+        y_true,
+        y_pred,
+        labels=label_space,
+        target_names=classes,
+        zero_division=0,
+    )
+    summary = f"Validation Accuracy: {acc:.2f}%\n\n{report}"
+
+    cm = confusion_matrix(y_true, y_pred, labels=label_space)
+    n = len(classes)
+    fig, ax = plt.subplots(figsize=(max(6, n), max(5, n - 1)))
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    fig.colorbar(im, ax=ax)
+    ax.set(
+        xticks=np.arange(n), yticks=np.arange(n),
+        xticklabels=classes, yticklabels=classes,
+        ylabel="True label", xlabel="Predicted label",
+        title="Confusion Matrix",
+    )
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+    thresh = cm.max() / 2.0 if cm.size else 0.0
+    for i in range(n):
+        for j in range(n):
+            ax.text(j, i, str(cm[i, j]), ha="center", va="center",
+                    color="white" if cm[i, j] > thresh else "black")
+    fig.tight_layout()
+    return fig, summary
+
+
+def compute_roc_curves_from_arrays(y_true, y_prob, classes) -> plt.Figure | None:
+    if y_prob is None or len(classes) < 2 or len(y_true) == 0:
+        return None
+
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob)
+    n = len(classes)
+    y_bin = label_binarize(y_true, classes=list(range(n)))
+    if n == 2:
+        y_bin = np.hstack([1 - y_bin, y_bin])
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    colors = plt.cm.tab10(np.linspace(0, 1, n))
+    for i, (cls, color) in enumerate(zip(classes, colors)):
+        fpr, tpr, _ = roc_curve(y_bin[:, i], y_prob[:, i])
+        roc_auc = auc(fpr, tpr)
+        ax.plot(fpr, tpr, color=color, lw=2, label=f"{cls} (AUC={roc_auc:.2f})")
+    ax.plot([0, 1], [0, 1], "k--", lw=1)
+    ax.set(xlabel="False Positive Rate", ylabel="True Positive Rate", title="ROC Curves (One-vs-Rest)")
+    ax.legend(loc="lower right", fontsize=8)
+    fig.tight_layout()
+    return fig
+
 def _get_preds_and_probs(model, val_loader, classes, is_sklearn, X_val, y_val, device):
     """Returns (y_true np.ndarray, y_pred np.ndarray, y_prob np.ndarray shape [N, C])"""
     import torch, torch.nn.functional as F

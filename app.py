@@ -3,7 +3,7 @@ NoCode-DL — No-Code Deep Learning Platform
 Run with:  python run_local.py
 """
 from __future__ import annotations
-import atexit, html, logging, os, re, time, traceback, tempfile, shutil, zipfile
+import atexit, base64, html, io, logging, os, re, time, traceback, tempfile, shutil, zipfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -54,6 +54,209 @@ def _get_pyplot():
     return plt
 
 
+def _pil_image_to_data_url(image) -> str:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _cleaning_preview_empty_html(message: str) -> str:
+    return (
+        '<div class="studio-quality-lab">'
+        '<h3 style="margin:0 0 10px 0;color:var(--color-text-primary);">Data Quality Lab</h3>'
+        f'<p style="margin:0;color:var(--color-text-secondary);">{html.escape(message)}</p>'
+        '</div>'
+    )
+
+
+def _render_quality_lab_html(title: str, subtitle: str, chips: list[str], cards_html: list[str]) -> str:
+    chips_html = "".join(
+        f'<span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;'
+        f'background:var(--color-surface-tint);border:1px solid var(--color-border);margin:0 8px 8px 0;'
+        f'font-size:12px;font-weight:600;color:var(--color-text-on-surface);">{html.escape(chip)}</span>'
+        for chip in chips
+    )
+    cards = "".join(cards_html)
+    return (
+        '<div class="studio-quality-lab" style="margin-top:14px;padding:18px 20px;border:1px solid var(--color-border);'
+        'border-radius:20px;background:linear-gradient(180deg,var(--color-surface) 0%,var(--color-surface-soft) 100%);box-shadow:var(--shadow-sm);">'
+        f'<h3 style="margin:0 0 8px 0;color:var(--color-text-primary);">{html.escape(title)}</h3>'
+        f'<p style="margin:0 0 14px 0;color:var(--color-text-secondary);line-height:1.5;">{html.escape(subtitle)}</p>'
+        f'<div style="margin:0 0 12px 0;">{chips_html or "<span style=\"color:var(--color-text-muted);font-size:12px;\">No visible changes selected.</span>"}</div>'
+        f'<div style="display:grid;gap:14px;">{cards}</div>'
+        '</div>'
+    )
+
+
+def _build_text_quality_lab_html(
+    preview_df,
+    text_col: str,
+    *,
+    lowercase: bool,
+    strip_urls: bool,
+    strip_punctuation: bool,
+    remove_stopwords: bool,
+    deduplicate: bool,
+    apply_stemming: bool,
+    apply_lemmatization: bool,
+) -> str:
+    if preview_df is None or preview_df.empty or not text_col or text_col not in preview_df.columns:
+        return _cleaning_preview_empty_html("Preview a text dataset to inspect concrete before-and-after cleaning examples.")
+
+    sample_df = preview_df[[text_col]].copy()
+    sample_df[text_col] = sample_df[text_col].fillna("").astype(str)
+    sample_df = sample_df[sample_df[text_col].str.strip().str.len() > 0].head(3).reset_index(drop=True)
+    if sample_df.empty:
+        return _cleaning_preview_empty_html("No non-empty text rows were available for the cleaning preview.")
+
+    from data_pipeline.cleaning import clean_text_dataframe
+
+    cleaned_df, _ = clean_text_dataframe(
+        sample_df,
+        text_col=text_col,
+        lowercase=lowercase,
+        strip_urls=strip_urls,
+        strip_punctuation=strip_punctuation,
+        remove_stopwords=remove_stopwords,
+        deduplicate=False,
+        apply_stemming=apply_stemming,
+        apply_lemmatization=apply_lemmatization,
+        drop_empty_rows=False,
+    )
+
+    chips: list[str] = []
+    if lowercase:
+        chips.append("Lowercase")
+    if strip_urls:
+        chips.append("Remove URLs")
+    if strip_punctuation:
+        chips.append("Remove punctuation")
+    if remove_stopwords:
+        chips.append("Remove stop words")
+    if apply_stemming:
+        chips.append("Stemming")
+    if apply_lemmatization:
+        chips.append("Lemmatization")
+    if deduplicate:
+        chips.append("Duplicate rows dropped during training")
+
+    cards_html: list[str] = []
+    for idx, (before, after) in enumerate(zip(sample_df[text_col].tolist(), cleaned_df[text_col].tolist()), start=1):
+        cards_html.append(
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px;'
+            'border:1px solid var(--color-border);border-radius:16px;background:var(--color-surface);">'
+            f'<div><div style="margin-bottom:8px;font-size:12px;font-weight:700;color:var(--color-text-muted);letter-spacing:.08em;text-transform:uppercase;">Original sample {idx}</div>'
+            f'<div style="padding:12px;border-radius:14px;background:var(--color-surface-soft);border:1px solid var(--color-border-row);color:var(--color-text-primary);line-height:1.55;">{html.escape(before[:360] or " ")}</div></div>'
+            f'<div><div style="margin-bottom:8px;font-size:12px;font-weight:700;color:var(--color-accent-dark);letter-spacing:.08em;text-transform:uppercase;">Proposed cleaned version</div>'
+            f'<div style="padding:12px;border-radius:14px;background:var(--color-surface-tint);border:1px solid var(--color-border);color:var(--color-text-primary);line-height:1.55;">{html.escape(after[:360] or " ")}</div></div>'
+            '</div>'
+        )
+
+    subtitle = (
+        "These are real rows from the loaded dataset with the current text-cleaning choices applied. "
+        "Re-preview after changing the toggles to compare different strategies."
+    )
+    return _render_quality_lab_html("Data Quality Lab", subtitle, chips, cards_html)
+
+
+def _build_image_quality_lab_html(
+    dpath: str,
+    *,
+    image_size_value: int,
+    horizontal_flip: bool,
+    vertical_flip: bool,
+    rotation: bool,
+    color_jitter: bool,
+    grayscale: bool,
+    perspective: bool,
+    normalization_preset: str,
+    force_grayscale: bool,
+) -> str:
+    path = Path(str(dpath or "")).expanduser()
+    if not path.exists():
+        return _cleaning_preview_empty_html("Preview an image dataset to inspect concrete before-and-after augmentation examples.")
+
+    from PIL import Image, ImageEnhance, ImageOps
+
+    samples = []
+    for candidate in sorted(path.rglob("*")):
+        if candidate.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}:
+            samples.append(candidate)
+        if len(samples) >= 3:
+            break
+
+    if not samples:
+        return _cleaning_preview_empty_html("No supported image files were found for the cleaning preview.")
+
+    chips: list[str] = []
+    if horizontal_flip:
+        chips.append("Horizontal flip")
+    if vertical_flip:
+        chips.append("Vertical flip")
+    if rotation:
+        chips.append("Rotation")
+    if color_jitter:
+        chips.append("Color jitter")
+    if grayscale:
+        chips.append("Augmentation grayscale")
+    if perspective:
+        chips.append("Perspective warp")
+    if force_grayscale:
+        chips.append("Convert to grayscale before training")
+    if normalization_preset and normalization_preset != "none":
+        chips.append(f"Normalization: {normalization_preset}")
+    chips.append(f"Training size: {int(image_size_value)}×{int(image_size_value)}")
+
+    cards_html: list[str] = []
+    for idx, sample_path in enumerate(samples, start=1):
+        with Image.open(sample_path) as img:
+            original = img.convert("RGB")
+            transformed = original.copy()
+
+        if force_grayscale or grayscale:
+            transformed = ImageOps.grayscale(transformed).convert("RGB")
+        if horizontal_flip:
+            transformed = ImageOps.mirror(transformed)
+        if vertical_flip:
+            transformed = ImageOps.flip(transformed)
+        if rotation:
+            transformed = transformed.rotate(15, resample=Image.Resampling.BICUBIC, fillcolor=(245, 248, 244))
+        if color_jitter:
+            transformed = ImageEnhance.Color(transformed).enhance(1.45)
+            transformed = ImageEnhance.Contrast(transformed).enhance(1.08)
+        if perspective:
+            w, h = transformed.size
+            transformed = transformed.transform(
+                (w, h),
+                Image.Transform.QUAD,
+                (8, 6, w - 8, 0, w - 2, h - 8, 0, h - 2),
+                resample=Image.Resampling.BICUBIC,
+            )
+
+        original_preview = ImageOps.contain(original, (220, 220))
+        transformed_preview = ImageOps.contain(transformed, (220, 220))
+        original_url = _pil_image_to_data_url(original_preview)
+        transformed_url = _pil_image_to_data_url(transformed_preview)
+        label = sample_path.parent.name
+
+        cards_html.append(
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px;'
+            'border:1px solid var(--color-border);border-radius:16px;background:var(--color-surface);">'
+            f'<div><div style="margin-bottom:8px;font-size:12px;font-weight:700;color:var(--color-text-muted);letter-spacing:.08em;text-transform:uppercase;">Original · class {html.escape(label)}</div>'
+            f'<div style="padding:10px;border-radius:14px;background:var(--color-surface-soft);border:1px solid var(--color-border-row);text-align:center;"><img src="{original_url}" alt="Original sample {idx}" style="max-width:100%;max-height:220px;border-radius:12px;"/></div></div>'
+            f'<div><div style="margin-bottom:8px;font-size:12px;font-weight:700;color:var(--color-accent-dark);letter-spacing:.08em;text-transform:uppercase;">Proposed transformed version</div>'
+            f'<div style="padding:10px;border-radius:14px;background:var(--color-surface-tint);border:1px solid var(--color-border);text-align:center;"><img src="{transformed_url}" alt="Transformed sample {idx}" style="max-width:100%;max-height:220px;border-radius:12px;"/></div></div>'
+            '</div>'
+        )
+
+    subtitle = (
+        "These previews use real images from the dataset and deterministic versions of the currently selected image transforms. "
+        "They are meant to show the direction of change before training."
+    )
+    return _render_quality_lab_html("Data Quality Lab", subtitle, chips, cards_html)
+
+
 def _patch_gradio_schema_parser() -> None:
     """
     Gradio 4.44 can emit JSON schema fragments where ``additionalProperties`` is
@@ -91,7 +294,7 @@ YOLO_MODELS = {
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-MODALITIES = ["image", "text", "tabular", "timeseries", "audio", "video"]
+MODALITIES = ["graph", "image", "text", "tabular", "timeseries", "audio", "video"]
 PROJECT_MODES = ["Beginner", "Guided", "Advanced"]
 OPTIMIZERS = ["adam", "adamw", "sgd"]
 SCHEDULERS = ["cosine", "warmup_cosine", "step", "none"]
@@ -142,6 +345,7 @@ APP_CSS = """
   --color-surface: #ffffff;
   --color-surface-soft: #f9fcfa;
   --color-surface-tint: #f6fbf8;
+  --color-surface-strong: #eef6f2;
   --color-surface-raised: rgba(255, 255, 255, 0.78);
   --color-page-start: #fafbf7;
   --color-page-end: #eef4f0;
@@ -673,72 +877,84 @@ button[role="tab"][aria-selected="true"] {
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
+  }
+}
 
-    /* Override tokens for dark mode */
-    --color-text-primary: #eff8f5;
-    --color-text-secondary: #b8cfc9;
-    --color-text-muted: #b8cfc9;
-    --color-text-on-primary: #f4fffb;
-    --color-text-on-surface: #d7ebe4;
+:root.dark,
+html.dark,
+body.dark,
+[data-theme="dark"],
+[data-color-mode="dark"] {
+  color-scheme: dark;
+}
 
-    --color-accent: #3dd4a8;
-    --color-accent-dark: #1c7d6d;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-text-primary: #eff7f3;
+    --color-text-secondary: #b9cbc4;
+    --color-text-muted: #89a49b;
+    --color-text-on-primary: #f5fffb;
+    --color-text-on-surface: #d9ece5;
 
-    --color-surface: rgba(20, 29, 33, 0.96);
-    --color-surface-soft: rgba(23, 35, 38, 0.96);
-    --color-surface-tint: rgba(20, 29, 33, 0.96);
-    --color-surface-raised: rgba(20, 30, 33, 0.84);
-    --color-page-start: #0d1518;
-    --color-page-end: #121e22;
+    --color-accent: #52d6ac;
+    --color-accent-dark: #2aa17f;
+    --color-gold: #f0bc4f;
 
+    --color-surface: #162126;
+    --color-surface-soft: #1b282d;
+    --color-surface-tint: #213137;
+    --color-surface-strong: #27393f;
+    --color-surface-raised: rgba(22, 33, 38, 0.92);
+    --color-page-start: #091114;
+    --color-page-end: #0e181c;
 
-    --color-border: rgba(62, 92, 87, 0.9);
-    --color-border-soft: rgba(62, 91, 86, 0.92);
-    --color-border-row: #2f4743;
+    --color-border: rgba(78, 112, 104, 0.72);
+    --color-border-soft: rgba(98, 136, 126, 0.6);
+    --color-border-row: rgba(63, 91, 84, 0.72);
 
-    --color-tab-text: #a8c2bb;
-    --color-tab-active: #effbf7;
-    --color-tab-active-border: rgba(89, 152, 137, 0.98);
-    --color-label: #deece8;
+    --color-tab-text: #b2c6be;
+    --color-tab-active: #f3fffb;
+    --color-tab-active-border: rgba(92, 177, 148, 0.95);
+    --color-label: #d8e8e2;
 
-    --color-input-bg: #121b1f;
-    --color-input-border: #39544f;
-    --color-input-text: #e6f1ee;
-    --color-placeholder: #7f9891;
-    --color-table-bg: #121b1f;
-    --color-table-text: #e5f2ee;
-    --color-table-border: #2f4743;
-    --color-code-bg: #0e1518;
-    --color-code-text: #daf0ea;
-    --color-code-border: #2d4541;
-    --color-hr: rgba(67, 99, 93, 0.7);
+    --color-input-bg: #0f181c;
+    --color-input-border: #3a5650;
+    --color-input-text: #edf8f4;
+    --color-placeholder: #7b958c;
+    --color-table-bg: #111a1e;
+    --color-table-text: #e7f3ef;
+    --color-table-border: #304742;
+    --color-code-bg: #0d1518;
+    --color-code-text: #ddf0ea;
+    --color-code-border: #2b423d;
+    --color-hr: rgba(76, 106, 98, 0.66);
 
-    --shadow-xl: 0 28px 70px rgba(2, 8, 10, 0.42);
-    --shadow-lg: 0 16px 34px rgba(0, 0, 0, 0.22);
-    --shadow-md: 0 12px 24px rgba(9, 38, 35, 0.38);
-    --shadow-sm: 0 10px 22px rgba(0, 0, 0, 0.22);
+    --shadow-xl: 0 28px 80px rgba(0, 0, 0, 0.48);
+    --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.28);
+    --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.26);
+    --shadow-sm: 0 8px 18px rgba(0, 0, 0, 0.2);
   }
 
-  /* Override Gradio theme variables for dark mode */
   gradio-app {
-    --block-background-fill: #121b1f !important;
-    --background-fill-primary: #121b1f !important;
-    --background-fill-secondary: #172024 !important;
-    --body-background-fill: #0d1518 !important;
-    --block-border-color: rgba(62, 92, 87, 0.9) !important;
-    --block-label-background-fill: #121b1f !important;
-    --block-title-text-color: #eff8f5 !important;
-    --body-text-color: #e6f1ee !important;
-    --input-background-fill: #121b1f !important;
-    --input-border-color: #39544f !important;
-    --color-accent: #3dd4a8 !important;
-    --color-accent-soft: #1a3d35 !important;
+    --block-background-fill: #162126 !important;
+    --background-fill-primary: #162126 !important;
+    --background-fill-secondary: #1b282d !important;
+    --body-background-fill: #091114 !important;
+    --block-border-color: rgba(78, 112, 104, 0.72) !important;
+    --block-label-background-fill: #162126 !important;
+    --block-title-text-color: #eff7f3 !important;
+    --body-text-color: #edf8f4 !important;
+    --input-background-fill: #0f181c !important;
+    --input-border-color: #3a5650 !important;
+    --color-accent: #52d6ac !important;
+    --color-accent-soft: #173c33 !important;
   }
 
   body,
   .gradio-container {
     background:
-      radial-gradient(ellipse at 20% 0%, rgba(47, 146, 121, 0.14), transparent 50%),
+      radial-gradient(circle at 12% 0%, rgba(59, 154, 125, 0.22), transparent 34%),
+      radial-gradient(circle at 90% 10%, rgba(36, 86, 74, 0.18), transparent 28%),
       linear-gradient(180deg, var(--color-page-start) 0%, var(--color-page-end) 100%) !important;
     color: var(--color-text-primary) !important;
   }
@@ -748,28 +964,44 @@ button[role="tab"][aria-selected="true"] {
     background: transparent !important;
   }
 
-  /* Hero dark overrides (structural — gradients can't be tokenized) */
   .studio-hero {
-    border-color: var(--color-border-soft);
+    border-color: rgba(105, 140, 129, 0.42);
     background:
-      radial-gradient(ellipse at 10% 0%, rgba(57, 153, 126, 0.14), transparent 50%),
-      linear-gradient(135deg, rgba(19, 28, 32, 0.98) 0%, rgba(18, 35, 35, 0.98) 50%, rgba(20, 41, 39, 0.98) 100%);
+      radial-gradient(circle at 8% 0%, rgba(58, 170, 134, 0.18), transparent 28%),
+      radial-gradient(circle at 88% 8%, rgba(33, 77, 67, 0.28), transparent 28%),
+      linear-gradient(135deg, #0f1a1d 0%, #132126 48%, #17292d 100%);
+    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.42);
+  }
+
+  .studio-hero__title {
+    color: #f4fcf8 !important;
+    text-shadow: 0 8px 30px rgba(0, 0, 0, 0.24);
+  }
+
+  .studio-hero__subtitle {
+    color: #c6d7d1 !important;
   }
 
   .studio-hero__eyebrow,
   .studio-hero__pill,
   .studio-hero__meta-card {
-    border-color: rgba(71, 104, 97, 0.94);
-    background: var(--color-surface-raised);
+    border-color: rgba(95, 128, 118, 0.58);
+    background: rgba(20, 31, 35, 0.92) !important;
+    backdrop-filter: blur(10px);
   }
 
-  /* Card & surface dark overrides (structural gradients) */
-  .studio-panel {
-    border-color: rgba(62, 92, 87, 0.78) !important;
-    background: rgba(16, 24, 27, 0.92) !important;
+  .studio-hero__eyebrow,
+  .studio-hero__meta-label {
+    color: #98b5ab !important;
+  }
+
+  .studio-hero__pill,
+  .studio-hero__meta-value {
+    color: #edf8f4 !important;
   }
 
   .studio-banner,
+  .studio-panel,
   .studio-card,
   .studio-kpi,
   .studio-report-chip,
@@ -777,21 +1009,84 @@ button[role="tab"][aria-selected="true"] {
   .studio-showcase__card,
   .studio-badge {
     border-color: var(--color-border) !important;
-    background: linear-gradient(180deg, rgba(20, 29, 33, 0.96) 0%, rgba(16, 25, 28, 0.98) 100%) !important;
+    background: linear-gradient(180deg, rgba(22, 33, 38, 0.96) 0%, rgba(17, 27, 31, 0.98) 100%) !important;
+    box-shadow: var(--shadow-lg) !important;
   }
 
-  .studio-card--soft {
-    background: linear-gradient(180deg, rgba(23, 35, 38, 0.96) 0%, rgba(18, 30, 33, 0.98) 100%) !important;
+  .studio-card--soft,
+  .studio-banner,
+  .studio-kpi {
+    background: linear-gradient(180deg, rgba(24, 37, 42, 0.98) 0%, rgba(18, 29, 33, 0.98) 100%) !important;
+  }
+
+  .studio-banner h2,
+  .studio-banner p,
+  .studio-showcase__card strong,
+  .studio-showcase__card span,
+  .studio-section-intro h3,
+  .studio-section-intro p,
+  .studio-card h1,
+  .studio-card h2,
+  .studio-card h3,
+  .studio-card h4,
+  .studio-card p,
+  .studio-card li,
+  .studio-card strong,
+  .studio-card span,
+  .studio-card .prose,
+  .studio-card .prose p,
+  .studio-card .prose li {
+    color: var(--color-text-primary) !important;
+  }
+
+  .studio-card .studio-section-intro h3,
+  .studio-card .studio-section-intro h2,
+  .studio-card .studio-section-intro h1,
+  .studio-card .studio-section-intro p,
+  .studio-card .studio-section-intro span,
+  .studio-card .studio-section-intro strong,
+  .studio-card .studio-inline-note,
+  .studio-card .gr-markdown,
+  .studio-card .gradio-markdown,
+  .studio-card .gr-markdown p,
+  .studio-card .gradio-markdown p,
+  .studio-card .gr-markdown li,
+  .studio-card .gradio-markdown li,
+  .studio-card .gr-markdown strong,
+  .studio-card .gradio-markdown strong,
+  .studio-card .prose p,
+  .studio-card .prose li,
+  .studio-card .prose strong,
+  .studio-card .prose span {
+    opacity: 1 !important;
+  }
+
+  .studio-card .studio-section-intro h3,
+  .studio-card .studio-section-intro h2,
+  .studio-card .studio-section-intro h1,
+  .studio-card .gr-markdown strong,
+  .studio-card .gradio-markdown strong,
+  .studio-card .prose strong {
+    color: #eef8f4 !important;
+  }
+
+  .studio-card .studio-section-intro p,
+  .studio-card .studio-inline-note,
+  .studio-card .prose em,
+  .studio-card .prose small {
+    color: var(--color-text-secondary) !important;
   }
 
   button[role="tab"] {
-    border-color: rgba(73, 105, 100, 0.94) !important;
-    background: rgba(23, 34, 37, 0.9) !important;
+    border-color: rgba(82, 117, 108, 0.7) !important;
+    background: rgba(17, 28, 32, 0.9) !important;
+    color: #b9cec6 !important;
   }
 
   button[role="tab"][aria-selected="true"] {
     border-color: var(--color-tab-active-border) !important;
-    background: linear-gradient(180deg, rgba(25, 52, 50, 0.98) 0%, rgba(22, 66, 58, 0.98) 100%) !important;
+    background: linear-gradient(180deg, rgba(24, 70, 60, 0.98) 0%, rgba(21, 91, 73, 0.98) 100%) !important;
+    color: #f2fffb !important;
   }
 
   .studio-shell .gr-group,
@@ -799,8 +1094,16 @@ button[role="tab"][aria-selected="true"] {
   .studio-shell .gr-form,
   .studio-shell .gr-accordion,
   .studio-shell .form {
-    border-color: var(--color-border) !important;
+    border-color: transparent !important;
     background: transparent !important;
+  }
+
+  .studio-shell .gr-group *,
+  .studio-shell .gr-box *,
+  .studio-shell .gr-form *,
+  .studio-shell .gr-accordion *,
+  .studio-shell .form * {
+    color: inherit;
   }
 
   .studio-shell input,
@@ -817,32 +1120,264 @@ button[role="tab"][aria-selected="true"] {
     border-color: var(--color-input-border) !important;
   }
 
-  .studio-shell input::placeholder,
-  .studio-shell textarea::placeholder {
-    color: var(--color-placeholder) !important;
+  .studio-shell .gr-textbox textarea,
+  .studio-shell .gr-textbox input,
+  .studio-shell .gr-text-input input,
+  .studio-shell .gr-text-input textarea,
+  .studio-shell .gr-dropdown select,
+  .studio-shell .gr-number input,
+  .studio-shell .gradio-textbox textarea,
+  .studio-shell .gradio-textbox input,
+  .studio-shell .wrap textarea,
+  .studio-shell .wrap input,
+  .studio-shell .scroll-hide,
+  .studio-shell .scroll-hide textarea,
+  .studio-shell .scroll-hide input {
+    background: var(--color-input-bg) !important;
+    color: var(--color-input-text) !important;
+    border-color: var(--color-input-border) !important;
+    -webkit-text-fill-color: var(--color-input-text) !important;
+    caret-color: var(--color-input-text) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02) !important;
   }
 
-  .studio-shell label,
-  .studio-shell .block-title,
-  .studio-shell .block-label,
+  .studio-shell .gr-textbox,
+  .studio-shell .gradio-textbox,
+  .studio-shell .gr-text-input,
+  .studio-shell .gr-dropdown,
+  .studio-shell .gr-number,
+  .studio-shell .gr-dataframe,
+  .studio-shell .gradio-dataframe {
+    background: transparent !important;
+  }
+
+  .studio-shell .gr-file,
+  .studio-shell .gr-upload-button,
+  .studio-shell .gr-file-wrapper,
+  .studio-shell .gr-file-preview,
+  .studio-shell .gr-box .gr-upload,
+  .studio-shell .gradio-file,
+  .studio-shell .gradio-image,
+  .studio-shell .gradio-audio,
+  .studio-shell .gradio-video {
+    background: rgba(16, 25, 29, 0.92) !important;
+    color: var(--color-input-text) !important;
+    border-color: var(--color-input-border) !important;
+  }
+
+  .studio-shell .gr-accordion summary,
+  .studio-shell .gr-accordion .label-wrap,
+  .studio-shell .gr-accordion .label-wrap span {
+    color: var(--color-text-primary) !important;
+    background: transparent !important;
+  }
+
   .studio-shell .gr-markdown,
   .studio-shell .gradio-markdown,
   .studio-shell .prose,
   .studio-shell .prose p,
   .studio-shell .prose li,
-  .studio-shell .prose strong {
+  .studio-shell .prose strong,
+  .studio-shell label,
+  .studio-shell .block-title,
+  .studio-shell .block-label {
     color: var(--color-label) !important;
   }
 
+  .studio-shell .gradio-textbox label,
+  .studio-shell .gradio-dropdown label,
+  .studio-shell .gradio-number label,
+  .studio-shell .gradio-file label,
+  .studio-shell .gradio-plot label,
+  .studio-shell .gr-textbox label,
+  .studio-shell .gr-dropdown label,
+  .studio-shell .gr-number label,
+  .studio-shell .gr-file label,
+  .studio-shell .gradio-html h1,
+  .studio-shell .gradio-html h2,
+  .studio-shell .gradio-html h3,
+  .studio-shell .gradio-html p {
+    color: var(--color-text-primary) !important;
+  }
+
+  .studio-shell .gr-accordion .prose,
+  .studio-shell .gr-accordion .prose p,
+  .studio-shell .gr-accordion .prose li,
+  .studio-shell .gr-accordion .prose strong,
+  .studio-shell .gr-accordion .gr-markdown,
+  .studio-shell .gr-accordion .gr-markdown p,
+  .studio-shell .gr-accordion .gr-markdown li {
+    color: var(--color-text-secondary) !important;
+    opacity: 1 !important;
+  }
+
+  .studio-shell .gr-accordion p,
+  .studio-shell .gr-accordion span,
+  .studio-shell .gr-accordion div,
+  .studio-shell .gr-accordion label,
+  .studio-shell .gr-accordion .block-info,
+  .studio-shell .gr-accordion .gradio-markdown p,
+  .studio-shell .gr-accordion .gradio-markdown li {
+    color: var(--color-text-secondary) !important;
+    opacity: 1 !important;
+  }
+
+  .studio-shell .gr-accordion summary,
+  .studio-shell .gr-accordion summary *,
+  .studio-shell .gr-accordion .label-wrap,
+  .studio-shell .gr-accordion .label-wrap *,
+  .studio-shell .gradio-accordion summary,
+  .studio-shell .gradio-accordion summary * {
+    color: #eaf7f2 !important;
+    opacity: 1 !important;
+  }
+
+  .studio-shell .gr-accordion h1,
+  .studio-shell .gr-accordion h2,
+  .studio-shell .gr-accordion h3,
+  .studio-shell .gr-accordion h4,
+  .studio-shell .gr-accordion .block-title,
+  .studio-shell .gr-accordion .block-label,
+  .studio-shell .gr-accordion .label-wrap span {
+    color: #eef8f4 !important;
+  }
+
+  .studio-shell .gr-checkbox,
+  .studio-shell .gr-checkbox label,
+  .studio-shell .gr-checkbox span,
+  .studio-shell .gradio-checkbox,
+  .studio-shell .gradio-checkbox label,
+  .studio-shell .gradio-checkbox span {
+    color: #e5f3ee !important;
+    opacity: 1 !important;
+  }
+
+  .studio-shell input[type="checkbox"] {
+    accent-color: #52d6ac !important;
+    background: #10181c !important;
+    border-color: #4a6a62 !important;
+  }
+
+  .studio-shell .gr-slider,
+  .studio-shell .gr-slider label,
+  .studio-shell .gr-slider .wrap,
+  .studio-shell .gr-slider .wrap span,
+  .studio-shell .gradio-slider,
+  .studio-shell .gradio-slider label,
+  .studio-shell .gradio-slider .wrap,
+  .studio-shell .gradio-slider .wrap span {
+    color: #e7f4ef !important;
+    opacity: 1 !important;
+  }
+
+  .studio-shell input[type="range"] {
+    accent-color: #52d6ac !important;
+  }
+
+  .studio-shell .gr-slider input[type="number"],
+  .studio-shell .gradio-slider input[type="number"],
+  .studio-shell .gr-slider .number-wrap input,
+  .studio-shell .gradio-slider .number-wrap input {
+    background: #10181c !important;
+    color: #eef8f4 !important;
+    border: 1px solid #426059 !important;
+    -webkit-text-fill-color: #eef8f4 !important;
+  }
+
+  .studio-shell .gr-slider .noUi-target,
+  .studio-shell .gradio-slider .noUi-target {
+    background: #304640 !important;
+    border-color: #3e5d56 !important;
+    box-shadow: none !important;
+  }
+
+  .studio-shell .gr-slider .noUi-connect,
+  .studio-shell .gradio-slider .noUi-connect {
+    background: linear-gradient(90deg, #2aa17f 0%, #52d6ac 100%) !important;
+  }
+
+  .studio-shell .gr-slider .noUi-handle,
+  .studio-shell .gradio-slider .noUi-handle {
+    background: #eff8f4 !important;
+    border: 2px solid #52d6ac !important;
+    box-shadow: 0 0 0 4px rgba(82, 214, 172, 0.15) !important;
+  }
+
+  .studio-shell .gr-markdown a,
+  .studio-shell .prose a {
+    color: #7ceac9 !important;
+  }
+
+  .studio-shell [role="tablist"] {
+    background: transparent !important;
+  }
+
+  .studio-shell .gr-dataframe input,
+  .studio-shell .gr-dataframe textarea,
+  .studio-shell .gr-dataframe select {
+    background: transparent !important;
+    color: var(--color-table-text) !important;
+    border-color: var(--color-table-border) !important;
+  }
+
+  .studio-shell .gr-dataframe thead th {
+    background: var(--color-surface-strong) !important;
+    color: #f0fbf7 !important;
+  }
+
+  .studio-shell .gr-dataframe tbody td {
+    background: var(--color-table-bg) !important;
+    color: var(--color-table-text) !important;
+  }
+
+  .studio-shell .gr-dataframe tbody tr:nth-child(even) td {
+    background: #152126 !important;
+  }
+
+  .studio-shell .gradio-plot,
+  .studio-shell .plot-container,
+  .studio-shell .gr-plot {
+    background: transparent !important;
+  }
+
+  .studio-shell .gradio-html,
+  .studio-shell .gr-html {
+    color: var(--color-text-primary) !important;
+  }
+
+  .studio-shell .gradio-html textarea,
+  .studio-shell .gr-html textarea,
+  .studio-shell .gradio-html pre,
+  .studio-shell .gr-html pre {
+    background: var(--color-input-bg) !important;
+    color: var(--color-input-text) !important;
+    border-color: var(--color-input-border) !important;
+  }
+
+  .studio-shell .gradio-textbox textarea[disabled],
+  .studio-shell .gradio-textbox textarea[readonly],
+  .studio-shell textarea[disabled],
+  .studio-shell textarea[readonly] {
+    background: #121b20 !important;
+    color: #e6f2ee !important;
+    opacity: 1 !important;
+  }
+
+  .studio-shell input::placeholder,
+  .studio-shell textarea::placeholder {
+    color: var(--color-placeholder) !important;
+  }
+
   .studio-shell .gr-button-primary {
-    background: linear-gradient(180deg, #1c7d6d 0%, #15695b 100%) !important;
+    background: linear-gradient(180deg, #2aa17f 0%, #1f8b6c 100%) !important;
     color: var(--color-text-on-primary) !important;
+    border-color: rgba(91, 177, 147, 0.85) !important;
   }
 
   .studio-shell .gr-button-secondary {
-    background: #172429 !important;
-    color: #dceee8 !important;
-    border-color: #38554f !important;
+    background: #172328 !important;
+    color: #e0f1eb !important;
+    border-color: #426059 !important;
   }
 
   .studio-shell table,
@@ -1689,7 +2224,7 @@ def run_pipeline(
     val_split, use_random_subset, subset_percent, subset_seed, use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers, tabular_scaling,
     text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
     text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-    timeseries_sort_by_time, timeseries_fill_strategy,
+    timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
     image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
     image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
     audio_verify_files, audio_normalize_waveform, audio_aug_noise, audio_aug_shift,
@@ -1832,6 +2367,8 @@ def run_pipeline(
     })
 
     extra_data: dict = {}
+    train_loader = None
+    val_loader = None
     history:    list = []
     final_model      = None
     prep:       dict = {}
@@ -1839,16 +2376,18 @@ def run_pipeline(
     clustering_result = None
     eval_summary_text = ""
     metrics_payload: dict = {}
+    evaluation_artifacts: dict = {}
     stopped_early_flag = False
+    runtime_device = "cpu" if (modality == "video" and DEVICE == "mps") else DEVICE
 
     try:
         # ── 1. Load data ──────────────────────────────────────────────────────
         _set_phase("loading data", eta_text="ETA: loading data")
         progress(0.05, desc="Loading data…")
         status = log(f"Loading {modality} data…")
-        if modality in {"tabular", "text", "timeseries"} and bool(use_random_subset) and float(subset_percent) < 100:
+        if modality in {"graph", "tabular", "text", "timeseries"} and bool(use_random_subset) and float(subset_percent) < 100:
             status = log(
-                f"Using a random subset of {float(subset_percent):.2f}% of the structured dataset "
+                f"Using a random subset of {float(subset_percent):.2f}% of the dataset "
                 f"(seed {int(subset_seed)})."
             )
         yield _emit(status)
@@ -1857,7 +2396,19 @@ def run_pipeline(
 
         _val_split = float(val_split)
 
-        if modality == "image":
+        if modality == "graph":
+            from modalities.graph import load_graph_data
+            classes, prep, graph_data = load_graph_data(
+                data_path,
+                label_col=label_col,
+                feature_cols=feature_cols,
+                val_split=_val_split,
+                subset_percent=float(subset_percent) if bool(use_random_subset) else 100.0,
+                subset_seed=int(subset_seed),
+            )
+            extra_data.update(graph_data)
+
+        elif modality == "image":
             from modalities.image import load_image_data
             image_aug_options = {
                 "horizontal_flip": bool(image_aug_flip),
@@ -2021,7 +2572,11 @@ def run_pipeline(
                 window_size=int(window_size), batch_size=bs,
                 val_split=_val_split, augmentation=augmentation, task=task,
                 subset_percent=float(subset_percent) if bool(use_random_subset) else 100.0,
-                subset_seed=int(subset_seed))
+                subset_seed=int(subset_seed),
+                forecast_mode=bool(timeseries_forecast_mode),
+                forecast_horizon=int(timeseries_forecast_horizon),
+                lag_steps=int(timeseries_lag_steps),
+                rolling_window=int(timeseries_rolling_window))
             extra_data.update({
                 "input_size": input_size,
                 "sklearn_input_size": prep.get("sklearn_input_size", X_train.shape[1] if len(X_train.shape) > 1 else input_size),
@@ -2068,6 +2623,7 @@ def run_pipeline(
         status = log(f"Building {model_name} ({training_mode})…")
         yield _emit(status)
 
+        graph_node2vec = modality == "graph" and model_name == "Node2Vec"
         sklearn_model = is_sklearn(model_name)
 
         if model_name == "Autoencoder":
@@ -2085,6 +2641,9 @@ def run_pipeline(
                 input_size=extra_data.get("input_size"),
                 latent_dim=128,
             )
+
+        elif graph_node2vec:
+            model = None
 
         elif sklearn_model:
             from models.tabular_models import get_tabular_model
@@ -2136,11 +2695,27 @@ def run_pipeline(
                 hidden_size=int(hidden_size), num_layers=int(num_layers),
                 dropout=float(dropout))
 
+        elif modality == "graph":
+            from models.graph_models import get_graph_model
+            model = get_graph_model(
+                model_name,
+                num_classes=num_classes,
+                input_size=extra_data["input_size"],
+                hidden_size=int(hidden_size),
+                num_layers=int(num_layers),
+                dropout=float(dropout),
+            )
+
         elif modality == "video":
             from models.video_models import get_video_model
             model = get_video_model(model_name, num_classes=num_classes, mode=training_mode)
 
-        status = log(f"  ✓ Device: {DEVICE}")
+        if runtime_device != DEVICE:
+            status = log(
+                f"  ✓ Device: {runtime_device} (fallback from {DEVICE} for video compatibility)"
+            )
+        else:
+            status = log(f"  ✓ Device: {runtime_device}")
         yield _emit(status)
 
         # ── 3. Train ──────────────────────────────────────────────────────────
@@ -2154,7 +2729,7 @@ def run_pipeline(
 
         if model_name == "Autoencoder":
             import torch, torch.nn as nn
-            model = model.to(DEVICE)
+            model = model.to(runtime_device)
             ae_optim      = torch.optim.Adam(model.parameters(), lr=float(lr))
             ae_criterion  = nn.MSELoss()
             ae_history    = []
@@ -2168,7 +2743,7 @@ def run_pipeline(
                 train_loss = 0.0
                 for batch in train_loader:
                     inputs, _ = batch
-                    inputs    = inputs.to(DEVICE)
+                    inputs    = inputs.to(runtime_device)
                     ae_optim.zero_grad()
                     recon = model(inputs)
                     loss  = ae_criterion(recon, inputs)
@@ -2183,7 +2758,7 @@ def run_pipeline(
                 with torch.no_grad():
                     for batch in val_loader:
                         inputs, _ = batch
-                        inputs    = inputs.to(DEVICE)
+                        inputs    = inputs.to(runtime_device)
                         recon     = model(inputs)
                         val_loss += ae_criterion(recon, inputs).item()
                 val_loss /= max(len(val_loader), 1)
@@ -2217,6 +2792,43 @@ def run_pipeline(
                 yield _emit(status, loss_fig=live_plot, eta=eta_str)
             final_model = model
             history     = ae_history
+
+        elif graph_node2vec:
+            from training.graph_trainer import train_node2vec_classifier
+
+            _set_phase("training", eta_text="ETA: learning graph embeddings")
+            _update_epoch_metrics(
+                epoch_text="1/1",
+                train_loss="—",
+                val_loss="—",
+                metric="embedding baseline",
+                lr_value="—",
+            )
+            status = log("Training — learning Node2Vec graph embeddings")
+            yield _emit(status)
+            node2vec_result = train_node2vec_classifier(
+                extra_data,
+                embedding_dim=int(hidden_size),
+                max_iter=int(max_iter),
+            )
+            final_model = node2vec_result["model"]
+            history = node2vec_result["history"]
+            extra_data["graph_embeddings"] = node2vec_result["embeddings"]
+            extra_data["graph_eval"] = {
+                "y_true": node2vec_result["y_true"],
+                "y_pred": node2vec_result["y_pred"],
+                "y_prob": node2vec_result["y_prob"],
+            }
+            _set_phase("training", eta_text="ETA: finalizing results")
+            _update_epoch_metrics(
+                epoch_text="1/1",
+                train_loss="—",
+                val_loss="0.0000",
+                metric=f"acc={history[-1].get('val_acc', 0)}",
+                lr_value="—",
+            )
+            status = log("Training — Node2Vec baseline fit complete")
+            yield _emit(status)
 
         elif sklearn_model:
             from training.trainer import train_sklearn
@@ -2252,6 +2864,62 @@ def run_pipeline(
                     _set_phase("training", eta_text="ETA: fitting baseline")
                     status = log(prog.get("status", "Fitting model…"))
                     yield _emit(status, eta=telemetry["eta_text"])
+
+        elif modality == "graph":
+            from training.graph_trainer import train_graph_pytorch
+            cw = None
+            if use_class_weights and task == "classification":
+                try:
+                    train_labels = extra_data["y"][extra_data["train_idx"]].cpu().tolist()
+                    from training.trainer import compute_class_weights
+                    cw = compute_class_weights(train_labels)
+                    status = log("  ✓ Class weights applied (imbalance correction)")
+                    yield _emit(status)
+                except Exception as e:
+                    status = log(f"  ⚠️ Class weights skipped: {e}")
+                    yield _emit(status)
+
+            _running_history: list[dict] = []
+            status = log("Training — full-graph node classification started")
+            yield _emit(status)
+            for prog in train_graph_pytorch(
+                model,
+                extra_data,
+                epochs=int(epochs),
+                lr=float(lr),
+                optimizer_name=optimizer,
+                patience=DEFAULTS["early_stopping_patience"],
+                class_weights=cw,
+            ):
+                if prog["done"]:
+                    final_model = prog["model"]
+                    history = prog["history"]
+                else:
+                    pct = 0.15 + 0.65 * prog["epoch"] / prog["epochs"]
+                    progress(pct, desc=f"Epoch {prog['epoch']}/{prog['epochs']}")
+                    eta_str = _fmt_eta(prog.get("eta_seconds", 0))
+                    telemetry["eta_text"] = eta_str
+                    _update_epoch_metrics(
+                        epoch_text=f"{prog['epoch']}/{prog['epochs']}",
+                        train_loss=prog["train_loss"],
+                        val_loss=prog["val_loss"],
+                        metric=f"acc={prog['val_acc']}",
+                        lr_value=prog.get("lr", ""),
+                    )
+                    line = (
+                        f"Epoch {prog['epoch']}/{prog['epochs']}  "
+                        f"train={prog['train_loss']}  val={prog['val_loss']}  "
+                        f"acc={prog['val_acc']}  lr={prog.get('lr','')}  {eta_str}"
+                        + ("  ⏹ early stop" if prog["stopped_early"] else "")
+                    )
+                    status = log(line)
+                    _running_history.append({k: prog[k] for k in ("epoch", "train_loss", "val_loss", "val_acc")})
+                    live_plot = _loss_plot(_running_history) if (
+                        prog["epoch"] == prog["epochs"]
+                        or prog["stopped_early"]
+                        or prog["epoch"] % _LIVE_PLOT_UPDATE_EVERY == 0
+                    ) else _NONE
+                    yield _emit(status, loss_fig=live_plot, eta=eta_str if not prog["stopped_early"] else "ETA: completing training")
 
         else:
             from training.trainer import train_pytorch, compute_class_weights
@@ -2296,6 +2964,7 @@ def run_pipeline(
                 class_weights=cw,
                 checkpoint_dir=ckpt_dir,
                 checkpoint_every=int(checkpoint_every),
+                device=runtime_device,
             ):
                 if prog["done"]:
                     final_model = prog["model"]
@@ -2357,7 +3026,12 @@ def run_pipeline(
 
         # ── 4. Architecture visualisation ─────────────────────────────────────
         arch_fig = None
-        if final_model is not None and not sklearn_model and model_name != "Autoencoder":
+        if (
+            final_model is not None
+            and not sklearn_model
+            and model_name != "Autoencoder"
+            and hasattr(final_model, "named_modules")
+        ):
             try:
                 from ui.architecture_viz import summarise_model
                 _, arch_fig = summarise_model(final_model)
@@ -2394,6 +3068,7 @@ def run_pipeline(
         mis_df_val  = None
         reg_fig     = None
         anomaly_fig = None
+        text_shap_html = None
 
         # Standard classification / multi-label evaluation
         if task in ("classification", "multi-label") and model_name != "Autoencoder":
@@ -2403,29 +3078,102 @@ def run_pipeline(
             yield _emit(status)
 
             try:
-                from eval.metrics import (
-                    compute_confusion_matrix,
-                    compute_roc_curves,
-                    _get_preds_and_probs,
-                    classification_metric_summary,
-                )
-                cm_fig, eval_summary_text = compute_confusion_matrix(
-                    final_model, val_loader, classes, modality, task,
-                    is_sklearn=sklearn_model,
-                    X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"))
-                if task in ("classification", "multi-label"):
-                    roc_fig = compute_roc_curves(
-                        final_model, val_loader, classes, modality, task,
-                        is_sklearn=sklearn_model,
-                        X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"))
-                if task == "classification":
-                    y_true, y_pred, y_prob = _get_preds_and_probs(
-                        final_model, val_loader, classes, sklearn_model,
-                        extra_data.get("X_val"), extra_data.get("y_val"), DEVICE
-                    )
+                from eval.metrics import classification_metric_summary
+                if modality == "graph":
+                    from eval.metrics import compute_confusion_matrix_from_arrays, compute_roc_curves_from_arrays
+                    from training.graph_trainer import predict_graph_classification
+                    import torch as _torch
+
+                    if graph_node2vec:
+                        y_true, y_pred, y_prob = predict_graph_classification(
+                            final_model,
+                            extra_data,
+                            sklearn_model=True,
+                            embeddings=extra_data.get("graph_embeddings"),
+                        )
+                    else:
+                        y_true, y_pred, y_prob = predict_graph_classification(final_model, extra_data)
+                    cm_fig, eval_summary_text = compute_confusion_matrix_from_arrays(y_true, y_pred, classes)
+                    roc_fig = compute_roc_curves_from_arrays(y_true, y_prob, classes)
                     metrics_payload = classification_metric_summary(
                         y_true, y_pred, y_prob, n_classes=len(classes)
                     )
+                    feature_names = extra_data.get("feature_names") or []
+                    x_all = extra_data.get("x")
+                    if isinstance(x_all, _torch.Tensor):
+                        x_all = x_all.cpu().numpy()
+                    val_idx_export = extra_data.get("val_idx")
+                    if isinstance(val_idx_export, _torch.Tensor):
+                        val_idx_export = val_idx_export.cpu().numpy()
+                    feature_rows = []
+                    if x_all is not None and val_idx_export is not None and feature_names:
+                        for row_position, node_idx in enumerate(val_idx_export[:2000]):
+                            row = x_all[int(node_idx)]
+                            feature_rows.append({
+                                **{
+                                    feature_names[col_idx]: float(row[col_idx])
+                                    for col_idx in range(min(len(feature_names), len(row)))
+                                },
+                                "node_id": extra_data.get("node_ids", [])[int(node_idx)] if extra_data.get("node_ids") else str(int(node_idx)),
+                                "y_true": int(y_true[row_position]),
+                                "y_pred": int(y_pred[row_position]),
+                                "is_error": bool(y_true[row_position] != y_pred[row_position]),
+                            })
+                    evaluation_artifacts = {
+                        "task": task,
+                        "report_text": eval_summary_text,
+                        "y_true": y_true.tolist(),
+                        "y_pred": y_pred.tolist(),
+                        "y_prob": y_prob.tolist() if y_prob is not None else None,
+                        "feature_rows": feature_rows,
+                    }
+                else:
+                    from eval.metrics import (
+                        compute_confusion_matrix,
+                        compute_roc_curves,
+                        _get_preds_and_probs,
+                    )
+                    cm_fig, eval_summary_text = compute_confusion_matrix(
+                        final_model, val_loader, classes, modality, task,
+                        is_sklearn=sklearn_model,
+                        X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"))
+                    if task in ("classification", "multi-label"):
+                        roc_fig = compute_roc_curves(
+                            final_model, val_loader, classes, modality, task,
+                            is_sklearn=sklearn_model,
+                            X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"))
+                    if task == "classification":
+                        y_true, y_pred, y_prob = _get_preds_and_probs(
+                            final_model, val_loader, classes, sklearn_model,
+                            extra_data.get("X_val"), extra_data.get("y_val"), runtime_device
+                        )
+                        metrics_payload = classification_metric_summary(
+                            y_true, y_pred, y_prob, n_classes=len(classes)
+                        )
+                        evaluation_artifacts = {
+                            "task": task,
+                            "report_text": eval_summary_text,
+                            "y_true": y_true.tolist(),
+                            "y_pred": y_pred.tolist(),
+                            "y_prob": y_prob.tolist() if y_prob is not None else None,
+                        }
+                        if modality == "tabular":
+                            feature_order = prep.get("feature_order") or prep.get("feature_columns") or []
+                            X_val_export = extra_data.get("X_val")
+                            if X_val_export is not None and feature_order:
+                                row_limit = min(len(X_val_export), 2000)
+                                evaluation_artifacts["feature_rows"] = [
+                                    {
+                                        **{
+                                            feature_order[idx]: float(row[idx])
+                                            for idx in range(min(len(feature_order), len(row)))
+                                        },
+                                        "y_true": int(y_true[row_idx]),
+                                        "y_pred": int(y_pred[row_idx]),
+                                        "is_error": bool(y_true[row_idx] != y_pred[row_idx]),
+                                    }
+                                    for row_idx, row in enumerate(X_val_export[:row_limit])
+                                ]
                 status = log("  ✓ Metrics computed")
             except Exception as e:
                 status = log(f"  Metrics error: {e}")
@@ -2452,7 +3200,6 @@ def run_pipeline(
                     status = log(f"  SHAP skipped: {e}")
                 yield _emit(status)
 
-            text_shap_html = None
             if modality == "text" and not sklearn_model:
                 try:
                     from eval.shap_explain import compute_text_shap
@@ -2465,6 +3212,8 @@ def run_pipeline(
                 yield _emit(status)
 
             try:
+                if modality == "graph":
+                    raise ValueError("Graph misclassification review is not yet available in the generic sample-review panel.")
                 from eval.misclassified import find_misclassified
                 mis_img_fig, mis_df_val = find_misclassified(
                     final_model, val_loader, classes, modality, prep,
@@ -2508,7 +3257,7 @@ def run_pipeline(
                     with torch.no_grad():
                         for batch in val_loader:
                             inputs, labels = batch
-                            logits = final_model(inputs.to(DEVICE))
+                            logits = final_model(inputs.to(runtime_device))
                             all_true.extend(np.asarray(labels.cpu().numpy(), dtype=float).ravel().tolist())
                             all_pred.extend(np.asarray(logits.detach().cpu().numpy(), dtype=float).ravel().tolist())
 
@@ -2516,6 +3265,47 @@ def run_pipeline(
                 metrics_payload = reg_metrics
                 eval_summary_text = format_regression_report(reg_metrics)
                 reg_fig = residual_plot(all_true, all_pred)
+                evaluation_artifacts = {
+                    "task": task,
+                    "report_text": eval_summary_text,
+                    "y_true": all_true,
+                    "y_pred": all_pred,
+                }
+                if modality in ("tabular", "timeseries"):
+                    feature_rows = []
+                    feature_names = prep.get("feature_order") or prep.get("feature_columns") or []
+                    if modality == "tabular":
+                        X_val_export = extra_data.get("X_val")
+                        if X_val_export is not None and feature_names:
+                            row_limit = min(len(X_val_export), 2000)
+                            for idx, row in enumerate(X_val_export[:row_limit]):
+                                feature_rows.append({
+                                    **{
+                                        feature_names[col_idx]: float(row[col_idx])
+                                        for col_idx in range(min(len(feature_names), len(row)))
+                                    },
+                                    "y_true": float(all_true[idx]),
+                                    "y_pred": float(all_pred[idx]),
+                                    "abs_error": float(abs(all_pred[idx] - all_true[idx])),
+                                })
+                    elif modality == "timeseries":
+                        X_val_export = extra_data.get("X_val")
+                        if X_val_export is not None:
+                            row_limit = min(len(X_val_export), 1000)
+                            for idx, row in enumerate(X_val_export[:row_limit]):
+                                flat = np.asarray(row).reshape(-1)
+                                row_dict = {
+                                    f"window_feature_{col_idx}": float(flat[col_idx])
+                                    for col_idx in range(min(len(flat), 24))
+                                }
+                                row_dict.update({
+                                    "y_true": float(all_true[idx]),
+                                    "y_pred": float(all_pred[idx]),
+                                    "abs_error": float(abs(all_pred[idx] - all_true[idx])),
+                                })
+                                feature_rows.append(row_dict)
+                    if feature_rows:
+                        evaluation_artifacts["feature_rows"] = feature_rows
                 status = log("  ✓ Regression metrics (R², RMSE, MAE)")
             except Exception as e:
                 status = log(f"  Regression metrics skipped: {e}")
@@ -2529,7 +3319,7 @@ def run_pipeline(
                 from eval.anomaly_detection import (
                     compute_reconstruction_errors, find_anomalies,
                     reconstruction_error_plot)
-                errors       = compute_reconstruction_errors(final_model, val_loader, DEVICE)
+                errors       = compute_reconstruction_errors(final_model, val_loader, runtime_device)
                 anom_result  = find_anomalies(errors)
                 anomaly_fig  = reconstruction_error_plot(errors)
                 n_anom       = anom_result["n_anomalies"]
@@ -2552,7 +3342,7 @@ def run_pipeline(
         yield _emit(status)
 
         sample_batch = None
-        if not sklearn_model:
+        if not sklearn_model and val_loader is not None:
             try:
                 sample_inputs, _ = next(iter(val_loader))
                 sample_batch = ({k: v[:1] for k, v in sample_inputs.items()}
@@ -2562,6 +3352,7 @@ def run_pipeline(
                 pass
 
         from export.exporter import export_bundle
+        prep["model_name"] = model_name
         bundle_path, export_warnings = export_bundle(
             model=final_model,
             preprocessing_config=prep,
@@ -2569,8 +3360,9 @@ def run_pipeline(
             bundle_name=safe_bundle_name,
             output_dir=str(_OUTPUTS_ROOT),
             sample_batch=sample_batch,
-            is_sklearn=sklearn_model,
+            is_sklearn=(sklearn_model or graph_node2vec),
             clustering_result=clustering_result,
+            evaluation_artifacts=evaluation_artifacts,
         )
         for w in export_warnings:
             status = log(w)
@@ -2777,7 +3569,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
 
                             with gr.Accordion("📂 Upload Dataset", open=True):
                                 gr.Markdown(
-                                    "Upload a **ZIP** (image/audio/video class folders) "
+                                    "Upload a **ZIP** (image/audio/video class folders or a graph folder with `nodes.csv` + `edges.csv`) "
                                     "or **CSV/TSV/JSON** (tabular/text/timeseries). "
                                     "The path below will be filled automatically."
                                 )
@@ -2954,6 +3746,30 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                     info=tip("timeseries_fill_strategy"),
                                     visible=False,
                                 )
+                                timeseries_forecast_mode = gr.Checkbox(
+                                    value=False,
+                                    label="Forecast future values",
+                                    info=tip("timeseries_forecast_mode"),
+                                    visible=False,
+                                )
+                                timeseries_forecast_horizon = gr.Slider(
+                                    1, 24, value=1, step=1,
+                                    label="Forecast horizon",
+                                    info=tip("timeseries_forecast_horizon"),
+                                    visible=False,
+                                )
+                                timeseries_lag_steps = gr.Slider(
+                                    0, 12, value=0, step=1,
+                                    label="Lag features",
+                                    info=tip("timeseries_lag_steps"),
+                                    visible=False,
+                                )
+                                timeseries_rolling_window = gr.Slider(
+                                    0, 24, value=0, step=1,
+                                    label="Rolling statistics window",
+                                    info=tip("timeseries_rolling_window"),
+                                    visible=False,
+                                )
                                 image_verify_files = gr.Checkbox(
                                     value=False,
                                     label="Skip unreadable image files",
@@ -3078,6 +3894,11 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                             )
                             quality_report_box = gr.Markdown(
                                 value="The preflight Data Quality Report will appear here after preview."
+                            )
+                            quality_examples_box = gr.HTML(
+                                value=_cleaning_preview_empty_html(
+                                    "Preview a dataset to inspect concrete before-and-after examples from the current cleaning choices."
+                                )
                             )
 
             # ── Tab 2: Model ──────────────────────────────────────────────────────
@@ -3664,13 +4485,161 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                                               interactive=False)
                         yolo_result_md = gr.Markdown("*Start training to see results.*")
 
+            # ── Tab 8: Annotation Studio ────────────────────────────────────────
+            with gr.Tab("🏷️ Annotation Studio", elem_classes=["studio-tab-panel"]):
+                with gr.Group(elem_classes=["studio-card"]):
+                    gr.HTML(_section_intro(
+                        "Annotation and relabeling",
+                        "Review concrete samples, correct labels in-place, and turn object detections into saved annotation files without leaving the app."
+                    ))
+
+                with gr.Tabs():
+                    with gr.Tab("🖼 Image relabel"):
+                        with gr.Row():
+                            with gr.Column():
+                                annotation_image_dir = gr.Textbox(
+                                    label="Image dataset folder",
+                                    placeholder="/path/to/image_class_folders",
+                                    info=tip("annotation_image_dir"),
+                                )
+                                annotation_image_refresh = gr.Button("🔄 Load image samples", variant="secondary")
+                                annotation_image_sample = gr.Dropdown(
+                                    choices=[],
+                                    label="Choose image sample",
+                                    info=tip("annotation_image_sample"),
+                                    allow_custom_value=True,
+                                )
+                                annotation_image_new_label = gr.Dropdown(
+                                    choices=[],
+                                    label="New label",
+                                    info=tip("annotation_image_new_label"),
+                                    allow_custom_value=True,
+                                )
+                                annotation_image_save = gr.Button("💾 Save relabel", variant="primary")
+                            with gr.Column():
+                                annotation_image_preview = gr.Image(
+                                    type="filepath",
+                                    label="Image preview",
+                                    interactive=False,
+                                )
+                                annotation_image_meta = gr.Markdown("*Load image samples to begin.*")
+                                annotation_image_status = gr.Markdown("")
+
+                    with gr.Tab("✍️ Text relabel"):
+                        with gr.Row():
+                            with gr.Column():
+                                annotation_text_path = gr.Textbox(
+                                    label="Text dataset path",
+                                    placeholder="/path/to/text.csv",
+                                    info=tip("annotation_text_path"),
+                                )
+                                annotation_text_col = gr.Textbox(
+                                    label="Text column",
+                                    value="text",
+                                )
+                                annotation_text_label_col = gr.Textbox(
+                                    label="Label column",
+                                    value="label",
+                                )
+                                annotation_text_refresh = gr.Button("🔄 Load text rows", variant="secondary")
+                                annotation_text_sample = gr.Dropdown(
+                                    choices=[],
+                                    label="Choose text row",
+                                    info=tip("annotation_text_sample"),
+                                )
+                                annotation_text_new_label = gr.Dropdown(
+                                    choices=[],
+                                    label="New label",
+                                    info=tip("annotation_text_new_label"),
+                                    allow_custom_value=True,
+                                )
+                                annotation_text_save = gr.Button("💾 Save relabel", variant="primary")
+                            with gr.Column():
+                                annotation_text_preview = gr.Markdown("*Load text rows to begin.*")
+                                annotation_text_status = gr.Markdown("")
+
+                    with gr.Tab("🔊 Audio relabel"):
+                        with gr.Row():
+                            with gr.Column():
+                                annotation_audio_dir = gr.Textbox(
+                                    label="Audio dataset folder",
+                                    placeholder="/path/to/audio_class_folders",
+                                    info=tip("annotation_audio_dir"),
+                                )
+                                annotation_audio_refresh = gr.Button("🔄 Load audio samples", variant="secondary")
+                                annotation_audio_sample = gr.Dropdown(
+                                    choices=[],
+                                    label="Choose audio sample",
+                                    info=tip("annotation_audio_sample"),
+                                    allow_custom_value=True,
+                                )
+                                annotation_audio_new_label = gr.Dropdown(
+                                    choices=[],
+                                    label="New label",
+                                    info=tip("annotation_audio_new_label"),
+                                    allow_custom_value=True,
+                                )
+                                annotation_audio_save = gr.Button("💾 Save relabel", variant="primary")
+                            with gr.Column():
+                                annotation_audio_preview = gr.Audio(
+                                    type="filepath",
+                                    label="Audio preview",
+                                    interactive=False,
+                                )
+                                annotation_audio_meta = gr.Markdown("*Load audio samples to begin.*")
+                                annotation_audio_status = gr.Markdown("")
+
+                    with gr.Tab("📦 Object box review"):
+                        with gr.Row():
+                            with gr.Column():
+                                annotation_det_model = gr.Dropdown(
+                                    choices=list(YOLO_MODELS.keys()),
+                                    value=list(YOLO_MODELS.keys())[0],
+                                    label="Detection model",
+                                    info=tip("det_model"),
+                                )
+                                annotation_det_conf = gr.Slider(
+                                    0.05, 0.95, value=0.25, step=0.05,
+                                    label="Confidence threshold",
+                                    info=tip("det_conf"),
+                                )
+                                annotation_det_iou = gr.Slider(
+                                    0.05, 0.95, value=0.45, step=0.05,
+                                    label="IoU threshold",
+                                    info=tip("det_iou"),
+                                )
+                                annotation_det_image = gr.Image(
+                                    type="filepath",
+                                    label="Detection review image",
+                                    sources=["upload", "clipboard"],
+                                    interactive=True,
+                                )
+                                annotation_det_review_btn = gr.Button("🔍 Review boxes", variant="primary")
+                                annotation_det_save_btn = gr.Button("💾 Save YOLO review", variant="secondary")
+                            with gr.Column():
+                                annotation_det_output = gr.Image(
+                                    label="Detected boxes",
+                                    interactive=False,
+                                )
+                                annotation_det_status = gr.Markdown("*Upload an image and review the proposed boxes.*")
+                        annotation_det_table = gr.Dataframe(
+                            headers=["keep", "label", "confidence", "x1", "y1", "x2", "y2"],
+                            datatype=["bool", "str", "number", "number", "number", "number", "number"],
+                            row_count=(1, "dynamic"),
+                            col_count=(7, "fixed"),
+                            interactive=True,
+                            label="Editable detection review",
+                            wrap=True,
+                            line_breaks=True,
+                        )
+
     # ── Dynamic callbacks ─────────────────────────────────────────────────────
 
     def update_modality_controls(mod):
-        is_structured = mod in {"tabular", "text", "timeseries"}
+        is_structured = mod in {"graph", "tabular", "text", "timeseries"}
         return (
             gr.update(visible=(mod == "text")),
-            gr.update(visible=(mod in {"tabular", "timeseries"})),
+            gr.update(visible=(mod in {"graph", "tabular", "timeseries"})),
             gr.update(visible=(mod == "timeseries")),
             gr.update(visible=(mod == "timeseries")),
             gr.update(visible=(mod == "video")),
@@ -3678,10 +4647,10 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             gr.update(visible=(mod == "image")),
             gr.update(visible=(mod == "audio")),
             gr.update(visible=(mod == "audio")),
-            gr.update(visible=(mod not in ("image", "audio", "video"))),
-            gr.update(visible=is_structured),
-            gr.update(visible=is_structured),
-            gr.update(visible=is_structured),
+            gr.update(visible=True),
+            gr.update(visible=(mod in {"graph", "tabular", "text", "timeseries"})),
+            gr.update(visible=(mod in {"graph", "tabular", "text", "timeseries"})),
+            gr.update(visible=(mod in {"graph", "tabular", "text", "timeseries"})),
             gr.update(visible=(mod == "tabular")),
             gr.update(visible=(mod == "tabular")),
             gr.update(visible=(mod == "tabular")),
@@ -3693,6 +4662,10 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             gr.update(visible=(mod == "text")),
             gr.update(visible=(mod == "text")),
             gr.update(visible=(mod == "text")),
+            gr.update(visible=(mod == "timeseries")),
+            gr.update(visible=(mod == "timeseries")),
+            gr.update(visible=(mod == "timeseries")),
+            gr.update(visible=(mod == "timeseries")),
             gr.update(visible=(mod == "timeseries")),
             gr.update(visible=(mod == "timeseries")),
             gr.update(visible=(mod == "image")),
@@ -3723,15 +4696,19 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
 
         candidate = path_sig[0]
         if path_sig[2]:
-            structured = []
-            for root, _dirs, files in os.walk(candidate):
-                for name in files:
-                    if name.lower().endswith((".csv", ".tsv", ".json")):
-                        structured.append(os.path.join(root, name))
-            if len(structured) == 1:
-                candidate = structured[0]
+            graph_nodes = os.path.join(candidate, "nodes.csv")
+            if os.path.isfile(graph_nodes):
+                candidate = graph_nodes
             else:
-                return None
+                structured = []
+                for root, _dirs, files in os.walk(candidate):
+                    for name in files:
+                        if name.lower().endswith((".csv", ".tsv", ".json")):
+                            structured.append(os.path.join(root, name))
+                if len(structured) == 1:
+                    candidate = structured[0]
+                else:
+                    return None
 
         from data_pipeline.io_utils import read_structured_file
 
@@ -3774,7 +4751,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         return _validate_dataset_cached(_path_signature(dpath), mod, lcol, bool(subset_enabled), float(subset_percent), int(subset_seed))
 
     def _column_choice_updates(dpath, mod, current_label, current_text, current_features, current_time):
-        structured_modalities = {"tabular", "text", "timeseries"}
+        structured_modalities = {"graph", "tabular", "text", "timeseries"}
         if mod not in structured_modalities:
             return (
                 gr.update(choices=[], value=current_label or "label"),
@@ -3815,7 +4792,10 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         if not time_value:
             time_value = datetime_cols[0] if datetime_cols else ""
 
-        allowed_feature_choices = [c for c in choices if c not in {label_value, time_value, text_value}]
+        blocked_feature_cols = {label_value, time_value, text_value}
+        if mod == "graph":
+            blocked_feature_cols.add("node_id")
+        allowed_feature_choices = [c for c in choices if c not in blocked_feature_cols]
         if current_features:
             feature_value = [col for col in current_features if col in allowed_feature_choices]
         else:
@@ -3884,7 +4864,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         )
 
     def update_model_sweep_controls(mod, mode, current_model, task_name):
-        if task_name not in {"classification", "regression"}:
+        if mod == "graph" or task_name not in {"classification", "regression"}:
             return (
                 gr.update(choices=[], value=[]),
                 gr.update(choices=[], value=[]),
@@ -4063,7 +5043,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                         use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers,
                         text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
                         text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-                        timeseries_sort_by_time, timeseries_fill_strategy,
+                        timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
                         image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
                         image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
                         audio_verify_files, audio_normalize_waveform, audio_n_mels,
@@ -4182,7 +5162,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                         use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers,
                         text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
                         text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-                        timeseries_sort_by_time, timeseries_fill_strategy,
+                        timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
                         image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
                         image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
                         audio_verify_files, audio_normalize_waveform, audio_n_mels,
@@ -4356,7 +5336,16 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
 
     # ── Data preview ──────────────────────────────────────────────────────────
 
-    def preview_dataset(dpath, mod, lcol, subset_enabled, subset_pct, subset_seed_val, project_mode_val, model_val, task_val):
+    def preview_dataset(
+        dpath, mod, lcol, txt_col,
+        subset_enabled, subset_pct, subset_seed_val,
+        text_lowercase_val, text_strip_urls_val, text_strip_punctuation_val, text_remove_stopwords_val,
+        text_deduplicate_val, text_apply_stemming_val, text_apply_lemmatization_val,
+        image_size_val, image_aug_flip_val, image_aug_vertical_val, image_aug_rotation_val,
+        image_aug_color_val, image_aug_gray_val, image_aug_perspective_val,
+        image_normalization_val, image_force_grayscale_val,
+        project_mode_val, model_val, task_val
+    ):
         if not dpath:
             empty_report = {
                 "status": "blocked",
@@ -4365,7 +5354,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 "info": [],
                 "suggested_actions": ["Upload a dataset or paste a local path before previewing."],
             }
-            return "No path provided.", None, "Enter a data path above.", "### Data Quality Report\n\n- No data path provided.", empty_report, _why_this_matters_markdown(project_mode_val, mod, model_val, task_val, {})
+            return "No path provided.", None, "Enter a data path above.", "### Data Quality Report\n\n- No data path provided.", _cleaning_preview_empty_html("No data path provided."), empty_report, _why_this_matters_markdown(project_mode_val, mod, model_val, task_val, {})
         try:
             path = os.path.abspath(str(dpath))
 
@@ -4386,11 +5375,27 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                             "or provide a folder of class-organised media files instead."
                     ),
                     "### Data Quality Report\n\n- Preview is blocked until the modality and data source match.",
+                    _cleaning_preview_empty_html("The data source does not match the selected modality."),
                     {"status": "blocked", "blocking_issues": ["Modality and data source do not match."], "warnings": [], "info": [], "suggested_actions": ["Switch modality or point to the expected dataset format."]},
                     _why_this_matters_markdown(project_mode_val, mod, model_val, task_val, {}),
                 )
 
-            if mod in {"tabular", "text", "timeseries"} and is_directory:
+            if mod == "graph" and is_structured_file:
+                return (
+                    "Graph dataset preview unavailable for the current source.",
+                    None,
+                    (
+                        "### Graph dataset mismatch\n\n"
+                        "Graph mode expects a **folder** containing `nodes.csv` and `edges.csv`, "
+                        f"but the selected path points to a single file:\n\n`{path}`"
+                    ),
+                    "### Data Quality Report\n\n- Preview is blocked until the graph folder structure is available.",
+                    _cleaning_preview_empty_html("Graph datasets must be folders containing nodes.csv and edges.csv."),
+                    {"status": "blocked", "blocking_issues": ["Graph mode expects a folder dataset."], "warnings": [], "info": [], "suggested_actions": ["Point to a folder with nodes.csv and edges.csv or upload a ZIP containing that folder structure."]},
+                    _why_this_matters_markdown(project_mode_val, mod, model_val, task_val, {}),
+                )
+
+            if mod in {"graph", "tabular", "text", "timeseries"} and is_directory:
                 structured_preview = _read_structured_preview(path)
                 if structured_preview is None:
                     return (
@@ -4403,6 +5408,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                             "Point to a structured data file directly, or upload a ZIP containing one."
                         ),
                         "### Data Quality Report\n\n- A structured file could not be located inside this folder.",
+                        _cleaning_preview_empty_html("A single structured file could not be located inside this folder."),
                         {"status": "blocked", "blocking_issues": ["No single structured data file was found."], "warnings": [], "info": [], "suggested_actions": ["Point to a CSV, TSV, or JSON file directly."]},
                         _why_this_matters_markdown(project_mode_val, mod, model_val, task_val, {}),
                     )
@@ -4413,7 +5419,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             warnings = _get_dataset_validation(dpath, mod, lcol, subset_enabled, subset_pct, subset_seed_val)
             fig      = plot_class_distribution(stats)
             warn_txt = "\n".join(warnings) if warnings else "✅  No issues detected."
-            preview_df = _read_structured_preview(dpath) if mod in {"tabular", "text", "timeseries"} else None
+            preview_df = _read_structured_preview(dpath) if mod in {"graph", "tabular", "text", "timeseries"} else None
             if preview_df is not None and bool(subset_enabled) and float(subset_pct) < 100:
                 from data_pipeline.io_utils import apply_random_subset
                 preview_df, _ = apply_random_subset(
@@ -4423,6 +5429,34 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                     subset_seed=int(subset_seed_val),
                 )
             quality_report = build_quality_report(path, mod, lcol, stats, warnings, preview_df)
+            quality_lab_html = _cleaning_preview_empty_html(
+                "This modality currently uses the report and validation panels for quality review."
+            )
+            if mod == "text":
+                quality_lab_html = _build_text_quality_lab_html(
+                    preview_df,
+                    txt_col,
+                    lowercase=bool(text_lowercase_val),
+                    strip_urls=bool(text_strip_urls_val),
+                    strip_punctuation=bool(text_strip_punctuation_val),
+                    remove_stopwords=bool(text_remove_stopwords_val),
+                    deduplicate=bool(text_deduplicate_val),
+                    apply_stemming=bool(text_apply_stemming_val),
+                    apply_lemmatization=bool(text_apply_lemmatization_val),
+                )
+            elif mod == "image":
+                quality_lab_html = _build_image_quality_lab_html(
+                    path,
+                    image_size_value=int(image_size_val),
+                    horizontal_flip=bool(image_aug_flip_val),
+                    vertical_flip=bool(image_aug_vertical_val),
+                    rotation=bool(image_aug_rotation_val),
+                    color_jitter=bool(image_aug_color_val),
+                    grayscale=bool(image_aug_gray_val),
+                    perspective=bool(image_aug_perspective_val),
+                    normalization_preset=str(image_normalization_val),
+                    force_grayscale=bool(image_force_grayscale_val),
+                )
 
             # Append column type inference for tabular
             if mod == "tabular" and not stats.get("error"):
@@ -4456,6 +5490,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 fig,
                 warn_txt,
                 quality_report_markdown(quality_report),
+                quality_lab_html,
                 quality_report,
                 _why_this_matters_markdown(project_mode_val, mod, model_val, task_val, {}),
             )
@@ -4471,13 +5506,23 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                     "the expected files."
                 ),
                 f"### Data Quality Report\n\n- Preview failed: `{e}`",
+                _cleaning_preview_empty_html(f"Preview failed: {e}"),
                 {"status": "blocked", "blocking_issues": [str(e)], "warnings": [], "info": [], "suggested_actions": ["Fix the preview error before training."]},
                 _why_this_matters_markdown(project_mode_val, mod, model_val, task_val, {}),
             )
 
     preview_event = preview_btn.click(preview_dataset,
-                                      inputs=[data_path, modality, label_col, use_random_subset, subset_percent, subset_seed, project_mode, model_name, task],
-                                      outputs=[stats_summary_box, dist_plot, validation_box, quality_report_box, quality_report_state, why_box])
+                                      inputs=[
+                                          data_path, modality, label_col, text_col,
+                                          use_random_subset, subset_percent, subset_seed,
+                                          text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
+                                          text_deduplicate, text_apply_stemming, text_apply_lemmatization,
+                                          image_size, image_aug_flip, image_aug_vertical, image_aug_rotation,
+                                          image_aug_color, image_aug_gray, image_aug_perspective,
+                                          image_normalization, image_force_grayscale,
+                                          project_mode, model_name, task
+                                      ],
+                                      outputs=[stats_summary_box, dist_plot, validation_box, quality_report_box, quality_examples_box, quality_report_state, why_box])
 
     # ── Guided recommendations ────────────────────────────────────────────────
 
@@ -4600,8 +5645,17 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
     )
     tutorial_event.then(
         preview_dataset,
-        inputs=[data_path, modality, label_col, use_random_subset, subset_percent, subset_seed, project_mode, model_name, task],
-        outputs=[stats_summary_box, dist_plot, validation_box, quality_report_box, quality_report_state, why_box],
+        inputs=[
+            data_path, modality, label_col, text_col,
+            use_random_subset, subset_percent, subset_seed,
+            text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
+            text_deduplicate, text_apply_stemming, text_apply_lemmatization,
+            image_size, image_aug_flip, image_aug_vertical, image_aug_rotation,
+            image_aug_color, image_aug_gray, image_aug_perspective,
+            image_normalization, image_force_grayscale,
+            project_mode, model_name, task
+        ],
+        outputs=[stats_summary_box, dist_plot, validation_box, quality_report_box, quality_examples_box, quality_report_state, why_box],
     )
     tutorial_event.then(
         get_recommendations,
@@ -4624,7 +5678,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             val_split, use_random_subset, subset_percent, subset_seed, use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers, tabular_scaling,
             text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
             text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-            timeseries_sort_by_time, timeseries_fill_strategy,
+            timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
             image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
             image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
             audio_verify_files, audio_normalize_waveform, audio_aug_noise, audio_aug_shift,
@@ -4678,6 +5732,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                augmentation_val, val_split_val, subset_enabled_val, subset_percent_val, subset_seed_val, training_mode_val, model_name_val,
                task_val, epochs_val, lr_val, batch_size_val, dropout_val,
                optimizer_val, scheduler_val, use_amp_val,
+               timeseries_forecast_mode_val, timeseries_forecast_horizon_val, timeseries_lag_steps_val, timeseries_rolling_window_val,
                hidden_size_val, num_layers_val, cv_k_val):
         if not data_path_val or not model_name_val:
             yield "❌ Set Data path and Model before running cross-validation."
@@ -4783,35 +5838,25 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                     time_col=time_col_val if time_col_val else None,
                     window_size=int(window_size_val),
                     task=task_val,
+                    subset_percent=float(subset_percent_val) if bool(subset_enabled_val) else 100.0,
+                    subset_seed=int(subset_seed_val),
+                    forecast_mode=bool(timeseries_forecast_mode_val),
+                    forecast_horizon=int(timeseries_forecast_horizon_val),
+                    lag_steps=int(timeseries_lag_steps_val),
+                    rolling_window=int(timeseries_rolling_window_val),
                 )
                 num_classes = len(classes) if task_val == "classification" else 1
+                from sklearn.model_selection import TimeSeriesSplit
+                temporal_splits = list(TimeSeriesSplit(n_splits=int(cv_k_val)).split(windows))
 
                 if is_sklearn(model_name_val):
                     X_all = windows.reshape(len(windows), -1).astype(np.float32)
                     y_all = labels
-                    from sklearn.model_selection import KFold, StratifiedKFold
                     from eval.metrics import classification_metric_summary, regression_metric_summary
-
-                    split_warning = None
-                    if task_val == "classification":
-                        _, counts = np.unique(y_all, return_counts=True)
-                        min_class_size = int(counts.min()) if len(counts) else 0
-                        if min_class_size >= int(cv_k_val):
-                            splitter = StratifiedKFold(n_splits=int(cv_k_val), shuffle=True, random_state=42)
-                            splits = list(splitter.split(X_all, y_all))
-                        else:
-                            splitter = KFold(n_splits=int(cv_k_val), shuffle=True, random_state=42)
-                            splits = list(splitter.split(X_all))
-                            split_warning = (
-                                f"Using plain K-Fold instead of StratifiedKFold because the smallest class has only {min_class_size} samples."
-                            )
-                    else:
-                        splitter = KFold(n_splits=int(cv_k_val), shuffle=True, random_state=42)
-                        splits = list(splitter.split(X_all))
 
                     fold_scores = []
                     fold_metrics = []
-                    for fold_idx, (train_idx, val_idx) in enumerate(splits, start=1):
+                    for fold_idx, (train_idx, val_idx) in enumerate(temporal_splits, start=1):
                         model = _model_factory(num_classes=num_classes, input_size=X_all.shape[1])
                         X_train = X_all[train_idx]
                         y_train = y_all[train_idx]
@@ -4839,8 +5884,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                         aggregate_metrics=_aggregate_metric_dicts(fold_metrics),
                         task=task_val,
                     )
-                    if split_warning:
-                        result = f"> ⚠️ {split_warning}\n\n" + result
+                    result = "> ℹ️ Time-series cross-validation uses walk-forward splits to preserve chronology.\n\n" + result
                     lines.append(result)
                     yield "\n".join(lines)
                 else:
@@ -4856,6 +5900,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                         epochs=int(epochs_val), lr=float(lr_val),
                         optimizer_name=optimizer_val, task=task_val,
                         batch_size=int(batch_size_val),
+                        splits=temporal_splits,
+                        split_strategy_name="timeseries_split",
                     ):
                         if prog.get("done"):
                             result = format_cv_results(
@@ -4866,8 +5912,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                 aggregate_metrics=prog.get("aggregate_metrics"),
                                 task=task_val,
                             )
-                            if prog.get("warning"):
-                                result = f"> ⚠️ {prog['warning']}\n\n" + result
+                            result = "> ℹ️ Time-series cross-validation uses walk-forward splits to preserve chronology.\n\n" + result
                             lines.append(result)
                         else:
                             fold_line = (
@@ -4891,12 +5936,14 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             window_size, n_frames, sample_rate, augmentation,
             val_split, use_random_subset, subset_percent, subset_seed, training_mode, model_name, task,
             epochs, lr, batch_size, dropout, optimizer, scheduler_name, use_amp,
+            timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
             hidden_size, num_layers, cv_k,
         ],
         outputs=cv_results_box,
     )
 
     def run_cv_significance(modality_val, data_path_val, label_col_val, time_col_val, window_size_val, subset_enabled_val, subset_percent_val, subset_seed_val, training_mode_val,
+                            timeseries_forecast_mode_val, timeseries_forecast_horizon_val, timeseries_lag_steps_val, timeseries_rolling_window_val,
                             base_model_name, task_val, batch_size_val, dropout_val,
                             optimizer_val, hidden_size_val, num_layers_val,
                             epochs_val, lr_val, n_estimators_val, max_depth_val,
@@ -4915,7 +5962,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         import numpy as np
         import torch
         from scipy.stats import ttest_rel, wilcoxon
-        from sklearn.model_selection import KFold, StratifiedKFold
+        from sklearn.model_selection import KFold, StratifiedKFold, TimeSeriesSplit
         from torch.utils.data import DataLoader, TensorDataset
 
         from eval.metrics import classification_metric_summary, regression_metric_summary
@@ -4947,12 +5994,20 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 task=task_val,
                 subset_percent=float(subset_percent_val) if bool(subset_enabled_val) else 100.0,
                 subset_seed=int(subset_seed_val),
+                forecast_mode=bool(timeseries_forecast_mode_val),
+                forecast_horizon=int(timeseries_forecast_horizon_val),
+                lag_steps=int(timeseries_lag_steps_val),
+                rolling_window=int(timeseries_rolling_window_val),
             )
             X_all = windows_all.reshape(len(windows_all), -1).astype(np.float32)
             input_size = int(prep_ts.get("sklearn_input_size", X_all.shape[1]))
 
         split_warning = None
-        if task_val == "classification":
+        if modality_val == "timeseries":
+            splitter = TimeSeriesSplit(n_splits=10)
+            splits = list(splitter.split(X_all))
+            higher_is_better = metric_name not in {"mae", "rmse"}
+        elif task_val == "classification":
             _, counts = np.unique(y_all, return_counts=True)
             min_class_size = int(counts.min()) if len(counts) else 0
             if min_class_size >= 10:
@@ -5074,7 +6129,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             f"- **Baseline family**: `{base_model_name}`",
             f"- **Metric**: `{metric_name}`",
             f"- **Folds**: `10` paired folds",
-            f"- **Split strategy**: `{'StratifiedKFold' if split_warning is None and task_val == 'classification' else 'KFold'}`",
+            f"- **Split strategy**: `{'TimeSeriesSplit' if modality_val == 'timeseries' else ('StratifiedKFold' if split_warning is None and task_val == 'classification' else 'KFold')}`",
             "",
             "| Challenger | Baseline mean | Challenger mean | Delta | Paired t-test p | Wilcoxon p | Result |",
             "|---|---:|---:|---:|---:|---:|---|",
@@ -5111,6 +6166,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         run_cv_significance,
         inputs=[
             modality, data_path, label_col, time_col, window_size, use_random_subset, subset_percent, subset_seed, training_mode,
+            timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
             model_name, task, batch_size, dropout,
             optimizer, hidden_size, num_layers,
             epochs, lr, n_estimators, max_depth,
@@ -5207,7 +6263,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         val_split_val, subset_enabled_val, subset_percent_val, subset_seed_val, use_data_cleaning_val, tabular_missing_strategy_val, tabular_clip_outliers_val, tabular_scaling_val,
         text_lowercase_val, text_strip_urls_val, text_strip_punctuation_val, text_remove_stopwords_val,
         text_deduplicate_val, text_apply_stemming_val, text_apply_lemmatization_val, text_use_ngrams_val,
-        timeseries_sort_by_time_val, timeseries_fill_strategy_val,
+        timeseries_sort_by_time_val, timeseries_fill_strategy_val, timeseries_forecast_mode_val, timeseries_forecast_horizon_val, timeseries_lag_steps_val, timeseries_rolling_window_val,
         image_verify_files_val, image_aug_flip_val, image_aug_vertical_val, image_aug_rotation_val,
         image_aug_color_val, image_aug_gray_val, image_aug_perspective_val, image_normalization_val, image_force_grayscale_val,
         audio_verify_files_val, audio_normalize_waveform_val, audio_aug_noise_val, audio_aug_shift_val,
@@ -5273,7 +6329,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                     val_split_val, subset_enabled_val, subset_percent_val, subset_seed_val, use_data_cleaning_val, tabular_missing_strategy_val, tabular_clip_outliers_val, tabular_scaling_val,
                     text_lowercase_val, text_strip_urls_val, text_strip_punctuation_val, text_remove_stopwords_val,
                     text_deduplicate_val, text_apply_stemming_val, text_apply_lemmatization_val, text_use_ngrams_val,
-                    timeseries_sort_by_time_val, timeseries_fill_strategy_val,
+                    timeseries_sort_by_time_val, timeseries_fill_strategy_val, timeseries_forecast_mode_val, timeseries_forecast_horizon_val, timeseries_lag_steps_val, timeseries_rolling_window_val,
                     image_verify_files_val, image_aug_flip_val, image_aug_vertical_val, image_aug_rotation_val,
                     image_aug_color_val, image_aug_gray_val, image_aug_perspective_val, image_normalization_val, image_force_grayscale_val,
                     audio_verify_files_val, audio_normalize_waveform_val, audio_aug_noise_val, audio_aug_shift_val,
@@ -5286,7 +6342,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                     local_bundle,
                 ))
                 last = updates[-1]
-                bundle_path_val = last[11]
+                bundle_path_val = last[12]
                 run_record = next((r for r in reversed(load_history()) if r.get("bundle_path") == bundle_path_val), None)
                 metric_payload = (run_record or {}).get("metrics", {})
                 row = {
@@ -5325,7 +6381,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             val_split, use_random_subset, subset_percent, subset_seed, use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers, tabular_scaling,
             text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
             text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-            timeseries_sort_by_time, timeseries_fill_strategy,
+            timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
             image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
             image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
             audio_verify_files, audio_normalize_waveform, audio_aug_noise, audio_aug_shift,
@@ -5437,7 +6493,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
 
     # ── Streamlit dashboard generator ─────────────────────────────────────────
 
-    def gen_streamlit(bundle_path_val, mod, mname, tmode, tsk):
+    def gen_streamlit(bundle_path_val, mod, mname, tmode, tsk, eval_summary_val):
         if not bundle_path_val:
             return "Set the bundle path first (train a model or select one)."
         try:
@@ -5475,12 +6531,13 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 history=run_history,
                 metrics=run_metrics,
                 classes=run_classes,
+                eval_summary=eval_summary_val,
             )
             return (
                 f"### Streamlit dashboard exported\n\n"
                 f"```\n{out_path}\n```\n\n"
                 f"Run it with:\n\n"
-                f"```bash\npip install streamlit pandas matplotlib\n"
+                f"```bash\npip install streamlit pandas matplotlib numpy\n"
                 f"streamlit run \"{out_path}\"\n```"
             )
         except Exception as e:
@@ -5488,7 +6545,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
 
     streamlit_btn.click(
         gen_streamlit,
-        inputs=[bundle_out, modality, model_name, training_mode, task],
+        inputs=[bundle_out, modality, model_name, training_mode, task, eval_summary_box],
         outputs=streamlit_status,
     )
 
@@ -5666,6 +6723,247 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         train_yolo_custom,
         inputs=[yolo_data_path, yolo_model_size, yolo_epochs, yolo_batch],
         outputs=[yolo_status_box, yolo_result_md],
+    )
+
+    # ── Annotation Studio callbacks ──────────────────────────────────────────
+
+    def load_image_annotation_samples(dataset_dir):
+        if not dataset_dir:
+            return gr.update(choices=[], value=None), gr.update(choices=[], value=None), "*Set an image dataset folder first.*"
+        try:
+            from ui.annotation_tools import IMAGE_SUFFIXES, list_folder_labels, list_folder_samples
+
+            samples = list_folder_samples(dataset_dir, IMAGE_SUFFIXES)
+            labels = list_folder_labels(dataset_dir, IMAGE_SUFFIXES)
+            if not samples:
+                return gr.update(choices=[], value=None), gr.update(choices=labels, value=None), "*No image files were found in class folders.*"
+            first_value = samples[0][1]
+            return gr.update(choices=samples, value=first_value), gr.update(choices=labels, value=None), f"Loaded `{len(samples)}` image samples across `{len(labels)}` labels."
+        except Exception as exc:
+            return gr.update(choices=[], value=None), gr.update(choices=[], value=None), f"❌ {exc}"
+
+    def preview_image_annotation_sample(dataset_dir, sample_rel):
+        if not dataset_dir or not sample_rel:
+            return None, "*Choose an image sample to inspect.*", gr.update(value=None)
+        try:
+            from ui.annotation_tools import IMAGE_SUFFIXES, list_folder_labels, preview_folder_sample
+
+            preview_path, current_label = preview_folder_sample(dataset_dir, sample_rel)
+            labels = list_folder_labels(dataset_dir, IMAGE_SUFFIXES)
+            meta = (
+                "### Image sample\n\n"
+                f"- **Current label**: `{current_label}`\n"
+                f"- **File**: `{sample_rel}`"
+            )
+            return preview_path, meta, gr.update(choices=labels, value=current_label)
+        except Exception as exc:
+            return None, f"❌ {exc}", gr.update()
+
+    def save_image_relabel(dataset_dir, sample_rel, new_label):
+        if not dataset_dir or not sample_rel:
+            return gr.update(), gr.update(), "*Choose an image sample first.*", None, "*Choose an image sample first.*"
+        try:
+            from ui.annotation_tools import IMAGE_SUFFIXES, list_folder_labels, list_folder_samples, preview_folder_sample, relabel_folder_sample
+
+            new_rel, current_label = relabel_folder_sample(dataset_dir, sample_rel, new_label)
+            samples = list_folder_samples(dataset_dir, IMAGE_SUFFIXES)
+            labels = list_folder_labels(dataset_dir, IMAGE_SUFFIXES)
+            preview_path, _ = preview_folder_sample(dataset_dir, new_rel)
+            meta = (
+                "### Image sample\n\n"
+                f"- **Current label**: `{current_label}`\n"
+                f"- **File**: `{new_rel}`"
+            )
+            return (
+                gr.update(choices=samples, value=new_rel),
+                gr.update(choices=labels, value=current_label),
+                f"✅ Moved sample to label `{current_label}`.",
+                preview_path,
+                meta,
+            )
+        except Exception as exc:
+            return gr.update(), gr.update(), f"❌ {exc}", None, "*Save failed.*"
+
+    annotation_image_refresh.click(
+        load_image_annotation_samples,
+        inputs=[annotation_image_dir],
+        outputs=[annotation_image_sample, annotation_image_new_label, annotation_image_status],
+    )
+    annotation_image_sample.change(
+        preview_image_annotation_sample,
+        inputs=[annotation_image_dir, annotation_image_sample],
+        outputs=[annotation_image_preview, annotation_image_meta, annotation_image_new_label],
+    )
+    annotation_image_save.click(
+        save_image_relabel,
+        inputs=[annotation_image_dir, annotation_image_sample, annotation_image_new_label],
+        outputs=[annotation_image_sample, annotation_image_new_label, annotation_image_status, annotation_image_preview, annotation_image_meta],
+    )
+
+    def load_audio_annotation_samples(dataset_dir):
+        if not dataset_dir:
+            return gr.update(choices=[], value=None), gr.update(choices=[], value=None), "*Set an audio dataset folder first.*"
+        try:
+            from ui.annotation_tools import AUDIO_SUFFIXES, list_folder_labels, list_folder_samples
+
+            samples = list_folder_samples(dataset_dir, AUDIO_SUFFIXES)
+            labels = list_folder_labels(dataset_dir, AUDIO_SUFFIXES)
+            if not samples:
+                return gr.update(choices=[], value=None), gr.update(choices=labels, value=None), "*No audio files were found in class folders.*"
+            first_value = samples[0][1]
+            return gr.update(choices=samples, value=first_value), gr.update(choices=labels, value=None), f"Loaded `{len(samples)}` audio samples across `{len(labels)}` labels."
+        except Exception as exc:
+            return gr.update(choices=[], value=None), gr.update(choices=[], value=None), f"❌ {exc}"
+
+    def preview_audio_annotation_sample(dataset_dir, sample_rel):
+        if not dataset_dir or not sample_rel:
+            return None, "*Choose an audio sample to inspect.*", gr.update(value=None)
+        try:
+            from ui.annotation_tools import AUDIO_SUFFIXES, list_folder_labels, preview_folder_sample
+
+            preview_path, current_label = preview_folder_sample(dataset_dir, sample_rel)
+            labels = list_folder_labels(dataset_dir, AUDIO_SUFFIXES)
+            meta = (
+                "### Audio sample\n\n"
+                f"- **Current label**: `{current_label}`\n"
+                f"- **File**: `{sample_rel}`"
+            )
+            return preview_path, meta, gr.update(choices=labels, value=current_label)
+        except Exception as exc:
+            return None, f"❌ {exc}", gr.update()
+
+    def save_audio_relabel(dataset_dir, sample_rel, new_label):
+        if not dataset_dir or not sample_rel:
+            return gr.update(), gr.update(), "*Choose an audio sample first.*", None, "*Choose an audio sample first.*"
+        try:
+            from ui.annotation_tools import AUDIO_SUFFIXES, list_folder_labels, list_folder_samples, preview_folder_sample, relabel_folder_sample
+
+            new_rel, current_label = relabel_folder_sample(dataset_dir, sample_rel, new_label)
+            samples = list_folder_samples(dataset_dir, AUDIO_SUFFIXES)
+            labels = list_folder_labels(dataset_dir, AUDIO_SUFFIXES)
+            preview_path, _ = preview_folder_sample(dataset_dir, new_rel)
+            meta = (
+                "### Audio sample\n\n"
+                f"- **Current label**: `{current_label}`\n"
+                f"- **File**: `{new_rel}`"
+            )
+            return (
+                gr.update(choices=samples, value=new_rel),
+                gr.update(choices=labels, value=current_label),
+                f"✅ Moved clip to label `{current_label}`.",
+                preview_path,
+                meta,
+            )
+        except Exception as exc:
+            return gr.update(), gr.update(), f"❌ {exc}", None, "*Save failed.*"
+
+    annotation_audio_refresh.click(
+        load_audio_annotation_samples,
+        inputs=[annotation_audio_dir],
+        outputs=[annotation_audio_sample, annotation_audio_new_label, annotation_audio_status],
+    )
+    annotation_audio_sample.change(
+        preview_audio_annotation_sample,
+        inputs=[annotation_audio_dir, annotation_audio_sample],
+        outputs=[annotation_audio_preview, annotation_audio_meta, annotation_audio_new_label],
+    )
+    annotation_audio_save.click(
+        save_audio_relabel,
+        inputs=[annotation_audio_dir, annotation_audio_sample, annotation_audio_new_label],
+        outputs=[annotation_audio_sample, annotation_audio_new_label, annotation_audio_status, annotation_audio_preview, annotation_audio_meta],
+    )
+
+    def load_text_annotation_samples(data_path_val, text_col_val, label_col_val):
+        if not data_path_val:
+            return gr.update(choices=[], value=None), gr.update(choices=[], value=None), "*Set a text dataset path first.*"
+        try:
+            from ui.annotation_tools import list_text_annotation_rows
+
+            choices, labels = list_text_annotation_rows(data_path_val, text_col_val, label_col_val)
+            if not choices:
+                return gr.update(choices=[], value=None), gr.update(choices=labels, value=None), "*No text rows were available for annotation.*"
+            first_value = choices[0][1]
+            return gr.update(choices=choices, value=first_value), gr.update(choices=labels, value=None), f"Loaded `{len(choices)}` text rows for review."
+        except Exception as exc:
+            return gr.update(choices=[], value=None), gr.update(choices=[], value=None), f"❌ {exc}"
+
+    def preview_text_annotation_sample(data_path_val, row_index_val, text_col_val, label_col_val):
+        if not data_path_val or row_index_val in (None, ""):
+            return "*Choose a text row to inspect.*", gr.update(value=None)
+        try:
+            from ui.annotation_tools import format_text_annotation_preview, list_text_annotation_rows, preview_text_row
+
+            text, current_label = preview_text_row(data_path_val, int(row_index_val), text_col_val, label_col_val)
+            _, labels = list_text_annotation_rows(data_path_val, text_col_val, label_col_val)
+            return format_text_annotation_preview(text, current_label, int(row_index_val)), gr.update(choices=labels, value=current_label)
+        except Exception as exc:
+            return f"❌ {exc}", gr.update()
+
+    def save_text_annotation_sample(data_path_val, row_index_val, text_col_val, label_col_val, new_label_val):
+        if not data_path_val or row_index_val in (None, ""):
+            return gr.update(), gr.update(), "*Choose a text row first.*", "*Choose a text row first.*"
+        try:
+            from ui.annotation_tools import format_text_annotation_preview, list_text_annotation_rows, preview_text_row, save_text_relabel
+
+            saved_label = save_text_relabel(data_path_val, int(row_index_val), label_col_val, new_label_val)
+            choices, labels = list_text_annotation_rows(data_path_val, text_col_val, label_col_val)
+            text, current_label = preview_text_row(data_path_val, int(row_index_val), text_col_val, label_col_val)
+            return (
+                gr.update(choices=choices, value=int(row_index_val)),
+                gr.update(choices=labels, value=saved_label),
+                f"✅ Updated row `{int(row_index_val)}` to label `{saved_label}`.",
+                format_text_annotation_preview(text, current_label, int(row_index_val)),
+            )
+        except Exception as exc:
+            return gr.update(), gr.update(), f"❌ {exc}", "*Save failed.*"
+
+    annotation_text_refresh.click(
+        load_text_annotation_samples,
+        inputs=[annotation_text_path, annotation_text_col, annotation_text_label_col],
+        outputs=[annotation_text_sample, annotation_text_new_label, annotation_text_status],
+    )
+    annotation_text_sample.change(
+        preview_text_annotation_sample,
+        inputs=[annotation_text_path, annotation_text_sample, annotation_text_col, annotation_text_label_col],
+        outputs=[annotation_text_preview, annotation_text_new_label],
+    )
+    annotation_text_save.click(
+        save_text_annotation_sample,
+        inputs=[annotation_text_path, annotation_text_sample, annotation_text_col, annotation_text_label_col, annotation_text_new_label],
+        outputs=[annotation_text_sample, annotation_text_new_label, annotation_text_status, annotation_text_preview],
+    )
+
+    def review_detection_boxes(image_path_val, model_key_val, conf_val, iou_val):
+        if not image_path_val:
+            return None, gr.update(value=[]), "*Upload an image first.*"
+        try:
+            from ui.annotation_tools import review_object_boxes
+
+            annotated_rgb, rows, markdown, _state = review_object_boxes(image_path_val, model_key_val, conf_val, iou_val)
+            return annotated_rgb, rows, markdown
+        except Exception as exc:
+            return None, gr.update(value=[]), f"❌ {exc}"
+
+    def save_detection_review(image_path_val, rows_val):
+        if not image_path_val:
+            return "*Upload and review an image first.*"
+        try:
+            from ui.annotation_tools import save_object_box_review
+
+            txt_path = save_object_box_review(image_path_val, rows_val)
+            return f"✅ Saved reviewed YOLO annotations to `{txt_path}`"
+        except Exception as exc:
+            return f"❌ {exc}"
+
+    annotation_det_review_btn.click(
+        review_detection_boxes,
+        inputs=[annotation_det_image, annotation_det_model, annotation_det_conf, annotation_det_iou],
+        outputs=[annotation_det_output, annotation_det_table, annotation_det_status],
+    )
+    annotation_det_save_btn.click(
+        save_detection_review,
+        inputs=[annotation_det_image, annotation_det_table],
+        outputs=[annotation_det_status],
     )
 
     # ── Try Your Model — inference callbacks ──────────────────────────────────

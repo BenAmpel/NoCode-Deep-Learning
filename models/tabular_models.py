@@ -33,11 +33,47 @@ def get_tabular_model(
             n_jobs=-1,
         )
 
+    if model_name == "ExtraTrees":
+        if task == "regression":
+            from sklearn.ensemble import ExtraTreesRegressor
+            return ExtraTreesRegressor(
+                n_estimators=n_estimators,
+                max_depth=max_depth if (max_depth is not None and max_depth > 0) else None,
+                random_state=42,
+                n_jobs=-1,
+            )
+        from sklearn.ensemble import ExtraTreesClassifier
+        return ExtraTreesClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth if (max_depth is not None and max_depth > 0) else None,
+            random_state=42,
+            n_jobs=-1,
+        )
+
     if model_name == "LogisticRegression":
         if task == "regression":
             raise ValueError("LogisticRegression is classification-only. Choose RandomForest, XGBoost, or a neural time-series model for regression.")
         from sklearn.linear_model import LogisticRegression
         return LogisticRegression(C=C, max_iter=max_iter, random_state=42)
+
+    if model_name == "KNeighbors":
+        if task == "regression":
+            from sklearn.neighbors import KNeighborsRegressor
+            return KNeighborsRegressor()
+        from sklearn.neighbors import KNeighborsClassifier
+        return KNeighborsClassifier()
+
+    if model_name == "LinearRegression":
+        if task != "regression":
+            raise ValueError("LinearRegression is regression-only. Choose a classification baseline such as RandomForest, ExtraTrees, KNeighbors, or LogisticRegression.")
+        from sklearn.linear_model import LinearRegression
+        return LinearRegression()
+
+    if model_name == "Ridge":
+        if task != "regression":
+            raise ValueError("Ridge is regression-only. Choose a classification baseline such as RandomForest, ExtraTrees, KNeighbors, or LogisticRegression.")
+        from sklearn.linear_model import Ridge
+        return Ridge(alpha=max(float(C), 1e-6))
 
     if model_name == "XGBoost":
         try:

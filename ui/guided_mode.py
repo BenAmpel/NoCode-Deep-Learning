@@ -115,6 +115,19 @@ def recommend(
                 "The dataset is small for text classification, so evaluation may vary noticeably across splits."
             )
             rec["confidence"] = "cautious"
+    elif modality == "graph":
+        rec.update(
+            training_mode="from_scratch",
+            model_name="Node2Vec" if n_samples < 5000 else "GCN",
+            augmentation="none",
+            batch_size=1,
+            epochs=12,
+            dropout=0.2,
+            scheduler="none",
+        )
+        rec["rationale"].append(
+            "Graph workflows start best with a structural embedding or a compact message-passing baseline before trying deeper graph architectures."
+        )
     else:
         rec["rationale"].append(
             "Guided recommendations are most detailed for image, tabular, and text in this phase."
