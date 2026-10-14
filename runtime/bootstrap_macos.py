@@ -24,6 +24,10 @@ SYNC_EXCLUDES = {
     "build",
     "dist",
 }
+# User data that lives inside the runtime app folder and must survive an
+# upgrade. The app writes trained models, checkpoints, exports, run history
+# and project state under app/outputs.
+PRESERVE_ON_UPGRADE = {"outputs"}
 SERVER_URL = "http://127.0.0.1:7860"
 POLL_INTERVAL = 0.5
 POLL_TIMEOUT = 180
@@ -52,13 +56,21 @@ def _sync_bundle_to_runtime(source_root: Path, target_root: Path) -> None:
     if target_root.exists() and source_version == target_version:
         return
 
+    # Replace the previous version's files but keep user data. Deleting the
+    # whole folder here used to wipe every trained model on each upgrade.
     if target_root.exists():
-        shutil.rmtree(target_root)
+        for child in target_root.iterdir():
+            if child.name in PRESERVE_ON_UPGRADE:
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     def ignore(_dir: str, names: list[str]) -> set[str]:
         return {name for name in names if name in SYNC_EXCLUDES}
 
-    shutil.copytree(source_root, target_root, ignore=ignore)
+    shutil.copytree(source_root, target_root, ignore=ignore, dirs_exist_ok=True)
 
 
 def _fmt_elapsed(secs: float) -> str:
@@ -101,6 +113,7 @@ def _wait_for_server(timeout: float = POLL_TIMEOUT) -> bool:
 def main() -> int:
     try:
         import tkinter as tk
+        from tkinter import ttk  # submodule: `import tkinter` alone does not load it
         has_tk = True
     except ImportError:
         has_tk = False
@@ -244,7 +257,7 @@ def main() -> int:
         detail_var = tk.StringVar(value="")
         tk.Label(root, textvariable=status_var, font=("Helvetica Neue", 13, "bold"), fg="#e9fff8", bg="#1a1a2e").pack(pady=(10, 2))
         tk.Label(root, textvariable=detail_var, font=("Helvetica Neue", 11), fg="#b7d3cb", bg="#1a1a2e", wraplength=400, justify="center").pack(pady=(0, 12))
-        progress = tk.ttk.Progressbar(root, orient="horizontal", mode="indeterminate", length=360)
+        progress = ttk.Progressbar(root, orient="horizontal", mode="indeterminate", length=360)
         progress.pack(pady=(0, 16))
         progress.start(10)
 
@@ -257,8 +270,16 @@ def main() -> int:
                 detail_var.set(detail_holder[0])
             if done_event.is_set():
                 progress.stop()
-                if error_holder:
-                    status_var.set(f"Error: {error_holder[0]}")
+                if error_holder or status_holder[0] != "Done":
+                    # Leave failures on screen until the user closes the window;
+                    # closing after 1.2 s made errors effectively invisible.
+                    if error_holder:
+                        status_var.set(f"Error: {error_holder[0]}")
+                    if not detail_var.get():
+                        detail_var.set("Details: ~/Library/Logs/NoCode-DL/launcher.log")
+                    progress.pack_forget()
+                    tk.Button(root, text="Close", command=root.destroy).pack(pady=(0, 12))
+                    return
                 root.after(1200, root.destroy)
                 return
             root.after(200, _poll)

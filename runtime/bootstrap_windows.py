@@ -22,6 +22,9 @@ SYNC_EXCLUDES = {
     "build",
     "dist",
 }
+# User data inside the runtime app folder that must survive an upgrade
+# (trained models, checkpoints, exports, run history, project state).
+PRESERVE_ON_UPGRADE = {"outputs"}
 SERVER_PORT = 7860
 
 
@@ -45,13 +48,21 @@ def _sync_bundle_to_runtime(source_root: Path, target_root: Path) -> None:
     if target_root.exists() and source_version == target_version:
         return
 
+    # Replace the previous version's files but keep user data. Deleting the
+    # whole folder here used to wipe every trained model on each upgrade.
     if target_root.exists():
-        shutil.rmtree(target_root)
+        for child in target_root.iterdir():
+            if child.name in PRESERVE_ON_UPGRADE:
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     def ignore(_dir: str, names: list[str]) -> set[str]:
         return {name for name in names if name in SYNC_EXCLUDES}
 
-    shutil.copytree(source_root, target_root, ignore=ignore)
+    shutil.copytree(source_root, target_root, ignore=ignore, dirs_exist_ok=True)
 
 
 def _run(cmd: list[str], *, cwd: Path) -> None:
