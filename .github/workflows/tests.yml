@@ -1,0 +1,81 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # The app's privacy promise is "your data never leaves this machine".
+  GRADIO_ANALYTICS_ENABLED: "False"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-14 is Apple Silicon. Windows covers the spawn-based DataLoader
+        # workers and path handling that macOS shares with it.
+        os: [macos-14, windows-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Unit tests
+        shell: bash
+        run: python -m pytest tests -q
+
+      - name: App launch check
+        shell: bash
+        run: |
+          python - <<'EOF'
+          from app import demo, launch_app
+          launch_app(inbrowser=False, server_port=7871, prevent_thread_lock=True, show_api=False)
+          import urllib.request
+          assert urllib.request.urlopen("http://127.0.0.1:7871/", timeout=60).status == 200
+          demo.close()
+          print("launch OK")
+          EOF
+
+      # Runs with the app's default num_workers so DataLoader worker pickling
+      # (spawn on macOS/Windows) is exercised, then fails on any error text.
+      - name: End-to-end smoke test
+        shell: bash
+        run: |
+          mkdir -p outputs
+          python scripts/full_smoke_test.py > smoke.log 2>&1 || { tail -n 60 smoke.log; exit 1; }
+          tail -n 5 smoke.log
+
+      - name: Upload smoke log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-log-${{ matrix.os }}
+          path: smoke.log
+          retention-days: 14

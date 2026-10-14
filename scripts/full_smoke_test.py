@@ -13,8 +13,6 @@ if str(ROOT) not in sys.path:
 
 import config
 
-config.DEFAULTS["num_workers"] = 0
-
 import app
 from detection.yolo_detector import YOLO_MODELS
 from models.registry import REGISTRY
@@ -221,7 +219,7 @@ def _test_preview_layer(text_fixture: Path, graph_fixture: Path) -> dict[str, An
         "image": _preview(app, dpath=str(ROOT / "fixtures" / "image_stress_dataset"), mod="image", lcol="", txt_col="", **common),
         "text": _preview(app, dpath=str(text_fixture), mod="text", lcol="label", txt_col="text", **common),
         "tabular": _preview(app, dpath=str(ROOT / "fixtures" / "tabular_student_success.csv"), mod="tabular", lcol="label", txt_col="", **common),
-        "timeseries": _preview(app, dpath=str(ROOT / "fixtures" / "timeseries_stress.csv"), mod="timeseries", lcol="label", txt_col="", **common),
+        "timeseries": _preview(app, dpath=str(ROOT / "fixtures" / "timeseries_stress.csv"), mod="timeseries", lcol="target", txt_col="", **common),
         "audio": _preview(app, dpath=str(ROOT / "fixtures" / "audio_stress_dataset"), mod="audio", lcol="", txt_col="", **common),
         "video": _preview(app, dpath=str(_make_video_fixture(Path(tempfile.mkdtemp(prefix='video_preview_', dir=ROOT / 'outputs')))), mod="video", lcol="", txt_col="", **common),
         "graph": _preview(app, dpath=str(graph_fixture), mod="graph", lcol="label", txt_col="", **common),
@@ -382,8 +380,19 @@ def _test_training_runs(tmpdir: Path, text_fixture: Path, graph_fixture: Path, v
             "training_mode": "from_scratch",
             "model_name": "RandomForest",
             "task": "classification",
-            "feature_cols": ["study_hours", "attendance", "prior_grade", "participation_score"],
+            "feature_cols": ["study_hours", "attendance_pct", "practice_quizzes", "project_score"],
             "bundle_name": "smoke_tabular_rf",
+        },
+        # Exercises the PyTorch regression path: real float targets, one output.
+        "tabular_mlp_regression": common | {
+            "modality": "tabular",
+            "data_path": str(ROOT / "fixtures" / "tabular_student_success.csv"),
+            "label_col": "project_score",
+            "training_mode": "from_scratch",
+            "model_name": "MLP",
+            "task": "regression",
+            "feature_cols": ["study_hours", "attendance_pct", "practice_quizzes"],
+            "bundle_name": "smoke_tabular_mlp_regression",
         },
         "timeseries_linear_forecast": common | {
             "modality": "timeseries",
@@ -617,27 +626,77 @@ def _test_exports_and_inference(training_runs: dict[str, Any], text_fixture: Pat
     }
 
 
-def main() -> None:
-    tmpdir = Path(tempfile.mkdtemp(prefix="full_smoke_", dir=ROOT / "outputs"))
-    try:
-        text_fixture = _make_text_fixture(tmpdir)
-        graph_fixture = _make_graph_fixture(tmpdir)
-        video_fixture = _make_video_fixture(tmpdir)
+# Text that only appears when a step failed. run_pipeline and the evaluation
+# helpers catch exceptions and return them as status text instead of raising,
+# so the report has to be scanned rather than relying on exceptions.
+_FAILURE_MARKERS = ("Traceback (most recent call last)", "Evaluation error", "❌")
 
-        training_runs = _test_training_runs(tmpdir, text_fixture, graph_fixture, video_fixture)
-        report = {
-            "previews": _test_preview_layer(text_fixture, graph_fixture),
-            "walkthroughs": _test_walkthroughs(),
-            "constructors": _test_model_constructors(),
-            "training_runs": training_runs,
-            "sweep_compare": _test_model_sweep_and_compare(text_fixture),
-            "detection_annotation": _test_detection_and_annotation(tmpdir, text_fixture),
-            "exports_inference": _test_exports_and_inference(training_runs, text_fixture),
-        }
-        print(json.dumps(report, indent=2, default=str))
-    finally:
-        pass
+
+def _collect_failures(report: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, f"{path}/{key}")
+        elif isinstance(node, (list, tuple)):
+            for i, value in enumerate(node):
+                walk(value, f"{path}[{i}]")
+        elif isinstance(node, str):
+            for marker in _FAILURE_MARKERS:
+                if marker in node:
+                    snippet = node[node.index(marker):][:160].replace("\n", " ")
+                    failures.append(f"{path}: {snippet}")
+                    break
+
+    walk(report, "")
+
+    for name, run in (report.get("training_runs") or {}).items():
+        if isinstance(run, dict) and "bundle_path" in run and not run["bundle_path"]:
+            failures.append(f"/training_runs/{name}: no bundle was saved ({run.get('status_tail', '')[:120]})")
+    return failures
+
+
+def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="End-to-end smoke test for every modality.")
+    parser.add_argument(
+        "--num-workers", type=int, default=None,
+        help="DataLoader workers. Defaults to the app's own setting, so worker "
+             "pickling problems (macOS/Windows spawn) are exercised.",
+    )
+    args = parser.parse_args()
+    if args.num_workers is not None:
+        config.DEFAULTS["num_workers"] = args.num_workers
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="full_smoke_", dir=ROOT / "outputs"))
+    text_fixture = _make_text_fixture(tmpdir)
+    graph_fixture = _make_graph_fixture(tmpdir)
+    video_fixture = _make_video_fixture(tmpdir)
+
+    training_runs = _test_training_runs(tmpdir, text_fixture, graph_fixture, video_fixture)
+    report = {
+        "previews": _test_preview_layer(text_fixture, graph_fixture),
+        "walkthroughs": _test_walkthroughs(),
+        "constructors": _test_model_constructors(),
+        "training_runs": training_runs,
+        "sweep_compare": _test_model_sweep_and_compare(text_fixture),
+        "detection_annotation": _test_detection_and_annotation(tmpdir, text_fixture),
+        "exports_inference": _test_exports_and_inference(training_runs, text_fixture),
+    }
+    print(json.dumps(report, indent=2, default=str))
+
+    failures = _collect_failures(report)
+    print(f"\nnum_workers={config.DEFAULTS['num_workers']}")
+    if failures:
+        print(f"SMOKE TEST FAILED: {len(failures)} problem(s)")
+        for failure in failures:
+            print(f"  - {failure}")
+        return 1
+    print("SMOKE TEST PASSED")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

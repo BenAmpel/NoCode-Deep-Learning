@@ -9,6 +9,13 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  BANDIT_PATHS: >-
+    app.py config.py install.py run_local.py runtime
+    data_pipeline detection eval export modalities models
+    packaging scripts training ui
+
+permissions:
+  contents: read
 
 jobs:
   scan:
@@ -27,36 +34,34 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pip-audit bandit
 
+      # Known vulnerabilities in the pinned Gradio 4 / Starlette / Pillow stack
+      # can only be fixed by the Gradio 5+ upgrade, so this step reports but does
+      # not fail the job yet. `shell: bash` adds pipefail, so `tee` no longer
+      # hides the exit code and the summary shows the real outcome.
+      # TODO: drop continue-on-error once dependencies are upgraded.
       - name: Dependency vulnerability audit
         id: pip_audit
         continue-on-error: true
+        shell: bash
         run: |
           pip-audit -r requirements.txt | tee pip-audit.txt
 
-      - name: Static security scan
-        id: bandit
-        continue-on-error: true
+      - name: Flag dependency vulnerabilities
+        if: steps.pip_audit.outcome == 'failure'
+        run: echo "::warning title=pip-audit::Known vulnerabilities in pinned dependencies. See the job summary."
+
+      # Medium-severity findings are written to the report; high severity fails the job.
+      - name: Static security scan (report, medium and above)
+        shell: bash
         run: |
-          bandit -q -r \
-            app.py \
-            bootstrap_macos.py \
-            bootstrap_windows.py \
-            config.py \
-            healthcheck.py \
-            install.py \
-            run_local.py \
-            runtime_setup.py \
-            data_pipeline \
-            detection \
-            eval \
-            export \
-            modalities \
-            models \
-            packaging \
-            scripts \
-            training \
-            ui \
-            -ll | tee bandit.txt
+          bandit -q -r $BANDIT_PATHS -ll -f txt -o bandit.txt --exit-zero
+          cat bandit.txt
+
+      - name: Static security scan (gate, high severity)
+        id: bandit
+        shell: bash
+        run: |
+          bandit -q -r $BANDIT_PATHS -lll
 
       - name: Write workflow summary
         if: always()
