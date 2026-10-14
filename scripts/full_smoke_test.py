@@ -467,7 +467,7 @@ def _test_model_sweep_and_compare(text_fixture: Path) -> dict[str, Any]:
         data_path_val=str(ROOT / "fixtures" / "tabular_student_success.csv"),
         text_col_val="",
         label_col_val="label",
-        feature_cols_val=["study_hours", "attendance", "prior_grade", "participation_score"],
+        feature_cols_val=["study_hours", "attendance_pct", "practice_quizzes", "project_score"],
         time_col_val="",
         window_size_val=12,
         n_frames_val=8,

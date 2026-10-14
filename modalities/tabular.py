@@ -68,15 +68,24 @@ def load_tabular_data(
     cat_cols    = features_df.select_dtypes(include=["object", "category"]).columns.tolist()
     num_cols    = features_df.select_dtypes(include=[np.number]).columns.tolist()
 
+    # Train/val split comes first so scaling statistics are fit on training
+    # rows only. Fitting on all rows leaked validation data into the inputs.
+    indices = list(range(len(features_df)))
+    random.Random(42).shuffle(indices)
+    n_val      = max(1, int(len(indices) * val_split))
+    val_idx    = indices[:n_val]
+    train_idx  = indices[n_val:]
+
     # Scale numeric features
     num_array = features_df[num_cols].fillna(0).values.astype(np.float32)
-    mean = num_array.mean(axis=0)
-    std = num_array.std(axis=0) + 1e-8
-    min_vals = num_array.min(axis=0) if len(num_cols) else np.array([], dtype=np.float32)
-    max_vals = num_array.max(axis=0) if len(num_cols) else np.array([], dtype=np.float32)
-    median_vals = np.median(num_array, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
-    q1 = np.quantile(num_array, 0.25, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
-    q3 = np.quantile(num_array, 0.75, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    fit_rows = num_array[train_idx] if len(train_idx) else num_array
+    mean = fit_rows.mean(axis=0)
+    std = fit_rows.std(axis=0) + 1e-8
+    min_vals = fit_rows.min(axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    max_vals = fit_rows.max(axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    median_vals = np.median(fit_rows, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    q1 = np.quantile(fit_rows, 0.25, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    q3 = np.quantile(fit_rows, 0.75, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
     iqr = (q3 - q1) + 1e-8 if len(num_cols) else np.array([], dtype=np.float32)
 
     if scaling_strategy == "minmax" and len(num_cols):
@@ -100,14 +109,6 @@ def load_tabular_data(
         parts.append(dummies.fillna(0).values.astype(np.float32))
 
     X = np.concatenate(parts, axis=1)
-
-    # Train/val split
-    indices = list(range(len(X)))
-    random.seed(42)
-    random.shuffle(indices)
-    n_val      = max(1, int(len(X) * val_split))
-    val_idx    = indices[:n_val]
-    train_idx  = indices[n_val:]
 
     X_train, X_val = X[train_idx], X[val_idx]
     y_train, y_val = labels[train_idx], labels[val_idx]

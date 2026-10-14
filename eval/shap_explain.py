@@ -9,6 +9,21 @@ import matplotlib.pyplot as plt
 
 logger = logging.getLogger("nocode_dl")
 
+
+def _abs_per_feature(shap_values) -> np.ndarray:
+    """Return |SHAP| as (n_samples, n_features), whatever shape shap produced.
+
+    Older shap returns a list with one (n, f) array per class; newer releases
+    return a single (n, f, n_classes) array. Single-output models give (n, f).
+    """
+    if isinstance(shap_values, list):
+        return np.abs(np.stack(shap_values)).mean(0)
+    arr = np.abs(np.asarray(shap_values))
+    if arr.ndim == 3:
+        arr = arr.mean(-1)
+    return arr
+
+
 def compute_shap(model, extra_data: dict, modality: str, prep: dict) -> plt.Figure | None:
     if modality != "tabular":
         return None
@@ -34,25 +49,30 @@ def compute_shap(model, extra_data: dict, modality: str, prep: dict) -> plt.Figu
     try:
         if model_name == "RandomForestClassifier":
             explainer  = shap.TreeExplainer(model)
-            shap_vals  = explainer.shap_values(X_val[:100])
-            if isinstance(shap_vals, list):
-                shap_vals = np.abs(np.stack(shap_vals)).mean(0)
+            shap_vals  = _abs_per_feature(explainer.shap_values(X_val[:100]))
         elif model_name == "LogisticRegression":
             explainer = shap.LinearExplainer(model, X_bg)
-            sv = explainer.shap_values(X_val[:100])
-            shap_vals = np.abs(sv if sv.ndim == 2 else np.stack(sv).mean(0))
+            shap_vals = _abs_per_feature(explainer.shap_values(X_val[:100]))
         else:  # MLP — use KernelExplainer with kmeans background
+            import torch
             bg = shap.kmeans(X_bg, min(10, n_bg))
+            # Inputs must go to the model's device (MPS/CUDA after training);
+            # a CPU tensor there raised and silently dropped to the fallback.
+            device = next(model.parameters()).device
+            model.eval()
+
             def predict_fn(x):
-                import torch
                 with torch.no_grad():
-                    return torch.softmax(model(torch.tensor(x, dtype=torch.float32)), dim=1).numpy()
+                    out = model(torch.tensor(x, dtype=torch.float32, device=device))
+                    if out.shape[-1] > 1:  # classification: explain probabilities
+                        out = torch.softmax(out, dim=1)
+                    return out.cpu().numpy()
             with contextlib.redirect_stdout(io.StringIO()):
                 explainer = shap.KernelExplainer(predict_fn, bg)
                 sv = explainer.shap_values(X_val[:30], nsamples=50)
-            shap_vals = np.abs(np.stack(sv)).mean(0)
+            shap_vals = _abs_per_feature(sv)
 
-        mean_abs = np.abs(shap_vals).mean(0)
+        mean_abs = shap_vals.mean(0)
         top_k = min(20, len(mean_abs))
         idx   = np.argsort(mean_abs)[-top_k:][::-1]
         names = [feature_names[i] if i < len(feature_names) else f"feat_{i}" for i in idx]

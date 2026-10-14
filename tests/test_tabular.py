@@ -47,3 +47,21 @@ def test_classification_still_maps_to_class_indices(regression_csv):
     y = np.concatenate([y_train, y_val])
     assert y.dtype == np.int64
     assert set(y.tolist()) <= set(range(len(classes)))
+
+
+def test_scaling_is_fit_on_training_rows_only(tmp_path):
+    # Validation rows get extreme values; if they leaked into the scaler the
+    # stored mean would move far away from the training rows' mean.
+    n = 50
+    df = pd.DataFrame({"x": np.arange(n, dtype=float), "label": ["a", "b"] * (n // 2)})
+    path = tmp_path / "leak.csv"
+    df.to_csv(path, index=False)
+    _, _, _, prep, _, X_train, _, X_val, _ = load_tabular_data(
+        str(path), label_col="label", augmentation="none", val_split=0.2
+    )
+    # Recover which raw values went to training via the stored scaler.
+    mean, std = prep["scaler_mean"][0], prep["scaler_scale"][0]
+    train_raw = X_train[:, 0] * std + mean
+    assert np.isclose(mean, train_raw.mean(), atol=1e-3)
+    # Standardized training column has mean ~0; validation column need not.
+    assert abs(X_train[:, 0].mean()) < 1e-5

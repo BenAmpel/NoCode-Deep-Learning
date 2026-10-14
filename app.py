@@ -2614,6 +2614,9 @@ def run_pipeline(
                 "apply_lemmatization": bool(text_apply_lemmatization),
                 "use_ngrams": bool(text_use_ngrams),
             }
+            # The loader samples the subset itself unless cleaning already did;
+            # sampling twice turned a 50% subset into 25%.
+            loader_subset_percent = float(subset_percent) if bool(use_random_subset) else 100.0
             if any(text_cleaning.values()):
                 from data_pipeline.cleaning import clean_text_dataframe
                 from data_pipeline.io_utils import read_structured_file
@@ -2627,6 +2630,7 @@ def run_pipeline(
                         subset_percent=float(subset_percent),
                         subset_seed=int(subset_seed),
                     )
+                    loader_subset_percent = 100.0
                     status = log(f"  ✓ Sampled {sampled_rows} text rows before cleaning")
                     yield _emit(status)
                 cleaned_df, clean_report = clean_text_dataframe(
@@ -2654,7 +2658,7 @@ def run_pipeline(
                 max_length=TEXT_DEFAULTS["max_length"],
                 val_split=_val_split,
                 cleaning_options=text_cleaning,
-                subset_percent=float(subset_percent) if bool(use_random_subset) else 100.0,
+                subset_percent=loader_subset_percent,
                 subset_seed=int(subset_seed))
             extra_data.update({"vocab_size": vocab_size, "val_texts": val_texts})
 
@@ -2662,6 +2666,8 @@ def run_pipeline(
             from modalities.tabular import load_tabular_data
             # Optional data cleaning
             _cleaning_tmp = None
+            # See the text branch: don't let the loader sample a second time.
+            loader_subset_percent = float(subset_percent) if bool(use_random_subset) else 100.0
             if use_data_cleaning:
                 from data_pipeline.cleaning import clean_dataframe, cleaning_report_markdown
                 from data_pipeline.io_utils import read_structured_file
@@ -2674,6 +2680,7 @@ def run_pipeline(
                         subset_percent=float(subset_percent),
                         subset_seed=int(subset_seed),
                     )
+                    loader_subset_percent = 100.0
                     status = log(f"  ✓ Sampled {sampled_rows} tabular rows before cleaning")
                     yield _emit(status)
                 cleaned_df, clean_report = clean_dataframe(
@@ -2695,7 +2702,7 @@ def run_pipeline(
                     data_path, label_col=label_col, feature_cols=feature_cols, batch_size=bs,
                     val_split=_val_split, augmentation=augmentation,
                     scaling_strategy=str(tabular_scaling),
-                    subset_percent=float(subset_percent) if bool(use_random_subset) else 100.0,
+                    subset_percent=loader_subset_percent,
                     subset_seed=int(subset_seed),
                     task=task)
             extra_data.update({"input_size": input_size,
@@ -6526,6 +6533,16 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 ))
                 last = updates[-1]
                 bundle_path_val = last[12]
+                if not bundle_path_val:
+                    # run_pipeline catches its own exceptions and yields an error
+                    # status instead of raising, so a crashed run arrives here
+                    # looking like a normal one, just without a bundle.
+                    reason = next(
+                        (line.strip().lstrip("❌").replace("**", "").strip()
+                         for line in str(last[0]).splitlines() if line.strip().startswith("❌")),
+                        "the run saved no model bundle",
+                    )
+                    raise RuntimeError(reason)
                 run_record = next((r for r in reversed(load_history()) if r.get("bundle_path") == bundle_path_val), None)
                 metric_payload = (run_record or {}).get("metrics", {})
                 row = {
