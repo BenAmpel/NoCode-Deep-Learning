@@ -106,10 +106,12 @@ def load_image_data(
             force_grayscale=force_grayscale,
         )
     except Exception:
-        # Fallback: simple transforms if augmentation module unavailable
+        # Fallback: simple transforms if augmentation module unavailable.
+        # No transforms.Lambda here: lambdas can't be pickled for DataLoader workers.
+        gray = [transforms.Grayscale(num_output_channels=3)] if force_grayscale else []
         train_tf = transforms.Compose([
             transforms.Resize((image_size, image_size)),
-            transforms.Grayscale(num_output_channels=3) if force_grayscale else transforms.Lambda(lambda x: x),
+            *gray,
             transforms.RandomHorizontalFlip(),
             transforms.ColorJitter(brightness=0.2, contrast=0.2),
             transforms.ToTensor(),
@@ -117,7 +119,7 @@ def load_image_data(
         ])
         val_tf = transforms.Compose([
             transforms.Resize((image_size, image_size)),
-            transforms.Grayscale(num_output_channels=3) if force_grayscale else transforms.Lambda(lambda x: x),
+            *gray,
             transforms.ToTensor(),
             transforms.Normalize(mean, std),
         ])

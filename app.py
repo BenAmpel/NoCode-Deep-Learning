@@ -11,7 +11,7 @@ from typing import Any
 import gradio as gr
 import numpy as np
 
-from config import DEVICE, DEFAULTS, VIDEO_DEFAULTS, TEXT_DEFAULTS
+from config import DEVICE, DEFAULTS, VIDEO_DEFAULTS, TEXT_DEFAULTS, set_seed
 from models.registry import get_models, get_compatible_tasks, get_modes, is_sklearn, is_vit, is_whisper
 from ui.project_state import load_project_state, save_project_state
 from ui.tooltips import TOOLTIPS
@@ -299,7 +299,8 @@ PROJECT_MODES = ["Beginner", "Guided", "Advanced"]
 OPTIMIZERS = ["adam", "adamw", "sgd"]
 SCHEDULERS = ["cosine", "warmup_cosine", "step", "none"]
 AUG_LEVELS = ["none", "light", "medium", "heavy"]
-TASKS      = ["classification", "multi-label", "clustering", "regression", "anomaly"]
+# "multi-label" is omitted until loaders produce multi-hot targets (see models/registry.py).
+TASKS      = ["classification", "clustering", "regression", "anomaly"]
 
 APP_THEME = gr.themes.Soft(
     primary_hue="emerald",
@@ -2550,6 +2551,7 @@ def run_pipeline(
     evaluation_artifacts: dict = {}
     stopped_early_flag = False
     runtime_device = "cpu" if (modality == "video" and DEVICE == "mps") else DEVICE
+    set_seed(DEFAULTS["seed"])
 
     try:
         # ── 1. Load data ──────────────────────────────────────────────────────
@@ -2694,7 +2696,8 @@ def run_pipeline(
                     val_split=_val_split, augmentation=augmentation,
                     scaling_strategy=str(tabular_scaling),
                     subset_percent=float(subset_percent) if bool(use_random_subset) else 100.0,
-                    subset_seed=int(subset_seed))
+                    subset_seed=int(subset_seed),
+                    task=task)
             extra_data.update({"input_size": input_size,
                                 "X_train": X_train, "y_train": y_train,
                                 "X_val":   X_val,   "y_val":   y_val})
@@ -3307,12 +3310,14 @@ def run_pipeline(
                     cm_fig, eval_summary_text = compute_confusion_matrix(
                         final_model, val_loader, classes, modality, task,
                         is_sklearn=sklearn_model,
-                        X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"))
+                        X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
+                        device=runtime_device)
                     if task in ("classification", "multi-label"):
                         roc_fig = compute_roc_curves(
                             final_model, val_loader, classes, modality, task,
                             is_sklearn=sklearn_model,
-                            X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"))
+                            X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
+                            device=runtime_device)
                     if task == "classification":
                         y_true, y_pred, y_prob = _get_preds_and_probs(
                             final_model, val_loader, classes, sklearn_model,
@@ -5958,15 +5963,19 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 from torch.utils.data import TensorDataset
                 from modalities.tabular import load_tabular_data
                 # We need the full dataset; load with a tiny val_split and combine
+                # augmentation="none": noise must not be applied before the data
+                # is split into folds, or validation folds see augmented rows.
                 tl, vl, classes, prep, input_size, Xtr, ytr, Xv, yv = load_tabular_data(
                     data_path_val, label_col=label_col_val, batch_size=int(batch_size_val),
-                    val_split=0.01,
+                    val_split=0.01, augmentation="none",
                     subset_percent=float(subset_percent_val) if bool(subset_enabled_val) else 100.0,
-                    subset_seed=int(subset_seed_val))
+                    subset_seed=int(subset_seed_val),
+                    task=task_val)
                 X_all = np.concatenate([Xtr, Xv])
                 y_all = np.concatenate([ytr, yv])
+                label_dtype = "float32" if task_val == "regression" else "int64"
                 full_dataset = TensorDataset(
-                    torch.tensor(X_all), torch.tensor(y_all.astype("int64")))
+                    torch.tensor(X_all), torch.tensor(y_all.astype(label_dtype)))
                 num_classes  = len(classes)
 
                 for prog in cross_validate(
@@ -6149,8 +6158,10 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 label_col=label_col_val,
                 batch_size=int(batch_size_val),
                 val_split=0.01,
+                augmentation="none",
                 subset_percent=float(subset_percent_val) if bool(subset_enabled_val) else 100.0,
                 subset_seed=int(subset_seed_val),
+                task=task_val,
             )
             X_all = np.concatenate([Xtr, Xv])
             y_all = np.concatenate([ytr, yv])
@@ -6385,7 +6396,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 data_path_val, label_col=label_col_val, batch_size=int(batch_size_val),
                 val_split=float(val_split_val),
                 subset_percent=float(subset_percent_val) if bool(subset_enabled_val) else 100.0,
-                subset_seed=int(subset_seed_val))
+                subset_seed=int(subset_seed_val),
+                task=task_val)
             num_classes = len(classes)
 
             def _factory(params):

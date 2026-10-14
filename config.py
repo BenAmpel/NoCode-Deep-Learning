@@ -13,6 +13,21 @@ def get_device() -> str:
 DEVICE = get_device()
 
 
+def set_seed(seed: int) -> None:
+    """Seed every RNG a training run touches so repeated runs are comparable.
+
+    DataLoader shuffling and default weight init draw from torch's global
+    generator, so seeding it here covers them.
+    """
+    import random
+
+    import numpy as np
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)  # also seeds CUDA and MPS generators
+
+
 def _num_workers() -> int:
     """
     Safe default: half of available CPU cores, capped at 8.

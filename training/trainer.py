@@ -225,8 +225,9 @@ def _compute_loss(criterion, logits, labels, task: str) -> torch.Tensor:
         return criterion(logits, labels)
     if task == "multi-label":
         return criterion(logits, labels.float())
-    # regression
-    return criterion(logits.squeeze(), labels.float())
+    # regression: flatten both sides. A bare .squeeze() turns a (1, 1) final
+    # batch into a 0-d tensor, which then broadcasts against labels of shape (1,).
+    return criterion(logits.reshape(-1), labels.float().reshape(-1))
 
 
 # ---------------------------------------------------------------------------

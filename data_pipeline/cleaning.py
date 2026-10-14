@@ -126,10 +126,18 @@ def clean_dataframe(
         dropped_col_names.extend(const_cols)
 
     # ------------------------------------------------------------------ #
-    # 4. Fill missing values
+    # 4. Drop rows with a missing label, then fill missing feature values.
+    #    The label is never imputed: a made-up target is worse than no row.
     # ------------------------------------------------------------------ #
-    numeric_cols = cleaned.select_dtypes(include=[np.number]).columns.tolist()
-    cat_cols = cleaned.select_dtypes(exclude=[np.number]).columns.tolist()
+    missing_label_rows_removed = 0
+    if label_col in cleaned.columns:
+        before = len(cleaned)
+        cleaned = cleaned[cleaned[label_col].notna()]
+        missing_label_rows_removed = before - len(cleaned)
+
+    feature_frame = cleaned.drop(columns=[label_col], errors="ignore")
+    numeric_cols = feature_frame.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = feature_frame.select_dtypes(exclude=[np.number]).columns.tolist()
 
     if strategy == "drop":
         before = len(cleaned)
@@ -182,6 +190,7 @@ def clean_dataframe(
         f"Original shape: {initial_rows} rows × {initial_cols} cols.",
         f"Final shape:    {cleaned.shape[0]} rows × {cleaned.shape[1]} cols.",
         f"Duplicate rows removed: {rows_removed}.",
+        f"Rows dropped for missing label: {missing_label_rows_removed}.",
         f"Columns dropped (high-missing or constant): {cols_removed}"
         + (f" ({', '.join(dropped_col_names)})" if dropped_col_names else "") + ".",
         f"Missing values filled: {missing_filled}.",
@@ -192,6 +201,7 @@ def clean_dataframe(
 
     report: Dict = {
         "rows_removed": rows_removed,
+        "missing_label_rows_removed": missing_label_rows_removed,
         "cols_removed": cols_removed,
         "missing_filled": missing_filled,
         "constant_cols_removed": constant_cols_removed,
@@ -427,6 +437,7 @@ def cleaning_report_markdown(report_dict: Dict) -> str:
         "| Metric | Value |",
         "| --- | --- |",
         f"| Duplicate rows removed | {report_dict['rows_removed']} |",
+        f"| Rows dropped for missing label | {report_dict.get('missing_label_rows_removed', 0)} |",
         f"| Columns removed | {report_dict['cols_removed']} |",
         f"| Constant columns removed | {report_dict['constant_cols_removed']} |",
         f"| Missing values filled | {report_dict['missing_filled']} |",

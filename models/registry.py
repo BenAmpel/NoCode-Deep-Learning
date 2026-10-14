@@ -87,8 +87,9 @@ REGISTRY: dict[str, dict[str, dict]] = {
             "ResNet18":          {"params": ["learning_rate", "batch_size", "epochs", "dropout", "optimizer"]},
             "EfficientNet-B0":   {"params": ["learning_rate", "batch_size", "epochs", "dropout", "optimizer"]},
             "EfficientNet-B2":   {"params": ["learning_rate", "batch_size", "epochs", "dropout", "optimizer"]},
-            "Whisper-Tiny":      {"params": ["learning_rate", "batch_size", "epochs", "optimizer"]},
-            "Whisper-Base":      {"params": ["learning_rate", "batch_size", "epochs", "optimizer"]},
+            # Whisper-Tiny / Whisper-Base are hidden until the audio loader can
+            # produce Whisper's 80-band, 16 kHz, 3000-frame log-mel input. The
+            # shared loader yields 3x224x224 mel images, which crash the encoder.
             "Autoencoder":       {"params": ["learning_rate", "batch_size", "epochs"]},
         },
         "from_scratch": {
@@ -123,7 +124,9 @@ WHISPER_MODELS = {"Whisper-Tiny", "Whisper-Base"}
 
 TASK_MODALITY_SUPPORT: dict[str, list[str]] = {
     "classification":  ["graph", "image", "text", "tabular", "timeseries", "audio", "video"],
-    "multi-label":     ["image", "text", "tabular", "audio"],
+    # Multi-label is hidden until loaders emit multi-hot targets; today every
+    # loader yields one integer label, so BCEWithLogitsLoss fails on shape.
+    "multi-label":     [],
     "clustering":      ["image", "text", "tabular", "timeseries", "audio"],
     "regression":      ["tabular", "timeseries"],
     "anomaly":         ["image", "tabular", "audio"],

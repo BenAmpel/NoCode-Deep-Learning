@@ -82,26 +82,67 @@ def get_image_transforms(
     return train_tf, base_val
 
 
+def _identity(x):
+    return x
+
+
+def _add_noise(waveform, snr_db: float = 20.0):
+    import torch
+    noise = torch.randn_like(waveform)
+    signal_power = waveform.pow(2).mean()
+    noise_power  = noise.pow(2).mean()
+    scale = (signal_power / (noise_power * 10 ** (snr_db / 10) + 1e-9)).sqrt()
+    return (waveform + scale * noise).clamp(-1, 1)
+
+
+def _time_shift(waveform, shift_frac: float = 0.1):
+    import torch
+    shift = int(waveform.shape[-1] * shift_frac)
+    return torch.roll(waveform, shifts=shift, dims=-1)
+
+
+def _gain_jitter(waveform, amount: float = 0.15):
+    import torch
+    gain = 1.0 + (torch.rand(1, device=waveform.device) * 2 - 1) * amount
+    return (waveform * gain).clamp(-1, 1)
+
+
+# Audio transforms are module-level callables, not closures: DataLoader workers
+# are started with "spawn" on macOS/Windows, which must pickle the dataset and
+# everything it holds. Local functions and lambdas cannot be pickled.
+class _WaveformAug:
+    def __init__(self, flags: dict, level: str):
+        self.flags = dict(flags)
+        self.level = level
+
+    def __call__(self, x):
+        level = self.level
+        if self.flags.get("noise"):
+            x = _add_noise(x, snr_db=25 if level == "light" else (20 if level == "medium" else 15))
+        if self.flags.get("time_shift"):
+            x = _time_shift(x, 0.05 if level != "heavy" else 0.1)
+        if self.flags.get("gain_jitter"):
+            x = _gain_jitter(x, amount=0.12 if level != "heavy" else 0.2)
+        return x
+
+
+class _SpecAug:
+    def __init__(self, flags: dict, level: str):
+        import torchaudio.transforms as AT
+        self.flags = dict(flags)
+        self.time_mask_tf = AT.TimeMasking(time_mask_param=12 if level != "heavy" else 20)
+        self.freq_mask_tf = AT.FrequencyMasking(freq_mask_param=8 if level != "heavy" else 14)
+
+    def __call__(self, spec):
+        if self.flags.get("time_mask"):
+            spec = self.time_mask_tf(spec)
+        if self.flags.get("freq_mask"):
+            spec = self.freq_mask_tf(spec)
+        return spec
+
+
 def get_audio_transforms(level: str, options: dict | None = None):
     """Returns (train_waveform_aug, val_waveform_aug, train_spec_aug, val_spec_aug)."""
-    import torch
-    import torchaudio.transforms as AT
-
-    def add_noise(waveform: "torch.Tensor", snr_db: float = 20.0) -> "torch.Tensor":
-        noise = torch.randn_like(waveform)
-        signal_power = waveform.pow(2).mean()
-        noise_power  = noise.pow(2).mean()
-        scale = (signal_power / (noise_power * 10 ** (snr_db / 10) + 1e-9)).sqrt()
-        return (waveform + scale * noise).clamp(-1, 1)
-
-    def time_shift(waveform: "torch.Tensor", shift_frac: float = 0.1) -> "torch.Tensor":
-        shift = int(waveform.shape[-1] * shift_frac)
-        return torch.roll(waveform, shifts=shift, dims=-1)
-
-    def gain_jitter(waveform: "torch.Tensor", amount: float = 0.15) -> "torch.Tensor":
-        gain = 1.0 + (torch.rand(1, device=waveform.device) * 2 - 1) * amount
-        return (waveform * gain).clamp(-1, 1)
-
     default_flags = {
         "none": {"noise": False, "time_shift": False, "gain_jitter": False, "time_mask": False, "freq_mask": False},
         "light": {"noise": True, "time_shift": False, "gain_jitter": False, "time_mask": False, "freq_mask": False},
@@ -110,36 +151,13 @@ def get_audio_transforms(level: str, options: dict | None = None):
     }
     flags = _resolve_aug_flags(level, options, default_flags)
 
-    time_mask_param = 12 if level != "heavy" else 20
-    freq_mask_param = 8 if level != "heavy" else 14
-    time_mask_tf = AT.TimeMasking(time_mask_param=time_mask_param)
-    freq_mask_tf = AT.FrequencyMasking(freq_mask_param=freq_mask_param)
-
-    def train_waveform_aug(x):
-        if flags.get("noise"):
-            x = add_noise(x, snr_db=25 if level == "light" else (20 if level == "medium" else 15))
-        if flags.get("time_shift"):
-            x = time_shift(x, 0.05 if level != "heavy" else 0.1)
-        if flags.get("gain_jitter"):
-            x = gain_jitter(x, amount=0.12 if level != "heavy" else 0.2)
-        return x
-
-    def train_spec_aug(spec):
-        if flags.get("time_mask"):
-            spec = time_mask_tf(spec)
-        if flags.get("freq_mask"):
-            spec = freq_mask_tf(spec)
-        return spec
-
-    waveform_identity = lambda x: x
-    spec_identity = lambda x: x
     has_waveform_aug = any(flags.get(name) for name in ("noise", "time_shift", "gain_jitter"))
     has_spec_aug = any(flags.get(name) for name in ("time_mask", "freq_mask"))
     return (
-        train_waveform_aug if has_waveform_aug else waveform_identity,
-        waveform_identity,
-        train_spec_aug if has_spec_aug else spec_identity,
-        spec_identity,
+        _WaveformAug(flags, level) if has_waveform_aug else _identity,
+        _identity,
+        _SpecAug(flags, level) if has_spec_aug else _identity,
+        _identity,
     )
 
 
@@ -160,8 +178,10 @@ def get_tabular_augmentation(level: str):
 def get_timeseries_augmentation(level: str):
     """Returns a function that jitters and scales time-series windows (numpy arrays)."""
     import numpy as np
+    # (jitter_sigma, scale_sigma). A scale_sigma of 0 means "no scaling";
+    # anything else multiplies each window by 1 + N(0, scale_sigma).
     params = {
-        "none":   (0.0,  1.0),
+        "none":   (0.0,  0.0),
         "light":  (0.01, 0.02),
         "medium": (0.05, 0.1),
         "heavy":  (0.1,  0.2),

@@ -27,6 +27,7 @@ def load_tabular_data(
     scaling_strategy: str = "standard",
     subset_percent: float = 100.0,
     subset_seed: int = 42,
+    task: str = "classification",
 ) -> tuple[DataLoader, DataLoader, list[str], dict, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     df = read_structured_file(data_path)
     df, dropped_missing = drop_missing_label_rows(df, label_col)
@@ -40,10 +41,22 @@ def load_tabular_data(
         subset_seed=subset_seed,
     )
 
-    labels_raw   = df[label_col].tolist()
-    classes      = sorted(set(str(l) for l in labels_raw))
-    class_to_idx = {c: i for i, c in enumerate(classes)}
-    labels       = np.array([class_to_idx[str(l)] for l in labels_raw], dtype=np.int64)
+    if task == "regression":
+        # Keep the real target values; mapping them to sorted class indices
+        # would train on string rank ("100000" < "99000") instead of magnitude.
+        targets = pd.to_numeric(df[label_col], errors="coerce")
+        if targets.isna().any():
+            bad = df.loc[targets.isna(), label_col].astype(str).head(3).tolist()
+            raise ValueError(
+                f"Regression needs a numeric target, but '{label_col}' has non-numeric values: {bad}"
+            )
+        classes = ["target"]
+        labels  = targets.to_numpy(dtype=np.float32)
+    else:
+        labels_raw   = df[label_col].tolist()
+        classes      = sorted(set(str(l) for l in labels_raw))
+        class_to_idx = {c: i for i, c in enumerate(classes)}
+        labels       = np.array([class_to_idx[str(l)] for l in labels_raw], dtype=np.int64)
 
     if feature_cols:
         usable_feature_cols = [col for col in feature_cols if col in df.columns and col != label_col]
@@ -143,6 +156,7 @@ def load_tabular_data(
         "dropped_missing_labels": dropped_missing,
         "subset_rows": sampled_rows,
         "subset_percent": float(subset_percent),
+        "task": task,
     }
 
     return train_loader, val_loader, classes, preprocessing_config, X.shape[1], X_train, y_train, X_val, y_val
