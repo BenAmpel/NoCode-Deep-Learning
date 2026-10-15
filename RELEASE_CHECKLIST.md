@@ -32,8 +32,14 @@
   - `python3 packaging/build_macos_installer.py --version <version>`
 - If distributing broadly, sign and notarize:
   - `python3 packaging/sign_and_notarize_macos.py ...`
+  - Before uploading to Apple, the build checks the signed pkg for what the
+    notary service rejects (installer signature, hardened runtime, secure
+    timestamp, no debug entitlement, Developer ID certificates) and stops if
+    anything fails. CI runs the same signing path with throwaway self-signed
+    identities, so only notarization itself is untested there.
 - Verify:
-  - `pkgutil --check-signature dist/NoCode-DL-<version>-signed.pkg`
+  - `python3 packaging/verify_macos_signing.py --developer-id dist/NoCode-DL-<version>-signed.pkg`
+  - `spctl -a -t install -vv dist/NoCode-DL-<version>-signed.pkg` (after notarization)
 
 ## Windows dissemination
 

@@ -84,12 +84,20 @@ def _validate_folder(path: Path, modality: str) -> list[str]:
     if len(subdirs) < 2:
         issues.append(f"❌  Found {len(subdirs)} class folder(s). Need at least 2 for classification.")
 
+    blocked_audio: list[str] = []
     for d in subdirs:
         files = [f for f in d.iterdir() if f.suffix.lower() in valid]
         if len(files) == 0:
             issues.append(f"❌  Class folder '{d.name}' has no valid {modality} files.")
         elif len(files) < 5:
             issues.append(f"⚠️  Class '{d.name}' has only {len(files)} samples.")
+        if modality == "audio":
+            from export.bundle_runtime import needs_ffmpeg
+            blocked_audio += [str(f) for f in files if needs_ffmpeg(str(f))]
+    if blocked_audio:
+        from modalities.audio import audio_needs_ffmpeg_message
+        issues.append("⚠️  " + audio_needs_ffmpeg_message(blocked_audio)
+                      + " Training stops on them unless 'Skip unreadable audio files' is ticked.")
 
     # Check for hidden files / non-media files at top level
     stray = [f for f in path.iterdir() if f.is_file()]

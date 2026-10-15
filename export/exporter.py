@@ -266,7 +266,7 @@ def _to_json_safe(obj):
 # model was trained with (looked up from the running environment).
 _RUNTIME_PACKAGES = {
     "image": ["Pillow"],
-    "audio": ["Pillow", "torch", "torchaudio", "torchvision", "scipy"],
+    "audio": ["Pillow", "torch", "torchaudio", "torchvision", "soundfile", "scipy"],
     "video": ["opencv-python-headless"],
     "text": [],
     "tabular": [],

@@ -13,6 +13,7 @@ REQUIRED_IMPORTS = [
     "torch",
     "torchvision",
     "torchaudio",
+    "soundfile",
     "numpy",
     "pandas",
     "sklearn",
@@ -59,10 +60,10 @@ def run_healthcheck(server_port: int = 7860) -> list[str]:
 
     ffmpeg_path = shutil.which("ffmpeg")
     if ffmpeg_path:
-        messages.append(f"Compressed audio support ready: ffmpeg found at {ffmpeg_path}")
+        messages.append(f"Audio support: all formats (ffmpeg found at {ffmpeg_path})")
     else:
         messages.append(
-            "Compressed audio note: ffmpeg not found. WAV audio will work, but mp3/m4a/ogg/flac files may not decode on this machine."
+            "Audio support: wav/mp3/flac/ogg. ffmpeg not found, so .m4a files won't decode on this machine."
         )
 
     messages.append(f"Detected torch device: {DEVICE}")

@@ -9,6 +9,7 @@ from pipeline import RUN_CONFIG_FIELDS, RunConfig
 from pipeline.context import RunResult
 from pipeline.runner import PreflightError, run as run_stages
 from training import cancel as _cancel
+from training.sklearn_fit import fit_with_stop
 from ui.callbacks.train import _STOPPED_MESSAGE, _format_run_error
 from ui.helpers import _get_pyplot, _metric_display_value, _slug_part
 from ui.layout import Components
@@ -27,6 +28,7 @@ def run_cv(modality_val, data_path_val, text_col_val, label_col_val,
         yield "❌ Set Data path and Model before running cross-validation."
         return
 
+    _cancel.reset()
     yield f"Starting {int(cv_k_val)}-fold cross-validation…\n"
     lines = []
 
@@ -157,7 +159,7 @@ def run_cv(modality_val, data_path_val, text_col_val, label_col_val,
                     y_val = y_all[val_idx]
                     lines.append(f"Fold {fold_idx}/{int(cv_k_val)}  fitting classical baseline…")
                     yield "\n".join(lines)
-                    model.fit(X_train, y_train)
+                    fit_with_stop(model, X_train, y_train)
                     y_pred = model.predict(X_val)
                     y_prob = model.predict_proba(X_val) if hasattr(model, "predict_proba") else None
                     if task_val == "classification":
@@ -219,11 +221,22 @@ def run_cv(modality_val, data_path_val, text_col_val, label_col_val,
             yield "ℹ️ Cross-validation is currently supported for **tabular** modality only."
             return
 
+    except _cancel.TrainingStopped:
+        yield "\n".join([*lines, "⏹ Cross-validation stopped."])
     except Exception as exc:
         yield f"❌ Cross-validation failed: {exc}"
 
 
-def run_cv_significance(modality_val, data_path_val, label_col_val, time_col_val, window_size_val, subset_enabled_val, subset_percent_val, subset_seed_val, training_mode_val,
+def run_cv_significance(*args):
+    """Paired 10-fold significance test; Stop ends it between fits."""
+    _cancel.reset()
+    try:
+        return _cv_significance(*args)
+    except _cancel.TrainingStopped:
+        return "### ⏹ Significance test stopped.", None
+
+
+def _cv_significance(modality_val, data_path_val, label_col_val, time_col_val, window_size_val, subset_enabled_val, subset_percent_val, subset_seed_val, training_mode_val,
                         timeseries_forecast_mode_val, timeseries_forecast_horizon_val, timeseries_lag_steps_val, timeseries_rolling_window_val,
                         base_model_name, task_val, batch_size_val, dropout_val,
                         optimizer_val, hidden_size_val, num_layers_val,
@@ -342,7 +355,7 @@ def run_cv_significance(modality_val, data_path_val, label_col_val, time_col_val
                 X_val = X_all[val_idx]
                 y_val = y_all[val_idx]
                 model = build_family(model_name_local)
-                model.fit(X_train, y_train)
+                fit_with_stop(model, X_train, y_train)
                 y_pred = model.predict(X_val)
                 y_prob = model.predict_proba(X_val) if hasattr(model, "predict_proba") else None
             else:
@@ -445,6 +458,10 @@ def run_cv_significance(modality_val, data_path_val, label_col_val, time_col_val
     plot = _plot_cv_significance_scores(metric_name, base_model_name, baseline_scores, challenger_curves)
     return "\n".join(lines), plot
 
+
+# inspect.signature (Gradio, the UI wiring test) then sees the real parameters.
+run_cv_significance.__wrapped__ = _cv_significance
+
 # ── Hyperparameter search callback ────────────────────────────────────────
 
 
@@ -467,6 +484,7 @@ def run_hparam_search(modality_val, data_path_val, text_col_val, label_col_val,
         return
 
     param_space = {"lr": lr_candidates, "dropout": dropout_candidates}
+    _cancel.reset()
     yield f"Starting random hyperparameter search over {len(lr_candidates)}×{len(dropout_candidates)} grid…\n"
     lines = []
 
@@ -512,6 +530,8 @@ def run_hparam_search(modality_val, data_path_val, text_col_val, label_col_val,
                              f"params={prog['params']}  val_acc={prog['val_acc']:.2f}%")
             yield "\n".join(lines)
 
+    except _cancel.TrainingStopped:
+        yield "\n".join([*lines, "⏹ Hyperparameter search stopped."])
     except Exception as exc:
         yield f"❌ Hyperparameter search failed: {exc}"
 

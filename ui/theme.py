@@ -36,14 +36,25 @@ APP_THEME = gr.themes.Soft(
 # The app stylesheet; launch_app() passes it to demo.launch(css=...).
 _APP_CSS_PATH = _PROJECT_ROOT / "styles" / "app.css"
 
-# Gradio 4 marked dark mode with a `dark` class on <html>; Gradio 6 puts it on
-# <body>. styles/app.css defines its dark tokens and ~20 overrides under `html.dark`,
-# so mirror the body class onto <html> (and keep it in sync if it changes).
+# Gradio's theme (system default, or ?__theme=light|dark) is the one switch for
+# dark mode: Gradio 6 marks it with a `dark` class on <body>. Mirror it onto
+#   - <html> as `dark`, for page-level rules (`html.dark body`, the page background);
+#   - each `.studio-shell` as `studio-dark`. Gradio also injects css= with every
+#     selector prefixed by `.gradio-container… .contain`, which outranks
+#     `html.dark …`. `.studio-dark …` rules get that prefix too and still match,
+#     because .studio-shell is inside .contain, so dark overrides win.
 _SYNC_DARK_CLASS_JS = """
 () => {
-  const sync = () => document.documentElement.classList.toggle(
-    "dark", document.body.classList.contains("dark"));
+  let queued = false;
+  const sync = () => {
+    queued = false;
+    const dark = document.body.classList.contains("dark");
+    document.documentElement.classList.toggle("dark", dark);
+    document.querySelectorAll(".studio-shell").forEach(el => el.classList.toggle("studio-dark", dark));
+  };
   sync();
-  new MutationObserver(sync).observe(document.body, {attributes: true, attributeFilter: ["class"]});
+  new MutationObserver(() => {
+    if (!queued) { queued = true; requestAnimationFrame(sync); }
+  }).observe(document.body, {attributes: true, attributeFilter: ["class"], childList: true, subtree: true});
 }
 """
