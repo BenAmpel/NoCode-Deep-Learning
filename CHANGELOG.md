@@ -6,7 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
-## [Unreleased]
+## [0.1.0] - 2026-10-15
+
+First public release. macOS ships as a notarized DMG; the app installs Python 3.12 from python.org on first launch if it isn't already installed.
 
 ### Added
 - HistGradientBoosting (scikit-learn's gradient-boosted trees) for tabular and time-series data, on every platform

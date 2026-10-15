@@ -17,6 +17,7 @@ venv/
 # Build and installer outputs
 build/
 dist/
+releases/
 packaging/vendor/
 packages/
 

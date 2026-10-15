@@ -28,9 +28,13 @@
 
 ## macOS dissemination
 
-- Build unsigned package:
+- Release build (the same path as the other Purplelink apps): a signed, notarized, stapled DMG staged in
+  `releases/staging/<version>/` with a manifest. Needs only the Developer ID Application certificate and the
+  `moderntex` notary profile:
+  - `NCDL_VERSION=<version> scripts/build-release.sh`
+- Build unsigned package (testing):
   - `python3 packaging/build_macos_installer.py --version <version>`
-- If distributing broadly, sign and notarize:
+- A signed .pkg instead (needs a Developer ID Installer certificate too):
   - `python3 packaging/sign_and_notarize_macos.py ...`
   - Before uploading to Apple, the build checks the signed pkg for what the
     notary service rejects (installer signature, hardened runtime, secure

@@ -88,6 +88,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional notarytool keychain profile. Used only when signing is enabled.",
     )
     parser.add_argument(
+        "--app-only",
+        metavar="DIR",
+        default="",
+        help="Build and sign only the .app, copy it to DIR and stop (no .pkg). "
+             "scripts/build-release.sh uses this to make the notarized DMG.",
+    )
+    parser.add_argument(
         "--keychain",
         default=os.environ.get("NOCODE_DL_MAC_KEYCHAIN", ""),
         help="Optional keychain holding the signing identities (default: the keychain search list).",
@@ -431,9 +438,32 @@ if [ ! -x "$PYTHON" ]; then
   done
 fi
 
-if [ -z "$PYTHON" ]; then
-  osascript -e 'display dialog "Python 3.12 was not found. Re-run the NoCode-DL installer to install the bundled Python runtime." buttons {"OK"} default button "OK" with icon caution' >/dev/null 2>&1 || true
+fail() {
+  osascript -e "display dialog \\"$1\\" buttons {\\"OK\\"} default button \\"OK\\" with icon caution" >/dev/null 2>&1 || true
   exit 1
+}
+
+# No suitable Python: install python.org's 3.12 (what the .pkg's postinstall
+# does; the DMG has no install step). Same pinned file and SHA-256.
+if [ -z "$PYTHON" ]; then
+  osascript -e 'display dialog "NoCode-DL needs Python 3.12 from python.org (about 45 MB). Download and install it now? macOS will ask for an administrator password." buttons {"Cancel", "Install"} default button "Install" with icon note' >/dev/null 2>&1 || exit 1
+  TMP_PY="$(mktemp -d)"
+  PY_PKG="$TMP_PY/__PYTHON_PKG_NAME__"
+  if ! curl -fsSL "__PYTHON_PKG_URL__" -o "$PY_PKG"; then
+    rm -rf "${TMP_PY:?}"
+    fail "Could not download Python 3.12. Check your internet connection and open NoCode-DL again."
+  fi
+  if [ "$(shasum -a 256 "$PY_PKG" | awk '{print $1}')" != "__PYTHON_PKG_SHA256__" ]; then
+    rm -rf "${TMP_PY:?}"
+    fail "The downloaded Python installer failed its checksum, so it was not installed."
+  fi
+  if ! osascript -e "do shell script \\"/usr/sbin/installer -pkg '$PY_PKG' -target /\\" with administrator privileges" >/dev/null 2>&1; then
+    rm -rf "${TMP_PY:?}"
+    fail "Python 3.12 was not installed. Open NoCode-DL again to retry."
+  fi
+  rm -rf "${TMP_PY:?}"
+  PYTHON="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"
+  [ -x "$PYTHON" ] || fail "Python 3.12 still isn't available after installing it."
 fi
 
 mkdir -p "$LOG_DIR"
@@ -444,6 +474,9 @@ mkdir -p "$LOG_DIR"
 # the Apple Silicon check above already guarantees arm64 hardware.)
 exec arch -arm64 "$PYTHON" "$RESOURCE_APP/runtime/bootstrap_macos.py" >>"$LOG_FILE" 2>&1
 """
+    launcher = (launcher.replace("__PYTHON_PKG_NAME__", PYTHON_PKG_NAME)
+                .replace("__PYTHON_PKG_URL__", PYTHON_PKG_URL)
+                .replace("__PYTHON_PKG_SHA256__", PYTHON_PKG_SHA256))
     launcher_path = MACOS_DIR / APP_NAME
     launcher_path.write_text(launcher, encoding="utf-8")
     current = launcher_path.stat().st_mode
@@ -656,6 +689,18 @@ def main() -> int:
         print("Signing app bundle...")
         sign_app_bundle(args.app_sign_identity, hardened_runtime=not args.no_hardened_runtime,
                         keychain=args.keychain)
+    if args.app_only:
+        out_dir = Path(args.app_only)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dest = out_dir / APP_BUNDLE.name
+        if dest.exists():
+            shutil.rmtree(dest)
+        # ditto keeps the signature's extended attributes and permissions intact.
+        subprocess.run(["ditto", str(APP_BUNDLE), str(dest)], check=True)
+        if not args.keep_build_artifacts:
+            shutil.rmtree(BUILD_ROOT)
+        print(f"Built app: {dest}")
+        return 0
     prepare_scripts()
     build_component_pkg(version)
     pkg_path = build_product_pkg(version)
