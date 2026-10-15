@@ -1,7 +1,7 @@
 """The Studio's component tree.
 
 ``build_layout()`` creates every component inside a new ``gr.Blocks`` and
-returns it with the components by name; the callbacks wire events to them.
+returns it with the components by name; ui/callbacks/* wire events to them.
 """
 from __future__ import annotations
 
@@ -1224,9 +1224,10 @@ def build_layout() -> tuple[gr.Blocks, Components]:
                                 line_breaks=True,
                             )
 
-    # Every component above is a local variable; hand them over by name.
+    # Every component above is a local variable; hand them over by name,
+    # together with the Blocks itself as "demo" (for demo.load events).
     local_names = locals()
     return demo, Components(
         (name, value) for name, value in local_names.items()
-        if isinstance(value, gr.blocks.Block) and value is not demo
+        if isinstance(value, gr.blocks.Block)
     )

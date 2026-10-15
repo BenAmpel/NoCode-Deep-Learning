@@ -12,7 +12,7 @@ env:
   BANDIT_PATHS: >-
     app.py config.py install.py run_local.py runtime
     data_pipeline detection eval export modalities models
-    packaging scripts training ui
+    packaging pipeline scripts training ui
 
 permissions:
   contents: read
