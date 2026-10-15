@@ -6612,10 +6612,11 @@ with gr.Blocks(title="NoCode-DL") as demo:
             return _format_status_block(
                 "FastAPI export",
                 (f"FastAPI app written to:\n  {path}\n\n"
-                 f"Start server:\n"
-                 f"  cd {bundle_path}\n"
+                 f"Start server (reachable only from this computer):\n"
+                 f'  cd "{bundle_path}"\n'
                  f"  pip install -r requirements_serve.txt\n"
-                 f"  uvicorn main:app --host 0.0.0.0 --port 8000"),
+                 f"  python main.py\n\n"
+                 f"Then open http://127.0.0.1:8000/docs"),
             )
         except Exception as e:
             return _format_status_block("FastAPI export", f"Error: {e}", success=False)
@@ -6634,12 +6635,10 @@ with gr.Blocks(title="NoCode-DL") as demo:
             return _format_status_block(
                 "Docker export",
                 (f"Docker files written:\n  {files}\n\n"
-                 f"Build & run:\n"
-                 f"  cd {bundle_path}\n"
-                 f"  docker build -t nocode-dl-{mod} .\n"
-                 f"  docker run -p 8000:8000 nocode-dl-{mod}\n\n"
-                 f"Or with Compose:\n"
-                 f"  docker-compose up"),
+                 f"Build & run (reachable only from this computer):\n"
+                 f'  cd "{bundle_path}"\n'
+                 f"  docker compose up --build\n\n"
+                 f"See README_deploy.md for exposing it with an API key."),
             )
         except Exception as e:
             return _format_status_block("Docker export", f"Error: {e}", success=False)

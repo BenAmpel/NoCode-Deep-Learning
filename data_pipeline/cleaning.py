@@ -21,15 +21,12 @@ logger = logging.getLogger(__name__)
 CleaningStrategy = Literal["auto", "median", "mean", "drop"]
 TimeseriesFillStrategy = Literal["none", "forward_fill", "interpolate"]
 
-_BASIC_STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by",
-    "for", "from", "had", "has", "have", "he", "her", "hers", "him", "his",
-    "i", "if", "in", "into", "is", "it", "its", "me", "my", "of", "on", "or",
-    "our", "ours", "she", "so", "than", "that", "the", "their", "theirs",
-    "them", "they", "this", "those", "to", "too", "us", "was", "we", "were",
-    "what", "when", "where", "which", "who", "why", "with", "you", "your",
-    "yours",
-}
+# Shared with the bundle runtime so served text is cleaned like training text.
+from export.bundle_runtime import (  # noqa: E402
+    BASIC_STOPWORDS as _BASIC_STOPWORDS,
+    lemmatize_token as _lemmatize_token,
+    stem_token as _stem_token,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -288,25 +285,6 @@ def clean_text_dataframe(
         ),
     }
     return cleaned.reset_index(drop=True), report
-
-
-def _stem_token(token: str) -> str:
-    token = token.strip()
-    for suffix in ("ingly", "edly", "ing", "ed", "ly", "s"):
-        if len(token) > len(suffix) + 2 and token.endswith(suffix):
-            return token[: -len(suffix)]
-    return token
-
-
-def _lemmatize_token(token: str) -> str:
-    token = token.strip()
-    irregular = {"children": "child", "mice": "mouse", "geese": "goose", "better": "good"}
-    if token in irregular:
-        return irregular[token]
-    for suffix, replacement in (("ies", "y"), ("ves", "f"), ("men", "man")):
-        if len(token) > len(suffix) + 1 and token.endswith(suffix):
-            return token[: -len(suffix)] + replacement
-    return token
 
 
 def clean_timeseries_dataframe(

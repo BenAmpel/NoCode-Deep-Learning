@@ -17,44 +17,8 @@ from config import DEFAULTS
 from data_pipeline.io_utils import drop_missing_label_rows, read_structured_file
 
 
-def build_temporal_feature_matrix(
-    values: np.ndarray,
-    *,
-    lag_steps: int = 0,
-    rolling_window: int = 0,
-) -> tuple[np.ndarray, int]:
-    """Expand base time-series features with lag and rolling statistics.
-
-    Returns the engineered feature matrix and the number of leading rows that
-    must be discarded to avoid NaNs caused by lagging/rolling windows.
-    """
-    engineered = [values]
-    trim = 0
-
-    if int(lag_steps) > 0:
-        trim = max(trim, int(lag_steps))
-        for lag in range(1, int(lag_steps) + 1):
-            lagged = np.roll(values, shift=lag, axis=0)
-            lagged[:lag, :] = np.nan
-            engineered.append(lagged)
-
-    if int(rolling_window) > 1:
-        window = int(rolling_window)
-        trim = max(trim, window - 1)
-        means = np.full_like(values, np.nan, dtype=np.float32)
-        stds = np.full_like(values, np.nan, dtype=np.float32)
-        mins = np.full_like(values, np.nan, dtype=np.float32)
-        maxs = np.full_like(values, np.nan, dtype=np.float32)
-        for idx in range(window - 1, len(values)):
-            chunk = values[idx - window + 1: idx + 1]
-            means[idx] = chunk.mean(axis=0)
-            stds[idx] = chunk.std(axis=0)
-            mins[idx] = chunk.min(axis=0)
-            maxs[idx] = chunk.max(axis=0)
-        engineered.extend([means, stds, mins, maxs])
-
-    matrix = np.concatenate(engineered, axis=1).astype(np.float32)
-    return matrix, trim
+# Defined in the bundle runtime so training and exported inference share it.
+from export.bundle_runtime import build_temporal_feature_matrix  # noqa: E402,F401
 
 
 def _engineered_feature_names(

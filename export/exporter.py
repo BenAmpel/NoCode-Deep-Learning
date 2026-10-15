@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,8 @@ import numpy as np
 import torch
 
 logger = logging.getLogger(__name__)
+
+RUNTIME_SOURCE = Path(__file__).with_name("bundle_runtime.py")
 
 
 def export_bundle(
@@ -84,7 +87,10 @@ def export_bundle(
     else:
         _export_pytorch_onnx(model, bundle_path, preprocessing_config, sample_batch)
 
-    # inference.py
+    # bundle_runtime.py + inference.py: the same preprocessing code the app uses,
+    # so the bundle works standalone and matches "Try Your Model".
+    if preprocessing_config.get("modality") != "graph":
+        shutil.copy2(RUNTIME_SOURCE, bundle_path / "bundle_runtime.py")
     _write_inference_script(bundle_path, preprocessing_config, classes)
 
     return str(bundle_path), warnings
@@ -181,9 +187,14 @@ def _export_sklearn(model, bundle_path: Path, prep: dict) -> list[str]:
         from skl2onnx import convert_sklearn
         from skl2onnx.common.data_types import FloatTensorType
 
+        from sklearn.base import is_classifier
+
         input_size   = prep.get("sklearn_input_size", prep.get("input_size", 1))
         initial_type = [("float_input", FloatTensorType([None, input_size]))]
-        onnx_model   = convert_sklearn(model, initial_types=initial_type)
+        # zipmap=False: classifiers output a plain (n, classes) "probabilities"
+        # array instead of a list of {class: prob} dicts that numpy can't use.
+        options      = {id(model): {"zipmap": False}} if is_classifier(model) else None
+        onnx_model   = convert_sklearn(model, initial_types=initial_type, options=options)
         (bundle_path / "model.onnx").write_bytes(onnx_model.SerializeToString())
     except Exception as exc:
         msg = (
@@ -224,6 +235,57 @@ def _to_json_safe(obj):
     return obj
 
 
+# Packages bundle_runtime.py needs per modality, pinned to the versions the
+# model was trained with (looked up from the running environment).
+_RUNTIME_PACKAGES = {
+    "image": ["Pillow"],
+    "audio": ["Pillow", "torch", "torchaudio", "torchvision", "scipy"],
+    "video": ["opencv-python-headless"],
+    "text": [],
+    "tabular": [],
+    "timeseries": [],
+}
+
+
+def _pinned(dist: str) -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return f"{dist}=={version(dist)}"
+    except PackageNotFoundError:
+        return dist
+
+
+def runtime_requirements(prep: dict, bundle_path: Path) -> list[str]:
+    """Pinned requirements for running bundle_runtime.py on this bundle."""
+    modality = prep.get("modality", "")
+    packages = ["numpy", "onnxruntime", *_RUNTIME_PACKAGES.get(modality, [])]
+    if modality == "text" and not prep.get("vocab"):
+        packages.append("transformers")
+    if not (bundle_path / "model.onnx").is_file() and (bundle_path / "model.joblib").is_file():
+        packages += ["joblib", "scikit-learn"]
+    return [_pinned(p) for p in packages]
+
+
+def _example_input(prep: dict) -> tuple[str, str]:
+    """(argument shown in the usage line, one-line description) for a modality."""
+    modality = prep.get("modality", "")
+    if modality == "tabular":
+        example = {c: 0.0 for c in prep.get("numeric_cols", [])[:3]}
+        for col, cats in list(prep.get("ohe_categories", {}).items())[:2]:
+            example[col] = str(cats[0]) if cats else ""
+        return f"'{json.dumps(example)}'", "a JSON object of column values (or a .json file)"
+    if modality == "timeseries":
+        cols = prep.get("raw_feature_columns") or prep.get("feature_columns") or ["x"]
+        row = [0.0] * len(cols)
+        return f"'{json.dumps([row, row])}'", (
+            f"a JSON list of recent rows, oldest first, each [{', '.join(cols)}] (or a .json file)")
+    if modality == "text":
+        return '"text to classify"', "the text to classify"
+    return {"image": "photo.jpg", "audio": "clip.wav", "video": "clip.mp4"}.get(modality, "input"), \
+        f"path to a {modality} file"
+
+
 def _write_inference_script(bundle_path: Path, prep: dict, classes: list[str]) -> None:
     modality = prep.get("modality", "unknown")
     if modality == "graph":
@@ -240,41 +302,61 @@ nodes.csv + edges.csv context used during training.
 print("Graph bundle saved successfully.")
 print("Use this bundle inside NoCode-DL or the exported Streamlit dashboard.")
 '''
-        (bundle_path / "inference.py").write_text(script)
+        (bundle_path / "inference.py").write_text(script, encoding="utf-8")
         return
+
+    reqs = runtime_requirements(prep, bundle_path)
+    (bundle_path / "requirements.txt").write_text("\n".join(reqs) + "\n", encoding="utf-8")
+    example, description = _example_input(prep)
+    structured = modality in ("tabular", "timeseries")
     script = f'''\
 """
-Auto-generated inference script — {modality} model.
+Command-line inference for this {modality} model.
 
-Requirements:
-    pip install onnxruntime numpy
+Preprocessing comes from bundle_runtime.py in this folder: the same code the
+NoCode-DL app used, so results match "Try Your Model".
+
+Setup (once):
+    pip install -r requirements.txt
 
 Usage:
-    python inference.py --input path/to/sample.npy
-    (save your preprocessed input as a numpy .npy file first)
+    python inference.py {example}
+
+INPUT is {description}.
 """
-import argparse, json
-import numpy as np
-import onnxruntime as ort
+import argparse
+import json
+import sys
+from pathlib import Path
 
-with open("labels.json") as f:
-    LABELS = json.load(f)
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
-session = ort.InferenceSession("model.onnx", providers=["CPUExecutionProvider"])
-INPUT_NAME = session.get_inputs()[0].name
+from bundle_runtime import Bundle, BundleInputError  # noqa: E402
+
+STRUCTURED_INPUT = {structured!r}
 
 
-def predict(x: np.ndarray) -> str:
-    if x.ndim == len(session.get_inputs()[0].shape) - 1:
-        x = x[np.newaxis]          # add batch dim
-    logits = session.run(None, {{INPUT_NAME: x.astype(np.float32)}})[0]
-    return LABELS[str(int(np.argmax(logits, axis=1)[0]))]
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Predict with this NoCode-DL model bundle.")
+    parser.add_argument("input", help={description!r})
+    parser.add_argument("--top-k", type=int, default=3, help="How many classes to list.")
+    args = parser.parse_args()
+
+    raw = args.input
+    if STRUCTURED_INPUT:
+        path = Path(raw)
+        raw = json.loads(path.read_text(encoding="utf-8") if path.is_file() else raw)
+    try:
+        result = Bundle(HERE).predict(raw, top_k=args.top_k)
+    except BundleInputError as exc:
+        print(f"Invalid input: {{exc}}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="Path to .npy preprocessed input")
-    args = parser.parse_args()
-    print("Predicted class:", predict(np.load(args.input)))
+    raise SystemExit(main())
 '''
-    (bundle_path / "inference.py").write_text(script)
+    (bundle_path / "inference.py").write_text(script, encoding="utf-8")
