@@ -49,6 +49,12 @@ make_identity "NoCode-DL CI Application" codeSigning 1.2.840.113635.100.6.1.13 a
 make_identity "NoCode-DL CI Installer" 1.2.840.113635.100.4.13 1.2.840.113635.100.6.1.14 installer
 security set-key-partition-list -S apple-tool:,apple: -s -k "$PASSWORD" "$KEYCHAIN" >/dev/null
 
+# codesign resolves an identity *name* only through the keychain search list
+# (with --keychain alone it reports "no identity found"), so add ours to it.
+existing=$(security list-keychains -d user | tr -d '"' | xargs)
+# shellcheck disable=SC2086  # word-split the existing keychain paths
+security list-keychains -d user -s "$KEYCHAIN" $existing
+
 security find-identity -v "$KEYCHAIN" >&2
 echo "KEYCHAIN=$KEYCHAIN"
 echo "APP_IDENTITY=NoCode-DL CI Application"

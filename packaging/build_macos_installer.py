@@ -5,6 +5,7 @@ import hashlib
 import html
 import os
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -577,13 +578,32 @@ def build_product_pkg(version: str) -> Path:
     return pkg_path
 
 
+def _identity_hash(identity: str, keychain: str) -> str:
+    """The SHA-1 of a code-signing identity named in ``keychain``.
+
+    ``codesign --keychain K --sign NAME`` reports "no identity found" even when
+    K holds NAME; it only resolves names through the keychain search list. A
+    hash works with --keychain, so look the name up there.
+    """
+    if not keychain or identity == "-" or re.fullmatch(r"[0-9A-Fa-f]{40}", identity):
+        return identity
+    listing = subprocess.run(
+        ["security", "find-identity", "-v", "-p", "codesigning", keychain],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    for sha1, name in re.findall(r'^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"', listing, re.M):
+        if name == identity:
+            return sha1
+    raise SystemExit(f'Signing identity "{identity}" not found in {keychain}:\n{listing}')
+
+
 def sign_app_bundle(identity: str, hardened_runtime: bool, keychain: str = "") -> None:
     """Sign the assembled .app before it is packaged.
 
     This has to happen before build_component_pkg(): the component pkg is a
     snapshot of COMPONENT_ROOT, so signing afterwards ships an unsigned app.
     """
-    cmd = ["codesign", "--force", "--sign", identity]
+    cmd = ["codesign", "--force", "--sign", _identity_hash(identity, keychain)]
     if keychain:
         cmd.extend(["--keychain", keychain])
     if identity != "-":
