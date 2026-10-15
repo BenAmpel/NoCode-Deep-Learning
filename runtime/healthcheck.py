@@ -36,8 +36,8 @@ def _port_is_available(host: str, port: int) -> bool:
 def run_healthcheck(server_port: int = 7860) -> list[str]:
     messages: list[str] = []
 
-    if sys.version_info < (3, 10):
-        raise RuntimeError("Python 3.10 or newer is required.")
+    if not ((3, 11) <= sys.version_info[:2] <= (3, 13)):
+        raise RuntimeError("Python 3.11-3.13 is required (numpy 2.4 / scikit-learn 1.8 need >= 3.11).")
     messages.append(f"Python {sys.version.split()[0]}")
 
     for module_name in REQUIRED_IMPORTS:

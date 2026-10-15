@@ -250,10 +250,15 @@ _RUNTIME_PACKAGES = {
 def _pinned(dist: str) -> str:
     from importlib.metadata import PackageNotFoundError, version
 
-    try:
-        return f"{dist}=={version(dist)}"
-    except PackageNotFoundError:
-        return dist
+    # Bundles use the headless OpenCV build (servers have no display); pin it
+    # to whichever OpenCV build the app itself was trained with.
+    lookups = [dist, "opencv-python"] if dist == "opencv-python-headless" else [dist]
+    for name in lookups:
+        try:
+            return f"{dist}=={version(name)}"
+        except PackageNotFoundError:
+            continue
+    return dist
 
 
 def runtime_requirements(prep: dict, bundle_path: Path) -> list[str]:

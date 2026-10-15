@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 
@@ -33,7 +34,9 @@ def _reexec_into_venv(venv_dir) -> None:
                 "re-launch to trigger a fresh install."
             )
     script_path = os.path.abspath(__file__)
-    os.execv(str(venv_python), [str(venv_python), script_path, *sys.argv[1:]])
+    # A child process, not os.execv: on Windows execv doesn't quote arguments
+    # (paths with spaces break) and the caller loses the exit code.
+    raise SystemExit(subprocess.run([str(venv_python), script_path, *sys.argv[1:]]).returncode)
 
 
 def main() -> int:
