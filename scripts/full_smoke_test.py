@@ -632,6 +632,21 @@ def _test_exports_and_inference(training_runs: dict[str, Any], text_fixture: Pat
 _FAILURE_MARKERS = ("Traceback (most recent call last)", "Evaluation error", "❌")
 
 
+def _is_known_environment_issue(error: str) -> bool:
+    # XGBoost's macOS wheels link against an external libomp.dylib (Homebrew's
+    # `brew install libomp`) and do not bundle it. That is a real end-user
+    # problem, tracked separately, not a regression this smoke test can fix.
+    return sys.platform == "darwin" and "libomp" in error
+
+
+def _collect_known_issues(report: dict[str, Any]) -> list[str]:
+    issues = []
+    for name, result in (report.get("constructors") or {}).items():
+        if isinstance(result, dict) and result.get("ok") is False and _is_known_environment_issue(str(result.get("error", ""))):
+            issues.append(f"/constructors/{name}: XGBoost cannot load libomp.dylib (brew install libomp)")
+    return issues
+
+
 def _collect_failures(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
 
@@ -650,6 +665,14 @@ def _collect_failures(report: dict[str, Any]) -> list[str]:
                     break
 
     walk(report, "")
+
+    # Constructor checks record failures as {"ok": False, "error": ...}.
+    for name, result in (report.get("constructors") or {}).items():
+        if isinstance(result, dict) and result.get("ok") is False:
+            error = str(result.get("error", ""))
+            if _is_known_environment_issue(error):
+                continue
+            failures.append(f"/constructors/{name}: {error.strip()[:160]}")
 
     for name, run in (report.get("training_runs") or {}).items():
         if isinstance(run, dict) and "bundle_path" in run and not run["bundle_path"]:
@@ -689,6 +712,8 @@ def main() -> int:
 
     failures = _collect_failures(report)
     print(f"\nnum_workers={config.DEFAULTS['num_workers']}")
+    for issue in _collect_known_issues(report):
+        print(f"KNOWN ISSUE (not failing the run): {issue}")
     if failures:
         print(f"SMOKE TEST FAILED: {len(failures)} problem(s)")
         for failure in failures:

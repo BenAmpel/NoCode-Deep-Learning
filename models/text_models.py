@@ -75,7 +75,12 @@ class PretrainedTransformerClassifier(nn.Module):
     def __init__(self, num_classes: int, repo_id: str):
         super().__init__()
         from transformers import AutoModel
-        self.encoder = AutoModel.from_pretrained(repo_id)
+        from config import DEVICE
+        # transformers 5 defaults to SDPA attention, and MPS's
+        # scaled_dot_product_attention raises when attention dropout is active
+        # (i.e. whenever the model trains). Eager attention works everywhere.
+        load_kwargs = {"attn_implementation": "eager"} if DEVICE == "mps" else {}
+        self.encoder = AutoModel.from_pretrained(repo_id, **load_kwargs)
         self.hidden_size = self.encoder.config.hidden_size
 
         # Freeze embeddings

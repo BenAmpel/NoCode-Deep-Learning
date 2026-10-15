@@ -411,8 +411,8 @@ fi
 PYTHON="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"
 if [ ! -x "$PYTHON" ]; then
   PYTHON=""
-  # 3.11-3.13 only: numpy 2.4 / scikit-learn 1.8 need >= 3.11 and torch 2.8
-  # has no 3.14 wheels.
+  # 3.11-3.13 only: numpy 2.4 / scikit-learn 1.8 need >= 3.11, and the
+  # pinned compiled packages have not been verified on 3.14.
   for cmd in python3.12 python3.13 python3.11 python3; do
     if command -v "$cmd" >/dev/null 2>&1; then
       if "$cmd" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)' >/dev/null 2>&1; then

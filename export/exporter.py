@@ -94,6 +94,13 @@ def export_bundle(
 # PyTorch → ONNX
 # ---------------------------------------------------------------------------
 
+# torch >= 2.9 defaults to the torch.export-based ("dynamo") ONNX exporter,
+# which needs the onnxscript package, opset >= 18 and dynamic_shapes instead of
+# dynamic_axes, and has trouble with RNN models. Keep the TorchScript exporter
+# (dynamo=False) so bundles stay opset 14 with the same input/output names.
+_LEGACY_ONNX_EXPORTER = False
+
+
 def _export_pytorch_onnx(model, bundle_path: Path, prep: dict, sample_batch) -> None:
     model = model.to("cpu").eval()
     onnx_path = str(bundle_path / "model.onnx")
@@ -117,6 +124,7 @@ def _export_pytorch_onnx(model, bundle_path: Path, prep: dict, sample_batch) -> 
                 "logits":         {0: "batch"},
             },
             opset_version = 14,
+            dynamo        = _LEGACY_ONNX_EXPORTER,
         )
         # Also save tokenizer alongside for convenience
         try:
@@ -147,6 +155,7 @@ def _export_pytorch_onnx(model, bundle_path: Path, prep: dict, sample_batch) -> 
             output_names = ["logits"],
             dynamic_axes = {n: {0: "batch"} for n in names} | {"logits": {0: "batch"}},
             opset_version = 14,
+            dynamo        = _LEGACY_ONNX_EXPORTER,
         )
     else:
         raise ValueError("sample_batch is required for ONNX export")

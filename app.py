@@ -8,6 +8,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+# Must be set before gradio is imported. Gradio's usage analytics contact
+# api.gradio.app and checkip.amazonaws.com, which contradicts the app's
+# "your data never leaves this machine" promise.
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+
 import gradio as gr
 import numpy as np
 
@@ -256,33 +261,6 @@ def _build_image_quality_lab_html(
     )
     return _render_quality_lab_html("Data Quality Lab", subtitle, chips, cards_html)
 
-
-def _patch_gradio_schema_parser() -> None:
-    """
-    Gradio 4.44 can emit JSON schema fragments where ``additionalProperties`` is
-    a boolean. Its client-side schema parser assumes a dict and crashes while
-    building API metadata, preventing the local app from loading.
-    """
-    try:
-        from gradio_client import utils as client_utils
-    except Exception:
-        return
-
-    if getattr(client_utils, "_nocode_dl_schema_patch", False):
-        return
-
-    original = client_utils._json_schema_to_python_type
-
-    def patched(schema, defs):
-        if isinstance(schema, bool):
-            return "Any"
-        return original(schema, defs)
-
-    client_utils._json_schema_to_python_type = patched
-    client_utils._nocode_dl_schema_patch = True
-
-
-_patch_gradio_schema_parser()
 
 # Keep YOLO options local so the app doesn't touch cv2/ultralytics at startup.
 YOLO_MODELS = {
@@ -3639,7 +3617,8 @@ def run_pipeline(
 # Gradio UI
 # ─────────────────────────────────────────────────────────────────────────────
 
-with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
+# Gradio 6 takes theme and css in launch(); see launch_app().
+with gr.Blocks(title="NoCode-DL") as demo:
     with gr.Column(elem_classes=["studio-shell"]):
         gr.HTML('<a href="#studio-main-content" class="studio-skip-link">Skip to main content</a>')
         gr.HTML(
@@ -4309,7 +4288,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                             interactive=False,
                                             wrap=True,
                                             line_breaks=True,
-                                            height=320,
+                                            max_height=320,
                                         )
 
                     with gr.Column(scale=2):
@@ -4380,7 +4359,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                 label="Misclassified samples — table",
                                 wrap=True,
                                 line_breaks=True,
-                                height=320,
+                                max_height=320,
                                 column_widths=["80px", "120px", "140px", "140px", "140px", "160px", "140px"],
                             )
                             sample_review_note = gr.Markdown(_DEFAULT_SAMPLE_REVIEW_NOTE)
@@ -4533,8 +4512,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                     batch_df = gr.Dataframe(
                                         headers=["file", "prediction", "confidence"],
                                         datatype=["str", "str", "str"],
-                                        row_count=(1, "dynamic"),
-                                        col_count=(3, "fixed"),
+                                        row_count=1,
+                                        column_count=3, column_limits=(3, 3),
                                         interactive=False,
                                         wrap=True,
                                         label="Predictions",
@@ -4562,12 +4541,12 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                     history_df   = gr.Dataframe(
                         headers=HISTORY_COLUMNS,
                         datatype=["number", "str", "str", "str", "str", "str", "number", "number", "str"],
-                        row_count=(1, "dynamic"),
-                        col_count=(len(HISTORY_COLUMNS), "fixed"),
+                        row_count=1,
+                        column_count=len(HISTORY_COLUMNS), column_limits=(len(HISTORY_COLUMNS), len(HISTORY_COLUMNS)),
                         interactive=False,
                         wrap=True,
                         line_breaks=True,
-                        height=320,
+                        max_height=320,
                         column_widths=["70px", "150px", "120px", "110px", "130px", "120px", "90px", "90px", "360px"],
                         label="All training runs",
                     )
@@ -4808,8 +4787,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                         annotation_det_table = gr.Dataframe(
                             headers=["keep", "label", "confidence", "x1", "y1", "x2", "y2"],
                             datatype=["bool", "str", "number", "number", "number", "number", "number"],
-                            row_count=(1, "dynamic"),
-                            col_count=(7, "fixed"),
+                            row_count=1,
+                            column_count=7, column_limits=(7, 7),
                             interactive=True,
                             label="Editable detection review",
                             wrap=True,
@@ -7345,6 +7324,19 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
     )
 
 
+# Gradio 4 marked dark mode with a `dark` class on <html>; Gradio 6 puts it on
+# <body>. APP_CSS defines its dark tokens and ~20 overrides under `html.dark`,
+# so mirror the body class onto <html> (and keep it in sync if it changes).
+_SYNC_DARK_CLASS_JS = """
+() => {
+  const sync = () => document.documentElement.classList.toggle(
+    "dark", document.body.classList.contains("dark"));
+  sync();
+  new MutationObserver(sync).observe(document.body, {attributes: true, attributeFilter: ["class"]});
+}
+"""
+
+
 def launch_app(
     *,
     inbrowser: bool = True,
@@ -7360,7 +7352,14 @@ def launch_app(
         server_name="127.0.0.1",
         server_port=server_port,
         prevent_thread_lock=prevent_thread_lock,
-        show_api=show_api,
+        theme=APP_THEME,
+        css=APP_CSS,
+        js=_SYNC_DARK_CLASS_JS,
+        # Gradio 6 replaced show_api with footer_links.
+        footer_links=["api", "gradio", "settings"] if show_api else ["gradio", "settings"],
+        # Gradio 6 only serves files from the working directory, the temp dir
+        # and allowed_paths; outputs/ holds trained bundles, previews and plots.
+        allowed_paths=[str(_OUTPUTS_ROOT)],
         _frontend=frontend,
     )
 

@@ -34,24 +34,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pip-audit bandit
 
-      # Known vulnerabilities in the pinned Gradio 4 / Starlette / Pillow stack
-      # can only be fixed by the Gradio 5+ upgrade, so this step reports but does
-      # not fail the job yet. `shell: bash` adds pipefail, so `tee` no longer
-      # hides the exit code and the summary shows the real outcome.
-      # TODO: drop continue-on-error once dependencies are upgraded.
+      # Fails the job on any known vulnerability in the pinned dependencies or
+      # anything they pull in. `shell: bash` adds pipefail, so `tee` can't hide
+      # the exit code.
       - name: Dependency vulnerability audit
         id: pip_audit
-        continue-on-error: true
         shell: bash
         run: |
           pip-audit -r requirements.txt | tee pip-audit.txt
 
-      - name: Flag dependency vulnerabilities
-        if: steps.pip_audit.outcome == 'failure'
-        run: echo "::warning title=pip-audit::Known vulnerabilities in pinned dependencies. See the job summary."
-
+      # The static scans still run (and still report) if the audit failed.
       # Medium-severity findings are written to the report; high severity fails the job.
       - name: Static security scan (report, medium and above)
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           bandit -q -r $BANDIT_PATHS -ll -f txt -o bandit.txt --exit-zero
@@ -59,6 +54,7 @@ jobs:
 
       - name: Static security scan (gate, high severity)
         id: bandit
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           bandit -q -r $BANDIT_PATHS -lll
