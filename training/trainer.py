@@ -297,7 +297,8 @@ def train_sklearn(model, X_train, y_train, X_val=None, y_val=None) -> Generator[
     yield {"epoch": 1, "epochs": 1, "train_loss": 0.0, "val_loss": 0.0,
            "val_acc": 0.0, "done": False, "stopped_early": False,
            "status": "Fitting model…", "eta_seconds": 0}
-    model.fit(X_train, y_train)
+    from training.sklearn_fit import fit_with_stop
+    fit_with_stop(model, X_train, y_train)  # Stop interrupts between chunks
     val_acc = float(model.score(X_val, y_val)) * 100 if X_val is not None else 0.0
     yield {
         "done": True,
