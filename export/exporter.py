@@ -189,6 +189,7 @@ def _export_sklearn(model, bundle_path: Path, prep: dict) -> list[str]:
 
         from sklearn.base import is_classifier
 
+        _patch_skl2onnx_hist_gradient_boosting()
         input_size   = prep.get("sklearn_input_size", prep.get("input_size", 1))
         initial_type = [("float_input", FloatTensorType([None, input_size]))]
         # zipmap=False: classifiers output a plain (n, classes) "probabilities"
@@ -206,6 +207,32 @@ def _export_sklearn(model, bundle_path: Path, prep: dict) -> list[str]:
         warnings.append(msg)
 
     return warnings
+
+
+def _patch_skl2onnx_hist_gradient_boosting() -> None:
+    """Make skl2onnx able to convert HistGradientBoosting models.
+
+    skl2onnx 1.20 passes a Python ``False`` for leaf nodes in
+    ``nodes_missing_value_tracks_true``, and onnx >= 1.17 rejects booleans in an
+    int list ("Expected an int, got a boolean").  Coercing the flag to int keeps
+    the same meaning (1 = missing values follow the true branch).  The patch is
+    installed once and is a no-op for every other tree converter.
+    """
+    import skl2onnx.common.tree_ensemble as tree_ensemble
+
+    if getattr(tree_ensemble.add_node, "_nocode_int_missing", False):
+        return
+    original = tree_ensemble.add_node
+
+    def add_node(*args, nodes_missing_value_tracks_true=0, **kwargs):
+        return original(
+            *args,
+            nodes_missing_value_tracks_true=int(nodes_missing_value_tracks_true),
+            **kwargs,
+        )
+
+    add_node._nocode_int_missing = True
+    tree_ensemble.add_node = add_node
 
 
 def _export_graph_bundle(model, bundle_path: Path, prep: dict, *, is_sklearn: bool) -> list[str]:
