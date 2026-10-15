@@ -31,6 +31,9 @@ from models.registry import (
 from ui.project_state import load_project_state, save_project_state
 from ui.tooltips import TOOLTIPS
 from pipeline import RUN_CONFIG_FIELDS, RunConfig
+from pipeline.context import RunResult
+from pipeline.progress import RunLog, Update
+from pipeline.runner import PreflightError, cleanup as cleanup_run, execute as execute_run, preflight_errors, prepare_run, run as run_stages
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -49,7 +52,6 @@ _BUILTIN_TEXT_TUTORIAL_PATH       = _PROJECT_ROOT / "fixtures" / "newsgroups_tut
 _BUILTIN_AUDIO_TUTORIAL_PATH      = _PROJECT_ROOT / "fixtures" / "speechcommands_tutorial"
 _BUILTIN_TIMESERIES_TUTORIAL_PATH = _PROJECT_ROOT / "fixtures" / "timeseries_tutorial"
 _BUILTIN_VIDEO_TUTORIAL_PATH      = _PROJECT_ROOT / "fixtures" / "video_tutorial"
-_LIVE_PLOT_UPDATE_EVERY = 2
 
 
 def _path_signature(dpath: str | os.PathLike | None) -> tuple[str, float, bool]:
@@ -1011,17 +1013,6 @@ def _suggest_timeseries_example(dpath: str, mod: str, label_col: str, time_col: 
         return current_value or ""
 
 
-def _fmt_eta(seconds: float) -> str:
-    if seconds < 60:   return f"ETA: {int(seconds)}s"
-    if seconds < 3600: return f"ETA: {int(seconds/60)}m {int(seconds%60)}s"
-    return f"ETA: {seconds/3600:.1f}h"
-
-
-def _phase_eta_text(phase: str) -> str:
-    phase_name = (phase or "working").replace("_", " ")
-    return f"ETA: {phase_name}"
-
-
 def _format_live_training_metrics_card(metrics: dict | None = None) -> str:
     metrics = metrics or {}
 
@@ -1050,6 +1041,27 @@ def _format_live_training_metrics_card(metrics: dict | None = None) -> str:
 # Core pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
+_STOPPED_MESSAGE = "⏹ Training stopped. Nothing was exported for this run."
+
+
+def _format_run_error(exc: Exception) -> str:
+    """Status text for a failed run: a friendly message, then the traceback.
+
+    Call it from the ``except`` block that caught ``exc``.
+    """
+    try:
+        from ui.error_formatter import format_error
+        friendly = format_error(exc)
+    except Exception:
+        friendly = f"❌ **Error:** {exc}"
+    tb = traceback.format_exc()
+    return (
+        f"{friendly}\n\n"
+        f"{'─' * 60}\n"
+        f"Traceback (most recent call last):\n{tb}"
+    )
+
+
 def run_pipeline(
     config: RunConfig | None = None,
     /,
@@ -1058,23 +1070,15 @@ def run_pipeline(
 ):
     """Train, evaluate and export one model, yielding UI updates as it goes.
 
-    Pass a ``RunConfig``, or its fields as keyword arguments.
+    Pass a ``RunConfig``, or its fields as keyword arguments. The work happens
+    in the pipeline package's stages; this generator turns their progress
+    into Train-tab output tuples and their exceptions into status text.
     """
     cfg = config if config is not None else RunConfig(**fields)
-    # Replaced by a cleaned temporary copy when a cleaning step runs.
-    data_path = cfg.data_path
-
     _NONE     = gr.update(value=None)
-    _DEFAULT_TELEMETRY_CARD = _format_live_training_metrics_card()
 
-    telemetry = {
-        "phase": "Waiting",
-        "status_log": "Initialising…",
-        "eta_text": "ETA: estimating…",
-        "epoch_text": "—",
-        "latest_metrics": {},
-        "progress_label": "Preparing run",
-    }
+    run_log = RunLog()
+    telemetry = run_log.telemetry
 
     def _emit(status=None, loss_fig=_NONE, eta=None, telemetry_card=None, eval_sum="", cm=_NONE, roc=_NONE,
               tsne=_NONE, gcam=_NONE, shap=_NONE, mis_img=_NONE, mis_df=_NONE,
@@ -1106,1211 +1110,86 @@ def run_pipeline(
                 dash_kpi, dash_primary, dash_explain_plot, dash_explain_html,
                 dash_loss, dash_actions)
 
-    def _set_phase(phase: str, *, eta_text: str | None = None, status_line: str | None = None) -> None:
-        telemetry["phase"] = phase
-        telemetry["progress_label"] = phase
-        telemetry["eta_text"] = eta_text or _phase_eta_text(phase)
-        if status_line:
-            telemetry["status_log"] = status_line
-
-    def _update_epoch_metrics(*, epoch_text=None, train_loss=None, val_loss=None, metric=None, lr_value=None):
-        if epoch_text is not None:
-            telemetry["epoch_text"] = epoch_text
-        metrics = telemetry["latest_metrics"]
-        if train_loss is not None:
-            metrics["train_loss"] = str(train_loss)
-        if val_loss is not None:
-            metrics["val_loss"] = str(val_loss)
-        if metric is not None:
-            metrics["metric"] = str(metric)
-        if lr_value is not None:
-            metrics["lr"] = str(lr_value)
-
-    # ── Pre-flight validation ──────────────────────────────────────────────────
-    preflight_errors: list[str] = []
-    if not data_path or not str(data_path).strip():
-        preflight_errors.append("❌ **No data path provided.** Upload a dataset or enter a path.")
-    if not cfg.model_name:
-        preflight_errors.append("❌ **No model selected.** Choose an architecture in the Model tab.")
-    if cfg.task == "anomaly" and cfg.model_name != "Autoencoder":
-        preflight_errors.append(
-            "❌ **Anomaly detection requires the Autoencoder model.** "
-            f"Selected model '{cfg.model_name}' does not support anomaly detection. "
-            "Switch to Autoencoder or change the task."
+    def _emit_update(update: Update):
+        return _emit(
+            loss_fig=_loss_plot(update.loss_history) if update.loss_history is not None else _NONE,
+            eta=update.eta,
+            tsne=gr.update(value=update.tsne_fig) if update.tsne_fig is not None else _NONE,
+            train_summary=update.train_summary,
         )
-    if preflight_errors:
-        yield _emit("\n".join(preflight_errors))
-        return
 
-    # Sanitize bundle name — allow only letters, digits, underscores, hyphens
-    safe_bundle_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(cfg.bundle_name).strip()) or "my_model"
-
-    log_lines: list[str] = []
-    _LOG_CHAR_BUDGET = 40_000  # ~40 KB of visible text; enough for 200+ epochs
-
-    def log(msg: str) -> str:
-        nonlocal log_lines
-        log_lines.append(msg)
-        # Cap by character budget rather than line count — some messages (e.g.
-        # cleaning reports, tracebacks) contain many embedded newlines and would
-        # blow through a per-call cap without ever being trimmed.
-        combined = "\n".join(log_lines)
-        if len(combined) > _LOG_CHAR_BUDGET:
-            # Drop the oldest half and rebuild
-            log_lines = log_lines[len(log_lines) // 2 :]
-            combined  = "\n".join(log_lines)
-        telemetry["status_log"] = combined
-        return combined
-
-    status = log("Initialising…")
-    _set_phase("initialising", eta_text="ETA: estimating…")
-    yield _emit(status)
-
-    save_project_state({
-        **load_project_state(),
-        "preprocessing": {
-            "augmentation": cfg.augmentation,
-            "val_split": cfg.val_split,
-            "tabular_missing_strategy": cfg.tabular_missing_strategy,
-            "tabular_clip_outliers": bool(cfg.tabular_clip_outliers),
-            "tabular_scaling": cfg.tabular_scaling,
-            "text_lowercase": bool(cfg.text_lowercase),
-            "text_strip_urls": bool(cfg.text_strip_urls),
-            "text_strip_punctuation": bool(cfg.text_strip_punctuation),
-            "text_remove_stopwords": bool(cfg.text_remove_stopwords),
-            "text_deduplicate": bool(cfg.text_deduplicate),
-            "text_apply_stemming": bool(cfg.text_apply_stemming),
-            "text_apply_lemmatization": bool(cfg.text_apply_lemmatization),
-            "text_use_ngrams": bool(cfg.text_use_ngrams),
-            "image_size": int(cfg.image_size),
-            "image_normalization": cfg.image_normalization,
-            "image_force_grayscale": bool(cfg.image_force_grayscale),
-        },
-    })
-
-    extra_data: dict = {}
-    train_loader = None
-    val_loader = None
-    history:    list = []
-    final_model      = None
-    prep:       dict = {}
-    classes:    list = []
-    clustering_result = None
-    eval_summary_text = ""
-    metrics_payload: dict = {}
-    evaluation_artifacts: dict = {}
-    stopped_early_flag = False
-    runtime_device = "cpu" if (cfg.modality == "video" and DEVICE == "mps") else DEVICE
-    set_seed(DEFAULTS["seed"])
-    _cancel.reset()
-    _get_pyplot().close("all")  # figures from the previous run are already rendered
-    run_temp_files: list[str] = []  # removed when the run ends, not at app exit
-
-    try:
-        # ── 1. Load data ──────────────────────────────────────────────────────
-        _set_phase("loading data", eta_text="ETA: loading data")
-        progress(0.05, desc="Loading data…")
-        status = log(f"Loading {cfg.modality} data…")
-        if cfg.modality in {"graph", "tabular", "text", "timeseries"} and bool(cfg.use_random_subset) and float(cfg.subset_percent) < 100:
-            status = log(
-                f"Using a random subset of {float(cfg.subset_percent):.2f}% of the dataset "
-                f"(seed {int(cfg.subset_seed)})."
-            )
-        yield _emit(status)
-
-        bs = int(cfg.batch_size)
-
-        _val_split = float(cfg.val_split)
-
-        if cfg.modality == "graph":
-            from modalities.graph import load_graph_data
-            classes, prep, graph_data = load_graph_data(
-                data_path,
-                label_col=cfg.label_col,
-                feature_cols=cfg.feature_cols,
-                val_split=_val_split,
-                subset_percent=float(cfg.subset_percent) if bool(cfg.use_random_subset) else 100.0,
-                subset_seed=int(cfg.subset_seed),
-            )
-            extra_data.update(graph_data)
-
-        elif cfg.modality == "image":
-            from modalities.image import load_image_data
-            image_aug_options = {
-                "horizontal_flip": bool(cfg.image_aug_flip),
-                "vertical_flip": bool(cfg.image_aug_vertical),
-                "rotation": bool(cfg.image_aug_rotation),
-                "color_jitter": bool(cfg.image_aug_color),
-                "grayscale": bool(cfg.image_aug_gray),
-                "perspective": bool(cfg.image_aug_perspective),
-            }
-            train_loader, val_loader, classes, prep, val_samples = load_image_data(
-                data_path, mode=cfg.training_mode, batch_size=bs,
-                val_split=_val_split, augmentation=cfg.augmentation,
-                verify_files=bool(cfg.image_verify_files),
-                image_size=int(cfg.image_size),
-                augmentation_options=image_aug_options,
-                normalization_preset=str(cfg.image_normalization),
-                force_grayscale=bool(cfg.image_force_grayscale),
-            )
-            extra_data["val_samples"] = val_samples
-
-        elif cfg.modality == "text":
-            from modalities.text import load_text_data
-            text_cleaning = {
-                "lowercase": bool(cfg.text_lowercase),
-                "strip_urls": bool(cfg.text_strip_urls),
-                "strip_punctuation": bool(cfg.text_strip_punctuation),
-                "remove_stopwords": bool(cfg.text_remove_stopwords),
-                "deduplicate": bool(cfg.text_deduplicate),
-                "apply_stemming": bool(cfg.text_apply_stemming),
-                "apply_lemmatization": bool(cfg.text_apply_lemmatization),
-                "use_ngrams": bool(cfg.text_use_ngrams),
-            }
-            # The loader samples the subset itself unless cleaning already did;
-            # sampling twice turned a 50% subset into 25%.
-            loader_subset_percent = float(cfg.subset_percent) if bool(cfg.use_random_subset) else 100.0
-            if any(text_cleaning.values()):
-                from data_pipeline.cleaning import clean_text_dataframe
-                from data_pipeline.io_utils import read_structured_file
-
-                raw_df = read_structured_file(data_path)
-                if bool(cfg.use_random_subset) and float(cfg.subset_percent) < 100:
-                    from data_pipeline.io_utils import apply_random_subset
-                    raw_df, sampled_rows = apply_random_subset(
-                        raw_df,
-                        enabled=True,
-                        subset_percent=float(cfg.subset_percent),
-                        subset_seed=int(cfg.subset_seed),
-                    )
-                    loader_subset_percent = 100.0
-                    status = log(f"  ✓ Sampled {sampled_rows} text rows before cleaning")
-                    yield _emit(status)
-                cleaned_df, clean_report = clean_text_dataframe(
-                    raw_df,
-                    text_col=cfg.text_col,
-                    lowercase=bool(cfg.text_lowercase),
-                    strip_urls=bool(cfg.text_strip_urls),
-                    strip_punctuation=bool(cfg.text_strip_punctuation),
-                    remove_stopwords=bool(cfg.text_remove_stopwords),
-                    deduplicate=bool(cfg.text_deduplicate),
-                    apply_stemming=bool(cfg.text_apply_stemming),
-                    apply_lemmatization=bool(cfg.text_apply_lemmatization),
-                )
-                status = log("  ✓ Text cleaning:\n" + clean_report["summary"])
-                yield _emit(status)
-                _cleaning_tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
-                cleaned_df.to_csv(_cleaning_tmp.name, index=False)
-                _cleaning_tmp.close()
-                run_temp_files.append(_cleaning_tmp.name)
-                data_path = _cleaning_tmp.name
-
-            train_loader, val_loader, classes, prep, vocab_size, val_texts = load_text_data(
-                data_path, text_col=cfg.text_col, label_col=cfg.label_col,
-                model_name=cfg.model_name, batch_size=bs,
-                max_length=TEXT_DEFAULTS["max_length"],
-                val_split=_val_split,
-                cleaning_options=text_cleaning,
-                subset_percent=loader_subset_percent,
-                subset_seed=int(cfg.subset_seed))
-            extra_data.update({"vocab_size": vocab_size, "val_texts": val_texts})
-
-        elif cfg.modality == "tabular":
-            from modalities.tabular import load_tabular_data
-            # Optional data cleaning
-            _cleaning_tmp = None
-            # See the text branch: don't let the loader sample a second time.
-            loader_subset_percent = float(cfg.subset_percent) if bool(cfg.use_random_subset) else 100.0
-            if cfg.use_data_cleaning:
-                from data_pipeline.cleaning import clean_dataframe, cleaning_report_markdown
-                from data_pipeline.io_utils import read_structured_file
-                raw_df = read_structured_file(data_path)
-                if bool(cfg.use_random_subset) and float(cfg.subset_percent) < 100:
-                    from data_pipeline.io_utils import apply_random_subset
-                    raw_df, sampled_rows = apply_random_subset(
-                        raw_df,
-                        enabled=True,
-                        subset_percent=float(cfg.subset_percent),
-                        subset_seed=int(cfg.subset_seed),
-                    )
-                    loader_subset_percent = 100.0
-                    status = log(f"  ✓ Sampled {sampled_rows} tabular rows before cleaning")
-                    yield _emit(status)
-                cleaned_df, clean_report = clean_dataframe(
-                    raw_df,
-                    cfg.label_col,
-                    strategy=str(cfg.tabular_missing_strategy),
-                    clip_outliers=bool(cfg.tabular_clip_outliers),
-                )
-                status = log("  ✓ Data cleaning:\n" + cleaning_report_markdown(clean_report))
-                yield _emit(status)
-                _cleaning_tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
-                cleaned_df.to_csv(_cleaning_tmp.name, index=False)
-                _cleaning_tmp.close()
-                run_temp_files.append(_cleaning_tmp.name)
-                data_path = _cleaning_tmp.name
-
-            train_loader, val_loader, classes, prep, input_size, \
-                X_train, y_train, X_val, y_val = load_tabular_data(
-                    data_path, label_col=cfg.label_col, feature_cols=cfg.feature_cols, batch_size=bs,
-                    val_split=_val_split, augmentation=cfg.augmentation,
-                    scaling_strategy=str(cfg.tabular_scaling),
-                    subset_percent=loader_subset_percent,
-                    subset_seed=int(cfg.subset_seed),
-                    task=cfg.task)
-            extra_data.update({"input_size": input_size,
-                                "X_train": X_train, "y_train": y_train,
-                                "X_val":   X_val,   "y_val":   y_val})
-
-            # Column type inference summary
-            try:
-                from data_pipeline.type_inference import suggest_features_and_label
-                from data_pipeline.io_utils import read_structured_file
-                df_peek = read_structured_file(data_path, nrows=500)
-                suggestions  = suggest_features_and_label(df_peek)
-                if suggestions.get("warnings"):
-                    for w in suggestions["warnings"]:
-                        status = log(f"  ⚠️ {w}")
-                    yield _emit(status)
-            except Exception:
-                pass
-
-        elif cfg.modality == "timeseries":
-            from modalities.timeseries import load_timeseries_data
-            if bool(cfg.timeseries_sort_by_time) or str(cfg.timeseries_fill_strategy) != "none":
-                from data_pipeline.cleaning import clean_timeseries_dataframe
-                from data_pipeline.io_utils import read_structured_file
-
-                raw_df = read_structured_file(data_path)
-                cleaned_df, clean_report = clean_timeseries_dataframe(
-                    raw_df,
-                    label_col=cfg.label_col,
-                    time_col=cfg.time_col if cfg.time_col else None,
-                    sort_by_time=bool(cfg.timeseries_sort_by_time),
-                    fill_strategy=str(cfg.timeseries_fill_strategy),
-                )
-                status = log("  ✓ Time-series cleaning:\n" + clean_report["summary"])
-                yield _emit(status)
-                _cleaning_tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
-                cleaned_df.to_csv(_cleaning_tmp.name, index=False)
-                _cleaning_tmp.close()
-                run_temp_files.append(_cleaning_tmp.name)
-                data_path = _cleaning_tmp.name
-
-            train_loader, val_loader, classes, prep, input_size, \
-                X_train, y_train, X_val, y_val = load_timeseries_data(
-                data_path, label_col=cfg.label_col,
-                feature_cols=cfg.feature_cols,
-                time_col=cfg.time_col if cfg.time_col else None,
-                window_size=int(cfg.window_size), batch_size=bs,
-                val_split=_val_split, augmentation=cfg.augmentation, task=cfg.task,
-                subset_percent=float(cfg.subset_percent) if bool(cfg.use_random_subset) else 100.0,
-                subset_seed=int(cfg.subset_seed),
-                forecast_mode=bool(cfg.timeseries_forecast_mode),
-                forecast_horizon=int(cfg.timeseries_forecast_horizon),
-                lag_steps=int(cfg.timeseries_lag_steps),
-                rolling_window=int(cfg.timeseries_rolling_window))
-            extra_data.update({
-                "input_size": input_size,
-                "sklearn_input_size": prep.get("sklearn_input_size", X_train.shape[1] if len(X_train.shape) > 1 else input_size),
-                "X_train": X_train,
-                "y_train": y_train,
-                "X_val": X_val,
-                "y_val": y_val,
-            })
-
-        elif cfg.modality == "audio":
-            from modalities.audio import load_audio_data
-            audio_aug_options = {
-                "noise": bool(cfg.audio_aug_noise),
-                "time_shift": bool(cfg.audio_aug_shift),
-                "gain_jitter": bool(cfg.audio_aug_gain),
-                "time_mask": bool(cfg.audio_aug_time_mask),
-                "freq_mask": bool(cfg.audio_aug_freq_mask),
-            }
-            train_loader, val_loader, classes, prep = load_audio_data(
-                data_path, batch_size=bs, sample_rate=int(cfg.sample_rate),
-                val_split=_val_split, augmentation=cfg.augmentation,
-                verify_files=bool(cfg.audio_verify_files),
-                normalize_waveform=bool(cfg.audio_normalize_waveform),
-                image_size=int(cfg.audio_image_size),
-                n_mels=int(cfg.audio_n_mels),
-                augmentation_options=audio_aug_options,
-            )
-
-        elif cfg.modality == "video":
-            from modalities.video import load_video_data
-            train_loader, val_loader, classes, prep = load_video_data(
-                data_path, n_frames=int(cfg.n_frames),
-                batch_size=VIDEO_DEFAULTS["batch_size"],
-                val_split=_val_split,
-                verify_files=bool(cfg.video_verify_files))
-
-        num_classes = len(classes)
-        status = log(f"  ✓ {num_classes} classes: {', '.join(classes)}")
-        yield _emit(status)
-
-        # ── 2. Build model ────────────────────────────────────────────────────
-        _set_phase("building model", eta_text="ETA: building model")
-        progress(0.12, desc="Building model…")
-        status = log(f"Building {cfg.model_name} ({cfg.training_mode})…")
-        yield _emit(status)
-
-        graph_node2vec = cfg.modality == "graph" and cfg.model_name == "Node2Vec"
-        sklearn_model = is_sklearn(cfg.model_name)
-
-        if cfg.model_name == "Autoencoder":
-            from models.autoencoder import get_autoencoder
-            ae_modality = cfg.modality if cfg.modality in ("image", "audio", "tabular") else (
-                "tabular" if cfg.modality == "timeseries" else None
-            )
-            if ae_modality is None:
-                raise ValueError(
-                    f"Autoencoder is not supported for the '{cfg.modality}' modality. "
-                    "Supported: image, audio, tabular, timeseries."
-                )
-            model = get_autoencoder(
-                modality=ae_modality,
-                input_size=extra_data.get("input_size"),
-                latent_dim=128,
-            )
-
-        elif graph_node2vec:
-            model = None
-
-        elif sklearn_model:
-            from models.tabular_models import get_tabular_model
-            model = get_tabular_model(
-                cfg.model_name, num_classes=num_classes,
-                input_size=extra_data.get("sklearn_input_size", extra_data.get("input_size", 10)),
-                task=cfg.task,
-                n_estimators=int(cfg.n_estimators),
-                max_depth=int(cfg.max_depth),
-                C=float(cfg.C_param), max_iter=int(cfg.max_iter),
-                learning_rate=float(cfg.lr_xgb),
-            )
-
-        elif is_vit(cfg.model_name):
-            from models.vit_models import get_vit_model
-            model = get_vit_model(cfg.model_name, num_classes=num_classes,
-                                   pretrained=(cfg.training_mode == "fine-tune"))
-
-        elif is_whisper(cfg.model_name):
-            from models.whisper_model import get_whisper_model
-            size = "tiny" if "Tiny" in cfg.model_name else "base"
-            model = get_whisper_model(num_classes=num_classes, model_size=size,
-                                       freeze_encoder=(cfg.training_mode == "fine-tune"))
-
-        elif cfg.modality in ("image", "audio"):
-            from models.image_models import get_image_model
-            model = get_image_model(cfg.model_name, num_classes=num_classes,
-                                    mode=cfg.training_mode, dropout=float(cfg.dropout))
-
-        elif cfg.modality == "text":
-            from models.text_models import get_text_model
-            model = get_text_model(
-                cfg.model_name, num_classes=num_classes, mode=cfg.training_mode,
-                vocab_size=extra_data.get("vocab_size", 30522),
-                hidden_size=int(cfg.hidden_size), num_layers=int(cfg.num_layers),
-                dropout=float(cfg.dropout))
-
-        elif cfg.modality == "tabular":
-            from models.tabular_models import get_tabular_model
-            model = get_tabular_model(
-                cfg.model_name, num_classes=num_classes,
-                input_size=extra_data["input_size"], dropout=float(cfg.dropout))
-
-        elif cfg.modality == "timeseries":
-            from models.timeseries_models import get_timeseries_model
-            model = get_timeseries_model(
-                cfg.model_name, num_classes=num_classes,
-                input_size=extra_data["input_size"],
-                hidden_size=int(cfg.hidden_size), num_layers=int(cfg.num_layers),
-                dropout=float(cfg.dropout))
-
-        elif cfg.modality == "graph":
-            from models.graph_models import get_graph_model
-            model = get_graph_model(
-                cfg.model_name,
-                num_classes=num_classes,
-                input_size=extra_data["input_size"],
-                hidden_size=int(cfg.hidden_size),
-                num_layers=int(cfg.num_layers),
-                dropout=float(cfg.dropout),
-            )
-
-        elif cfg.modality == "video":
-            from models.video_models import get_video_model
-            model = get_video_model(cfg.model_name, num_classes=num_classes, mode=cfg.training_mode)
-
-        # Neural regression: train on standardized targets so the network
-        # doesn't spend its epochs learning the target's scale. The wrapper
-        # un-scales its output, so metrics, export and inference are unchanged.
-        if (cfg.task == "regression" and model is not None and not sklearn_model
-                and cfg.model_name != "Autoencoder" and extra_data.get("y_train") is not None):
-            from models.target_scaling import wrap_for_regression
-            model, (t_mean, t_std) = wrap_for_regression(model, extra_data["y_train"])
-            status = log(f"  ✓ Regression targets standardized (training mean {t_mean:.4g}, std {t_std:.4g})")
-            yield _emit(status)
-
-        if runtime_device != DEVICE:
-            status = log(
-                f"  ✓ Device: {runtime_device} (fallback from {DEVICE} for video compatibility)"
-            )
-        else:
-            status = log(f"  ✓ Device: {runtime_device}")
-        yield _emit(status)
-
-        # ── 3. Train ──────────────────────────────────────────────────────────
-        _set_phase("training", eta_text="ETA: estimating…")
-        ckpt_dir = None
-        if int(cfg.checkpoint_every) > 0:
-            ckpt_dir = os.path.join("outputs", "checkpoints", safe_bundle_name)
-            os.makedirs(ckpt_dir, exist_ok=True)
-            status = log(f"  Checkpoints → {ckpt_dir}")
-            yield _emit(status)
-
-        if cfg.model_name == "Autoencoder":
-            import torch, torch.nn as nn
-            model = model.to(runtime_device)
-            ae_optim      = torch.optim.Adam(model.parameters(), lr=float(cfg.lr))
-            ae_criterion  = nn.MSELoss()
-            ae_history    = []
-            ae_epoch_times = []
-            status = log("Training — autoencoder optimisation started")
-            yield _emit(status)
-            for epoch in range(1, int(cfg.epochs) + 1):
-                epoch_t0 = time.time()
-                # ── Train pass ──────────────────────────────────────
-                model.train()
-                train_loss = 0.0
-                for batch in train_loader:
-                    inputs, _ = batch
-                    inputs    = inputs.to(runtime_device)
-                    ae_optim.zero_grad()
-                    recon = model(inputs)
-                    loss  = ae_criterion(recon, inputs)
-                    loss.backward()
-                    ae_optim.step()
-                    train_loss += loss.item()
-                train_loss /= max(len(train_loader), 1)
-
-                # ── Validation pass ─────────────────────────────────
-                model.eval()
-                val_loss = 0.0
-                with torch.no_grad():
-                    for batch in val_loader:
-                        inputs, _ = batch
-                        inputs    = inputs.to(runtime_device)
-                        recon     = model(inputs)
-                        val_loss += ae_criterion(recon, inputs).item()
-                val_loss /= max(len(val_loader), 1)
-
-                rec = {"epoch": epoch, "train_loss": round(train_loss, 4),
-                       "val_loss": round(val_loss, 4), "val_acc": 0.0,
-                       "eta_seconds": 0, "lr": float(cfg.lr)}
-                epoch_elapsed = time.time() - epoch_t0
-                ae_epoch_times.append(epoch_elapsed)
-                avg_epoch_time = sum(ae_epoch_times) / len(ae_epoch_times)
-                eta_seconds = avg_epoch_time * (int(cfg.epochs) - epoch)
-                rec["eta_seconds"] = round(eta_seconds, 1)
-                ae_history.append(rec)
-                pct = 0.15 + 0.65 * epoch / int(cfg.epochs)
-                progress(pct, desc=f"Autoencoder epoch {epoch}/{int(cfg.epochs)}")
-                eta_str = _fmt_eta(eta_seconds) if epoch < int(cfg.epochs) else "ETA: completing training"
-                telemetry["eta_text"] = eta_str
-                _update_epoch_metrics(
-                    epoch_text=f"{epoch}/{int(cfg.epochs)}",
-                    train_loss=f"{train_loss:.4f}",
-                    val_loss=f"{val_loss:.4f}",
-                    metric="reconstruction",
-                    lr_value=f"{float(cfg.lr):.6f}",
-                )
-                line = (f"Epoch {epoch}/{int(cfg.epochs)} — "
-                        f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  {eta_str}")
-                status = log(line)
-                live_plot = _loss_plot(ae_history) if (
-                    epoch == int(cfg.epochs) or epoch % _LIVE_PLOT_UPDATE_EVERY == 0
-                ) else _NONE
-                yield _emit(status, loss_fig=live_plot, eta=eta_str)
-            final_model = model
-            history     = ae_history
-
-        elif graph_node2vec:
-            from training.graph_trainer import train_node2vec_classifier
-
-            _set_phase("training", eta_text="ETA: learning graph embeddings")
-            _update_epoch_metrics(
-                epoch_text="1/1",
-                train_loss="—",
-                val_loss="—",
-                metric="embedding baseline",
-                lr_value="—",
-            )
-            status = log("Training — learning Node2Vec graph embeddings")
-            yield _emit(status)
-            node2vec_result = train_node2vec_classifier(
-                extra_data,
-                embedding_dim=int(cfg.hidden_size),
-                max_iter=int(cfg.max_iter),
-            )
-            final_model = node2vec_result["model"]
-            history = node2vec_result["history"]
-            extra_data["graph_embeddings"] = node2vec_result["embeddings"]
-            extra_data["graph_eval"] = {
-                "y_true": node2vec_result["y_true"],
-                "y_pred": node2vec_result["y_pred"],
-                "y_prob": node2vec_result["y_prob"],
-            }
-            _set_phase("training", eta_text="ETA: finalizing results")
-            _update_epoch_metrics(
-                epoch_text="1/1",
-                train_loss="—",
-                val_loss="0.0000",
-                metric=f"acc={history[-1].get('val_acc', 0)}",
-                lr_value="—",
-            )
-            status = log("Training — Node2Vec baseline fit complete")
-            yield _emit(status)
-
-        elif sklearn_model:
-            from training.trainer import train_sklearn
-            X_train = extra_data["X_train"]; y_train = extra_data["y_train"]
-            X_val   = extra_data.get("X_val"); y_val   = extra_data.get("y_val")
-            _set_phase("training", eta_text="ETA: fitting baseline")
-            _update_epoch_metrics(
-                epoch_text="Baseline",
-                train_loss="—",
-                val_loss="—",
-                metric="fitting",
-                lr_value="—",
-            )
-            status = log("Training — fitting baseline model")
-            yield _emit(status)
-            for prog in train_sklearn(model, X_train, y_train, X_val, y_val):
-                if prog["done"]:
-                    final_model = prog["model"]
-                    history     = prog["history"]
-                    _set_phase("training", eta_text="ETA: finalizing results")
-                    if history:
-                        last = history[-1]
-                        _update_epoch_metrics(
-                            epoch_text=str(last.get("epoch", "1/1")),
-                            train_loss=last.get("train_loss"),
-                            val_loss=last.get("val_loss"),
-                            metric=last.get("val_acc"),
-                            lr_value=last.get("lr"),
-                        )
-                    status = log("Training — baseline fit complete, finalizing metrics")
-                    yield _emit(status)
-                else:
-                    _set_phase("training", eta_text="ETA: fitting baseline")
-                    status = log(prog.get("status", "Fitting model…"))
-                    yield _emit(status, eta=telemetry["eta_text"])
-
-        elif cfg.modality == "graph":
-            from training.graph_trainer import train_graph_pytorch
-            cw = None
-            if cfg.use_class_weights and cfg.task == "classification":
-                try:
-                    train_labels = extra_data["y"][extra_data["train_idx"]].cpu().tolist()
-                    from training.trainer import compute_class_weights
-                    cw = compute_class_weights(train_labels, num_classes=num_classes)
-                    status = log("  ✓ Class weights applied (imbalance correction)")
-                    yield _emit(status)
-                except Exception as e:
-                    status = log(f"  ⚠️ Class weights skipped: {e}")
-                    yield _emit(status)
-
-            _running_history: list[dict] = []
-            status = log("Training — full-graph node classification started")
-            yield _emit(status)
-            for prog in train_graph_pytorch(
-                model,
-                extra_data,
-                epochs=int(cfg.epochs),
-                lr=float(cfg.lr),
-                optimizer_name=cfg.optimizer,
-                patience=DEFAULTS["early_stopping_patience"],
-                class_weights=cw,
-            ):
-                if prog["done"]:
-                    final_model = prog["model"]
-                    history = prog["history"]
-                else:
-                    pct = 0.15 + 0.65 * prog["epoch"] / prog["epochs"]
-                    progress(pct, desc=f"Epoch {prog['epoch']}/{prog['epochs']}")
-                    eta_str = _fmt_eta(prog.get("eta_seconds", 0))
-                    telemetry["eta_text"] = eta_str
-                    _update_epoch_metrics(
-                        epoch_text=f"{prog['epoch']}/{prog['epochs']}",
-                        train_loss=prog["train_loss"],
-                        val_loss=prog["val_loss"],
-                        metric=f"acc={prog['val_acc']}",
-                        lr_value=prog.get("lr", ""),
-                    )
-                    line = (
-                        f"Epoch {prog['epoch']}/{prog['epochs']}  "
-                        f"train={prog['train_loss']}  val={prog['val_loss']}  "
-                        f"acc={prog['val_acc']}  lr={prog.get('lr','')}  {eta_str}"
-                        + ("  ⏹ early stop" if prog["stopped_early"] else "")
-                    )
-                    status = log(line)
-                    _running_history.append({k: prog[k] for k in ("epoch", "train_loss", "val_loss", "val_acc")})
-                    live_plot = _loss_plot(_running_history) if (
-                        prog["epoch"] == prog["epochs"]
-                        or prog["stopped_early"]
-                        or prog["epoch"] % _LIVE_PLOT_UPDATE_EVERY == 0
-                    ) else _NONE
-                    yield _emit(status, loss_fig=live_plot, eta=eta_str if not prog["stopped_early"] else "ETA: completing training")
-
-        else:
-            from training.trainer import train_pytorch, compute_class_weights
-            # Optional class weighting for imbalanced datasets
-            cw = None
-            if cfg.use_class_weights and cfg.task in ("classification",):
-                try:
-                    # Fast path: pull labels directly from the dataset without
-                    # iterating the full DataLoader (avoids an extra O(n) pass).
-                    ds = train_loader.dataset
-                    if hasattr(ds, "tensors"):
-                        # TensorDataset — labels are the second tensor
-                        all_labels = ds.tensors[1].tolist()
-                    elif hasattr(ds, "samples"):
-                        # ImageDataset / AudioDataset style
-                        all_labels = [s[1] for s in ds.samples]
-                    else:
-                        # Fallback: iterate (safe but slower)
-                        all_labels = [int(lbl) for _, lbls in train_loader
-                                      for lbl in lbls.tolist()]
-                    cw = compute_class_weights(all_labels, num_classes=num_classes)
-                    status = log("  ✓ Class weights applied (imbalance correction)")
-                    yield _emit(status)
-                except Exception as e:
-                    status = log(f"  ⚠️ Class weights skipped: {e}")
-                    yield _emit(status)
-
-            # Accumulate epoch records so the live loss plot shows the full curve,
-            # not just the most-recent single epoch.
-            _running_history: list[dict] = []
-            status = log("Training — optimiser warmup complete, starting epochs")
-            yield _emit(status)
-
-            for prog in train_pytorch(
-                model, train_loader, val_loader,
-                epochs=int(cfg.epochs), lr=float(cfg.lr),
-                optimizer_name=cfg.optimizer,
-                patience=DEFAULTS["early_stopping_patience"],
-                scheduler_name=cfg.scheduler_name,
-                use_amp=bool(cfg.use_amp),
-                task=cfg.task,
-                class_weights=cw,
-                checkpoint_dir=ckpt_dir,
-                checkpoint_every=int(cfg.checkpoint_every),
-                device=runtime_device,
-            ):
-                if prog["done"]:
-                    final_model = prog["model"]
-                    history     = prog["history"]
-                else:
-                    stopped_early_flag = prog.get("stopped_early", False)
-                    pct = 0.15 + 0.65 * prog["epoch"] / prog["epochs"]
-                    progress(pct, desc=f"Epoch {prog['epoch']}/{prog['epochs']}")
-                    eta_str = _fmt_eta(prog.get("eta_seconds", 0))
-                    telemetry["eta_text"] = eta_str
-                    metric_label = "acc" if cfg.task == "classification" else (
-                        "exact-match" if cfg.task == "multi-label" else "MAE")
-                    _update_epoch_metrics(
-                        epoch_text=f"{prog['epoch']}/{prog['epochs']}",
-                        train_loss=prog["train_loss"],
-                        val_loss=prog["val_loss"],
-                        metric=f"{metric_label}={prog['val_acc']}",
-                        lr_value=prog.get("lr", ""),
-                    )
-                    line = (
-                        f"Epoch {prog['epoch']}/{prog['epochs']}  "
-                        f"train={prog['train_loss']}  val={prog['val_loss']}  "
-                        f"{metric_label}={prog['val_acc']}  "
-                        f"lr={prog.get('lr','')}  {eta_str}"
-                        + ("  ⏹ early stop" if prog["stopped_early"] else "")
-                    )
-                    status = log(line)
-                    # Append to running history so the plot shows the full curve
-                    _running_history.append({k: prog[k] for k in
-                                             ("epoch", "train_loss", "val_loss", "val_acc")})
-                    live_plot = _loss_plot(_running_history) if (
-                        prog["epoch"] == prog["epochs"]
-                        or prog["stopped_early"]
-                        or prog["epoch"] % _LIVE_PLOT_UPDATE_EVERY == 0
-                    ) else _NONE
-                    yield _emit(status, loss_fig=live_plot,
-                                eta=eta_str if not prog["stopped_early"] else "ETA: completing training")
-
-        _set_phase("complete", eta_text="ETA: Done")
-        if stopped_early_flag:
-            status = log("Training — early stopping triggered, best checkpoint restored")
-            yield _emit(status)
-        status = log("Training complete ✓")
-        loss_fig_final = _loss_plot(history) if history else _NONE
-        yield _emit(status, loss_fig=loss_fig_final, eta="ETA: Done")
-
-        # ── 3b. Plain-English training summary ───────────────────────────────
-        training_summary_text = ""
-        if history and not sklearn_model and cfg.model_name != "Autoencoder":
-            try:
-                from ui.training_summary import summarise_run
-                training_summary_text = summarise_run(
-                    history, cfg.task, cfg.model_name, cfg.modality,
-                    stopped_early=stopped_early_flag)
-                yield _emit(status, loss_fig=loss_fig_final, eta="ETA: Done",
-                            train_summary=training_summary_text)
-            except Exception as e:
-                logger.warning("Training summary generation failed: %s", e)
-
-        # ── 4. Architecture visualisation ─────────────────────────────────────
-        arch_fig = None
-        if (
-            final_model is not None
-            and not sklearn_model
-            and cfg.model_name != "Autoencoder"
-            and hasattr(final_model, "named_modules")
-        ):
-            try:
-                from ui.architecture_viz import summarise_model
-                _, arch_fig = summarise_model(final_model)
-            except Exception as e:
-                logger.warning("Architecture visualisation failed: %s", e)
-
-        # ── 5. Clustering ─────────────────────────────────────────────────────
-        tsne_fig = None
-        if cfg.task in ("clustering",) or cfg.model_name == "Autoencoder":
-            _set_phase("clustering", eta_text="ETA: clustering")
-            progress(0.84, desc="Clustering embeddings…")
-            if sklearn_model:
-                status = log("ℹ️  sklearn models don't support embedding-based clustering.\n"
-                             "   Use an MLP or Autoencoder for full clustering support.")
-                yield _emit(status)
-            else:
-                status = log("Extracting embeddings → KMeans…")
-                yield _emit(status)
-                try:
-                    from training.clustering import run_clustering, tsne_plot
-                    k = int(cfg.n_clusters) if int(cfg.n_clusters) > 1 else num_classes
-                    clustering_result = run_clustering(final_model, train_loader, n_clusters=k)
-                    tsne_fig = tsne_plot(clustering_result["features"],
-                                        clustering_result["cluster_labels"])
-                    status = log(f"  Silhouette score: {clustering_result['silhouette_score']}")
-                    yield _emit(status, tsne=gr.update(value=tsne_fig))
-                except Exception as e:
-                    status = log(f"  Clustering skipped: {e}")
-                    yield _emit(status)
-
-        # ── 6. Evaluation ─────────────────────────────────────────────────────
-        cm_fig = roc_fig = gcam_fig = shap_fig = None
-        mis_img_fig = None
-        mis_df_val  = None
-        reg_fig     = None
-        anomaly_fig = None
-        text_shap_html = None
-
-        # Standard classification / multi-label evaluation
-        if cfg.task in ("classification", "multi-label") and cfg.model_name != "Autoencoder":
-            _set_phase("evaluating", eta_text="ETA: evaluating")
-            progress(0.88, desc="Evaluating…")
-            status = log("Running evaluation…")
-            yield _emit(status)
-
-            try:
-                from eval.metrics import classification_metric_summary
-                if cfg.modality == "graph":
-                    from eval.metrics import compute_confusion_matrix_from_arrays, compute_roc_curves_from_arrays
-                    from training.graph_trainer import predict_graph_classification
-                    import torch as _torch
-
-                    if graph_node2vec:
-                        y_true, y_pred, y_prob = predict_graph_classification(
-                            final_model,
-                            extra_data,
-                            sklearn_model=True,
-                            embeddings=extra_data.get("graph_embeddings"),
-                        )
-                    else:
-                        y_true, y_pred, y_prob = predict_graph_classification(final_model, extra_data)
-                    cm_fig, eval_summary_text = compute_confusion_matrix_from_arrays(y_true, y_pred, classes)
-                    roc_fig = compute_roc_curves_from_arrays(y_true, y_prob, classes)
-                    metrics_payload = classification_metric_summary(
-                        y_true, y_pred, y_prob, n_classes=len(classes)
-                    )
-                    feature_names = extra_data.get("feature_names") or []
-                    x_all = extra_data.get("x")
-                    if isinstance(x_all, _torch.Tensor):
-                        x_all = x_all.cpu().numpy()
-                    val_idx_export = extra_data.get("val_idx")
-                    if isinstance(val_idx_export, _torch.Tensor):
-                        val_idx_export = val_idx_export.cpu().numpy()
-                    feature_rows = []
-                    if x_all is not None and val_idx_export is not None and feature_names:
-                        for row_position, node_idx in enumerate(val_idx_export[:2000]):
-                            row = x_all[int(node_idx)]
-                            feature_rows.append({
-                                **{
-                                    feature_names[col_idx]: float(row[col_idx])
-                                    for col_idx in range(min(len(feature_names), len(row)))
-                                },
-                                "node_id": extra_data.get("node_ids", [])[int(node_idx)] if extra_data.get("node_ids") else str(int(node_idx)),
-                                "y_true": int(y_true[row_position]),
-                                "y_pred": int(y_pred[row_position]),
-                                "is_error": bool(y_true[row_position] != y_pred[row_position]),
-                            })
-                    evaluation_artifacts = {
-                        "task": cfg.task,
-                        "report_text": eval_summary_text,
-                        "y_true": y_true.tolist(),
-                        "y_pred": y_pred.tolist(),
-                        "y_prob": y_prob.tolist() if y_prob is not None else None,
-                        "feature_rows": feature_rows,
-                    }
-                else:
-                    from eval.metrics import (
-                        compute_confusion_matrix,
-                        compute_roc_curves,
-                        _get_preds_and_probs,
-                    )
-                    cm_fig, eval_summary_text = compute_confusion_matrix(
-                        final_model, val_loader, classes, cfg.modality, cfg.task,
-                        is_sklearn=sklearn_model,
-                        X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
-                        device=runtime_device)
-                    if cfg.task in ("classification", "multi-label"):
-                        roc_fig = compute_roc_curves(
-                            final_model, val_loader, classes, cfg.modality, cfg.task,
-                            is_sklearn=sklearn_model,
-                            X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
-                            device=runtime_device)
-                    if cfg.task == "classification":
-                        y_true, y_pred, y_prob = _get_preds_and_probs(
-                            final_model, val_loader, classes, sklearn_model,
-                            extra_data.get("X_val"), extra_data.get("y_val"), runtime_device
-                        )
-                        metrics_payload = classification_metric_summary(
-                            y_true, y_pred, y_prob, n_classes=len(classes)
-                        )
-                        evaluation_artifacts = {
-                            "task": cfg.task,
-                            "report_text": eval_summary_text,
-                            "y_true": y_true.tolist(),
-                            "y_pred": y_pred.tolist(),
-                            "y_prob": y_prob.tolist() if y_prob is not None else None,
-                        }
-                        if cfg.modality == "tabular":
-                            feature_order = prep.get("feature_order") or prep.get("feature_columns") or []
-                            X_val_export = extra_data.get("X_val")
-                            if X_val_export is not None and feature_order:
-                                row_limit = min(len(X_val_export), 2000)
-                                evaluation_artifacts["feature_rows"] = [
-                                    {
-                                        **{
-                                            feature_order[idx]: float(row[idx])
-                                            for idx in range(min(len(feature_order), len(row)))
-                                        },
-                                        "y_true": int(y_true[row_idx]),
-                                        "y_pred": int(y_pred[row_idx]),
-                                        "is_error": bool(y_true[row_idx] != y_pred[row_idx]),
-                                    }
-                                    for row_idx, row in enumerate(X_val_export[:row_limit])
-                                ]
-                status = log("  ✓ Metrics computed")
-            except Exception as e:
-                status = log(f"  Metrics error: {e}")
-            yield _emit(status)
-
-            if cfg.modality in ("image", "audio", "video") and not sklearn_model:
-                try:
-                    from eval.gradcam import compute_gradcam
-                    gcam_fig = compute_gradcam(final_model, val_loader, cfg.modality,
-                                               cfg.model_name, prep, n_samples=4)
-                    if gcam_fig:
-                        status = log("  ✓ Grad-CAM generated")
-                except Exception as e:
-                    status = log(f"  Grad-CAM skipped: {e}")
-                yield _emit(status)
-
-            if cfg.modality == "tabular":
-                try:
-                    from eval.shap_explain import compute_shap
-                    shap_fig = compute_shap(final_model, extra_data, cfg.modality, prep)
-                    if shap_fig:
-                        status = log("  ✓ SHAP computed")
-                except Exception as e:
-                    status = log(f"  SHAP skipped: {e}")
-                yield _emit(status)
-
-            if cfg.modality == "text" and not sklearn_model:
-                try:
-                    from eval.shap_explain import compute_text_shap
-                    text_shap_html = compute_text_shap(
-                        final_model, val_loader, classes, prep, n_samples=3)
-                    if text_shap_html:
-                        status = log("  ✓ Token importance computed")
-                except Exception as e:
-                    status = log(f"  Token importance skipped: {e}")
-                yield _emit(status)
-
-            try:
-                if cfg.modality == "graph":
-                    raise ValueError("Graph misclassification review is not yet available in the generic sample-review panel.")
-                from eval.misclassified import find_misclassified
-                mis_img_fig, mis_df_val = find_misclassified(
-                    final_model, val_loader, classes, cfg.modality, prep,
-                    task=cfg.task,
-                    val_samples=extra_data.get("val_samples"),
-                    val_texts=extra_data.get("val_texts"),
-                    X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
-                    is_sklearn=sklearn_model,
-                )
-                status = log("  ✓ Misclassified samples collected")
-            except Exception as e:
-                status = log(f"  Misclassified skipped: {e}")
-            yield _emit(status)
-
-        # Regression evaluation
-        if cfg.task == "regression" and cfg.model_name != "Autoencoder":
-            _set_phase("evaluating", eta_text="ETA: evaluating")
-            progress(0.88, desc="Evaluating…")
-            status = log("Running regression evaluation…")
-            yield _emit(status)
-
-            try:
-                import numpy as np
-                import torch
-                from eval.regression_metrics import (
-                    compute_regression_metrics,
-                    residual_plot,
-                    format_regression_report,
-                )
-
-                if sklearn_model:
-                    X_val = extra_data.get("X_val")
-                    y_val = extra_data.get("y_val")
-                    if X_val is None or y_val is None:
-                        raise ValueError("Validation data is unavailable for regression evaluation.")
-                    all_true = np.asarray(y_val, dtype=float).ravel().tolist()
-                    all_pred = np.asarray(final_model.predict(X_val), dtype=float).ravel().tolist()
-                else:
-                    all_true, all_pred = [], []
-                    final_model.eval()
-                    with torch.no_grad():
-                        for batch in val_loader:
-                            inputs, labels = batch
-                            logits = final_model(inputs.to(runtime_device))
-                            all_true.extend(np.asarray(labels.cpu().numpy(), dtype=float).ravel().tolist())
-                            all_pred.extend(np.asarray(logits.detach().cpu().numpy(), dtype=float).ravel().tolist())
-
-                reg_metrics = compute_regression_metrics(all_true, all_pred)
-                metrics_payload = reg_metrics
-                eval_summary_text = format_regression_report(reg_metrics)
-                reg_fig = residual_plot(all_true, all_pred)
-                evaluation_artifacts = {
-                    "task": cfg.task,
-                    "report_text": eval_summary_text,
-                    "y_true": all_true,
-                    "y_pred": all_pred,
-                }
-                if cfg.modality in ("tabular", "timeseries"):
-                    feature_rows = []
-                    feature_names = prep.get("feature_order") or prep.get("feature_columns") or []
-                    if cfg.modality == "tabular":
-                        X_val_export = extra_data.get("X_val")
-                        if X_val_export is not None and feature_names:
-                            row_limit = min(len(X_val_export), 2000)
-                            for idx, row in enumerate(X_val_export[:row_limit]):
-                                feature_rows.append({
-                                    **{
-                                        feature_names[col_idx]: float(row[col_idx])
-                                        for col_idx in range(min(len(feature_names), len(row)))
-                                    },
-                                    "y_true": float(all_true[idx]),
-                                    "y_pred": float(all_pred[idx]),
-                                    "abs_error": float(abs(all_pred[idx] - all_true[idx])),
-                                })
-                    elif cfg.modality == "timeseries":
-                        X_val_export = extra_data.get("X_val")
-                        if X_val_export is not None:
-                            row_limit = min(len(X_val_export), 1000)
-                            for idx, row in enumerate(X_val_export[:row_limit]):
-                                flat = np.asarray(row).reshape(-1)
-                                row_dict = {
-                                    f"window_feature_{col_idx}": float(flat[col_idx])
-                                    for col_idx in range(min(len(flat), 24))
-                                }
-                                row_dict.update({
-                                    "y_true": float(all_true[idx]),
-                                    "y_pred": float(all_pred[idx]),
-                                    "abs_error": float(abs(all_pred[idx] - all_true[idx])),
-                                })
-                                feature_rows.append(row_dict)
-                    if feature_rows:
-                        evaluation_artifacts["feature_rows"] = feature_rows
-                status = log("  ✓ Regression metrics (R², RMSE, MAE)")
-            except Exception as e:
-                status = log(f"  Regression metrics skipped: {e}")
-            yield _emit(status)
-
-        # Anomaly detection evaluation (Autoencoder)
-        if cfg.model_name == "Autoencoder" or cfg.task == "anomaly":
-            _set_phase("computing anomaly scores", eta_text="ETA: computing anomaly scores")
-            progress(0.88, desc="Computing anomaly scores…")
-            try:
-                from eval.anomaly_detection import (
-                    compute_reconstruction_errors, find_anomalies,
-                    reconstruction_error_plot)
-                errors       = compute_reconstruction_errors(final_model, val_loader, runtime_device)
-                anom_result  = find_anomalies(errors)
-                anomaly_fig  = reconstruction_error_plot(errors)
-                n_anom       = anom_result["n_anomalies"]
-                ratio        = anom_result["anomaly_ratio"] * 100
-                thr          = anom_result["threshold"]
-                eval_summary_text += (
-                    f"\n\n**Anomaly Detection**\n"
-                    f"Threshold: {thr:.4f}  |  "
-                    f"Anomalies: {n_anom} ({ratio:.1f}%)"
-                )
-                status = log(f"  ✓ Anomaly detection: {n_anom} anomalies ({ratio:.1f}%)")
-            except Exception as e:
-                status = log(f"  Anomaly detection skipped: {e}")
-            yield _emit(status)
-
-        # ── 7. Export ─────────────────────────────────────────────────────────
-        _set_phase("exporting", eta_text="ETA: exporting")
-        progress(0.95, desc="Exporting bundle…")
-        status = log("Exporting ONNX bundle…")
-        yield _emit(status)
-
-        sample_batch = None
-        if not sklearn_model:
-            # Any real batch works for tracing the ONNX graph; fall back to the
-            # training loader when validation is empty (very small datasets).
-            for loader in (val_loader, train_loader):
-                if loader is None:
-                    continue
-                try:
-                    sample_inputs, _ = next(iter(loader))
-                except StopIteration:
-                    continue
-                sample_batch = ({k: v[:1] for k, v in sample_inputs.items()}
-                                if isinstance(sample_inputs, dict)
-                                else sample_inputs[:1])
-                break
-
-        from export.exporter import export_bundle
-        prep["model_name"] = cfg.model_name
-        bundle_path, export_warnings = export_bundle(
-            model=final_model,
-            preprocessing_config=prep,
-            classes=classes,
-            bundle_name=safe_bundle_name,
-            output_dir=str(_OUTPUTS_ROOT),
-            sample_batch=sample_batch,
-            is_sklearn=(sklearn_model or graph_node2vec),
-            clustering_result=clustering_result,
-            evaluation_artifacts=evaluation_artifacts,
-        )
-        for w in export_warnings:
-            status = log(w)
-            yield _emit(status)
-
+    def _emit_result(result: RunResult):
+        history = result.history
         class_note_text, explanation_note_text, diagnostics_note_text, sample_review_note_text = (
             _build_evaluation_notes(
                 task=cfg.task,
                 modality=cfg.modality,
                 model_name=cfg.model_name,
-                sklearn_model=sklearn_model,
-                cm_fig=cm_fig,
-                roc_fig=roc_fig,
-                gcam_fig=gcam_fig,
-                shap_fig=shap_fig,
-                reg_fig=reg_fig,
-                anomaly_fig=anomaly_fig,
-                mis_img_fig=mis_img_fig,
-                mis_df_val=mis_df_val,
-                tsne_fig=tsne_fig,
+                sklearn_model=result.sklearn_model,
+                cm_fig=result.cm_fig,
+                roc_fig=result.roc_fig,
+                gcam_fig=result.gcam_fig,
+                shap_fig=result.shap_fig,
+                reg_fig=result.reg_fig,
+                anomaly_fig=result.anomaly_fig,
+                mis_img_fig=result.mis_img_fig,
+                mis_df_val=result.mis_df,
+                tsne_fig=result.tsne_fig,
             )
         )
-        eval_kpi_html = _format_eval_kpis(eval_summary_text, history, cfg.task)
-
-        # ── 8. Save run history ───────────────────────────────────────────────
-        try:
-            from training.run_comparison import save_run
-            save_run(
-                model_name=cfg.model_name, modality=cfg.modality,
-                task=cfg.task, training_mode=cfg.training_mode,
-                hyperparams={"lr": cfg.lr, "batch_size": cfg.batch_size, "epochs": cfg.epochs,
-                             "optimizer": cfg.optimizer, "scheduler": cfg.scheduler_name},
-                history=history, bundle_path=bundle_path,
-                metrics=metrics_payload,
-            )
-        except Exception as e:
-            logger.warning("Could not save run history: %s", e)
-
-        _set_phase("complete", eta_text="ETA: Done")
-        progress(1.0, desc="Done!")
-        status = log(f"\n✅ Done!  Bundle saved to:\n  {bundle_path}")
-        yield _emit(
-            status,
+        return _emit(
             loss_fig=gr.update(value=_loss_plot(history) if history else None),
             eta="ETA: Done",
-            eval_sum=_format_eval_summary(eval_summary_text),
-            cm=gr.update(value=cm_fig),
-            roc=gr.update(value=roc_fig),
-            tsne=gr.update(value=tsne_fig),
-            gcam=gr.update(value=gcam_fig),
-            shap=gr.update(value=shap_fig),
-            mis_img=gr.update(value=mis_img_fig),
-            mis_df=gr.update(value=mis_df_val),
-            bundle=bundle_path,
-            arch=gr.update(value=arch_fig),
-            train_summary=training_summary_text,
-            reg_plot=gr.update(value=reg_fig),
-            anomaly_plot=gr.update(value=anomaly_fig),
-            eval_kpis=eval_kpi_html,
+            eval_sum=_format_eval_summary(result.eval_summary),
+            cm=gr.update(value=result.cm_fig),
+            roc=gr.update(value=result.roc_fig),
+            tsne=gr.update(value=result.tsne_fig),
+            gcam=gr.update(value=result.gcam_fig),
+            shap=gr.update(value=result.shap_fig),
+            mis_img=gr.update(value=result.mis_img_fig),
+            mis_df=gr.update(value=result.mis_df),
+            bundle=result.bundle_path,
+            arch=gr.update(value=result.arch_fig),
+            train_summary=result.training_summary,
+            reg_plot=gr.update(value=result.reg_fig),
+            anomaly_plot=gr.update(value=result.anomaly_fig),
+            eval_kpis=_format_eval_kpis(result.eval_summary, history, cfg.task),
             class_note=class_note_text,
             explanation_note_val=explanation_note_text,
             diagnostics_note_val=diagnostics_note_text,
             sample_review_note_val=sample_review_note_text,
-            text_shap=gr.update(value=text_shap_html or ""),
-            dash_kpi=_build_dashboard_kpi(cfg.task, cfg.modality, history, metrics_payload,
+            text_shap=gr.update(value=result.text_shap_html or ""),
+            dash_kpi=_build_dashboard_kpi(cfg.task, cfg.modality, history, result.metrics,
                                           cfg.model_name, cfg.training_mode),
             dash_primary=gr.update(value=_pick_primary_chart(
-                cfg.task, cm_fig, reg_fig, tsne_fig, anomaly_fig)),
-            dash_explain_plot=gr.update(value=shap_fig or gcam_fig),
-            dash_explain_html=gr.update(value=text_shap_html or ""),
+                cfg.task, result.cm_fig, result.reg_fig, result.tsne_fig, result.anomaly_fig)),
+            dash_explain_plot=gr.update(value=result.shap_fig or result.gcam_fig),
+            dash_explain_html=gr.update(value=result.text_shap_html or ""),
             dash_loss=gr.update(value=_loss_plot(history) if history else None),
-            dash_actions=_build_action_items(cfg.task, history, metrics_payload, cfg.model_name),
+            dash_actions=_build_action_items(cfg.task, history, result.metrics, cfg.model_name),
         )
 
-    except _cancel.TrainingStopped:
-        _set_phase("stopped", eta_text="ETA: stopped")
-        yield _emit(log("⏹ Training stopped. Nothing was exported for this run."))
-    except Exception as exc:
-        _set_phase("error", eta_text="ETA: halted")
-        try:
-            from ui.error_formatter import format_error
-            friendly = format_error(exc)
-        except Exception:
-            friendly = f"❌ **Error:** {exc}"
-        tb = traceback.format_exc()
-        yield _emit(log(
-            f"{friendly}\n\n"
-            f"{'─' * 60}\n"
-            f"Traceback (most recent call last):\n{tb}"
-        ))
+    preflight = preflight_errors(cfg)
+    if preflight:
+        yield _emit("\n".join(preflight))
+        return
 
+    status = run_log.log("Initialising…")
+    run_log.set_phase("initialising", eta_text="ETA: estimating…")
+    yield _emit(status)
+
+    ctx = prepare_run(cfg, run_log, progress)
+    try:
+        for item in execute_run(ctx):
+            yield _emit_result(item) if isinstance(item, RunResult) else _emit_update(item)
+    except _cancel.TrainingStopped:
+        run_log.set_phase("stopped", eta_text="ETA: stopped")
+        yield _emit(run_log.log(_STOPPED_MESSAGE))
+    except Exception as exc:
+        run_log.set_phase("error", eta_text="ETA: halted")
+        yield _emit(run_log.log(_format_run_error(exc)))
     finally:
-        for _tmp in run_temp_files:
-            try:
-                os.unlink(_tmp)
-            except OSError:
-                pass
+        cleanup_run(ctx)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gradio UI
@@ -5135,6 +4014,34 @@ with gr.Blocks(title="NoCode-DL") as demo:
         concurrency_limit=1,
     )
 
+    def _train_sweep_model(run_config):
+        """Train one sweep model; return its bundle path or raise RuntimeError(reason).
+
+        The reason is the first ❌ line of the status text the Train tab would
+        have shown for the same failure.
+        """
+        result = None
+        try:
+            for item in run_stages(run_config):
+                if isinstance(item, RunResult):
+                    result = item
+        except PreflightError as exc:
+            failure_text = "\n".join(exc.errors)
+        except _cancel.TrainingStopped:
+            failure_text = _STOPPED_MESSAGE
+        except Exception as exc:
+            failure_text = _format_run_error(exc)
+        else:
+            if result is not None and result.bundle_path:
+                return result.bundle_path
+            failure_text = ""
+        reason = next(
+            (line.strip().lstrip("❌").replace("**", "").strip()
+             for line in failure_text.splitlines() if line.strip().startswith("❌")),
+            "the run saved no model bundle",
+        )
+        raise RuntimeError(reason)
+
     def run_model_sweep(config, sweep_models_val, sweep_metrics_val, sweep_sort_metric_val, sweep_sort_order_val):
         """Train ``config`` once per model in ``sweep_models_val`` and tabulate the metrics."""
         modality_val, task_val, bundle_name_val = config.modality, config.task, config.bundle_name
@@ -5190,21 +4097,8 @@ with gr.Blocks(title="NoCode-DL") as demo:
 
             local_bundle = f"{bundle_name_val}_{_slug_part(model_choice)}"
             try:
-                updates = list(run_pipeline(
-                    config.replace(model_name=model_choice, bundle_name=local_bundle),
-                ))
-                last = updates[-1]
-                bundle_path_val = last[12]
-                if not bundle_path_val:
-                    # run_pipeline catches its own exceptions and yields an error
-                    # status instead of raising, so a crashed run arrives here
-                    # looking like a normal one, just without a bundle.
-                    reason = next(
-                        (line.strip().lstrip("❌").replace("**", "").strip()
-                         for line in str(last[0]).splitlines() if line.strip().startswith("❌")),
-                        "the run saved no model bundle",
-                    )
-                    raise RuntimeError(reason)
+                bundle_path_val = _train_sweep_model(
+                    config.replace(model_name=model_choice, bundle_name=local_bundle))
                 run_record = next((r for r in reversed(load_history()) if r.get("bundle_path") == bundle_path_val), None)
                 metric_payload = (run_record or {}).get("metrics", {})
                 row = {

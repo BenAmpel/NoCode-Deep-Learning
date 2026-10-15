@@ -13,6 +13,7 @@ import config
 config.DEFAULTS["num_workers"] = 0
 
 import app
+import pipeline.runner as pipeline_runner
 
 
 def main() -> None:
@@ -118,9 +119,10 @@ def main() -> None:
     results = []
     for run_name, overrides in runs:
         kwargs = common | overrides
-        original_device = app.DEVICE
+        # run_pipeline picks its device in pipeline.runner.
+        original_device = pipeline_runner.DEVICE
         if run_name == "autoencoder_image":
-            app.DEVICE = "cpu"
+            pipeline_runner.DEVICE = "cpu"
         gen = app.run_pipeline(**kwargs)
         etas: list[str] = []
         statuses: list[str] = []
@@ -133,7 +135,7 @@ def main() -> None:
                 etas.append(out[2])
                 cards.append(out[3])
         finally:
-            app.DEVICE = original_device
+            pipeline_runner.DEVICE = original_device
         blank_eta = [eta for eta in etas if eta in (None, "", "Done")]
         results.append(
             {
