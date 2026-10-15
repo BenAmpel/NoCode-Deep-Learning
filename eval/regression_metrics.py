@@ -80,6 +80,14 @@ def compute_regression_metrics(
 # Report formatting
 # ---------------------------------------------------------------------------
 
+# There is no separate test split: the validation set also chose the best
+# epoch (early stopping / best-weights restore), so its scores lean optimistic.
+VALIDATION_NOTE = (
+    "Measured on the validation set, which also picked the best epoch, so treat "
+    "these as slightly optimistic. Check on new data before relying on them."
+)
+
+
 def format_regression_report(metrics_dict: Dict[str, float]) -> str:
     """Return a human-readable string summary of regression metrics.
 
@@ -100,7 +108,7 @@ def format_regression_report(metrics_dict: Dict[str, float]) -> str:
 
     lines = [
         "=" * 40,
-        "  Regression Evaluation Report",
+        "  Regression Evaluation Report (validation set)",
         "=" * 40,
         f"  MAE  (Mean Absolute Error)         : {metrics_dict['mae']:.6f}",
         f"  MSE  (Mean Squared Error)           : {metrics_dict['mse']:.6f}",
@@ -108,6 +116,7 @@ def format_regression_report(metrics_dict: Dict[str, float]) -> str:
         f"  R²   (Coefficient of Determination) : {metrics_dict['r2']:.6f}",
         f"  MAPE (Mean Abs. Percentage Error)   : {mape_str}",
         "=" * 40,
+        VALIDATION_NOTE,
     ]
     return "\n".join(lines)
 

@@ -169,7 +169,7 @@ TOOLTIPS: dict[str, str] = {
 
     # sklearn
     "n_estimators":
-        "Number of trees in the forest (RandomForest) or boosting rounds (XGBoost). "
+        "Number of trees in the forest (RandomForest) or boosting rounds (XGBoost, HistGradientBoosting). "
         "More trees → better accuracy but slower training.",
     "max_depth":
         "Maximum depth of each tree. 0 = unlimited. "
@@ -179,7 +179,7 @@ TOOLTIPS: dict[str, str] = {
     "max_iter":
         "Maximum iterations for LogisticRegression solver convergence.",
     "lr_xgb":
-        "Step size used by XGBoost. Lower values are often more stable, while higher values learn faster but can overshoot.",
+        "Step size used by gradient boosting (XGBoost, HistGradientBoosting). Lower values are often more stable, while higher values learn faster but can overshoot.",
 
     # Augmentation
     "augmentation":

@@ -71,7 +71,9 @@ def _benchmark_summary(
 ) -> dict[str, Any]:
     metrics = metrics or {}
     metric_key = "accuracy" if task in ("classification", "multi-label") else "r2" if task == "regression" else None
-    lower_is_better = task in ("regression", "anomaly")
+    # Both ranking metrics (accuracy, R²) are higher-is-better; treating
+    # regression as lower-is-better ranked the worst run first.
+    lower_is_better = False
     current_value = _safe_float((metrics or {}).get(metric_key)) if metric_key else None
     peer_rows: list[dict[str, Any]] = []
 
@@ -183,7 +185,11 @@ def generate_streamlit_dashboard(
 
     reqs_path = os.path.join(bundle_path, "requirements_dashboard.txt")
     with open(reqs_path, "w", encoding="utf-8") as fh:
-        fh.write("streamlit>=1.30\npandas\nmatplotlib\nnumpy\n")
+        # Streamlit is pinned to the release the dashboard was checked against
+        # (it uses width="stretch"); the rest match the training environment.
+        from export.exporter import _pinned
+        reqs = ["streamlit==1.66.0", *(_pinned(p) for p in ("pandas", "matplotlib", "numpy"))]
+        fh.write("\n".join(reqs) + "\n")
 
     return out_path
 
@@ -296,7 +302,7 @@ def _plot_training_curves():
         ax.set_ylabel("Loss")
         ax.legend(fontsize=8)
         fig.tight_layout()
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")
         plt.close(fig)
     with cols[1]:
         fig, ax = plt.subplots(figsize=(6, 3.5), dpi=130)
@@ -306,7 +312,7 @@ def _plot_training_curves():
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Metric")
         fig.tight_layout()
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")
         plt.close(fig)
 
 
@@ -371,7 +377,7 @@ def _plot_confusion_from_arrays(y_true, y_pred):
             ax.text(j, i, str(cm[i, j]), ha="center", va="center",
                     color="white" if cm[i, j] > thresh else "black", fontsize=8)
     fig.tight_layout()
-    st.pyplot(fig, use_container_width=True)
+    st.pyplot(fig, width="stretch")
     plt.close(fig)
 
 
@@ -395,7 +401,7 @@ def _plot_precision_recall(y_true, y_prob):
     ax.set_title("Precision-recall")
     ax.legend(fontsize=8, ncol=2)
     fig.tight_layout()
-    st.pyplot(fig, use_container_width=True)
+    st.pyplot(fig, width="stretch")
     plt.close(fig)
 
 
@@ -424,7 +430,7 @@ def _plot_calibration(y_true, y_prob):
     ax.set_title("Calibration")
     ax.legend(fontsize=8)
     fig.tight_layout()
-    st.pyplot(fig, use_container_width=True)
+    st.pyplot(fig, width="stretch")
     plt.close(fig)
 
 
@@ -445,7 +451,7 @@ def _classification_error_slices(y_true, y_pred, feature_rows):
             "Error rate": round(float(np.mean(y_pred[mask] != y_true[mask])) * 100, 2),
         })
     if error_rows:
-        st.dataframe(pd.DataFrame(error_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(error_rows), width="stretch", hide_index=True)
 
     if feature_rows.empty:
         st.caption("Feature-level slices were not exported for this run.")
@@ -476,7 +482,7 @@ def _classification_error_slices(y_true, y_pred, feature_rows):
                 "Error rate": round(float(feature_df.loc[mask, "is_error"].mean()) * 100, 2),
             })
     if slice_rows:
-        st.dataframe(pd.DataFrame(slice_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(slice_rows), width="stretch", hide_index=True)
 
 
 def _regression_views():
@@ -496,7 +502,7 @@ def _regression_views():
         ax.set_ylabel("Residual")
         ax.set_title("Residual scatter")
         fig.tight_layout()
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")
         plt.close(fig)
     with cols[1]:
         fig, ax = plt.subplots(figsize=(6, 4), dpi=130)
@@ -505,7 +511,7 @@ def _regression_views():
         ax.set_ylabel("Count")
         ax.set_title("Absolute error distribution")
         fig.tight_layout()
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")
         plt.close(fig)
 
     if feature_rows.empty:
@@ -536,7 +542,7 @@ def _regression_views():
             })
     if rows:
         st.subheader("Error slices by feature")
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _significance_section():
@@ -564,14 +570,14 @@ def _significance_section():
             "training_mode": "Mode",
             "timestamp": "Timestamp",
             "metric_display": "Metric",
-        })[["Model", "Mode", "Timestamp", "Metric"]], use_container_width=True, hide_index=True)
+        })[["Model", "Mode", "Timestamp", "Metric"]], width="stretch", hide_index=True)
         fig, ax = plt.subplots(figsize=(7, 4), dpi=130)
         ax.bar(peer_df["model_name"], peer_df["metric"], color=["#0f766e" if row.get("is_current") else "#93c5fd" for _, row in peer_df.iterrows()])
         ax.set_title("Comparable runs")
         ax.set_ylabel(metric_key.replace("_", " ").title())
         ax.tick_params(axis="x", rotation=35)
         fig.tight_layout()
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")
         plt.close(fig)
     st.caption(benchmark.get("note", ""))
 
@@ -670,7 +676,7 @@ with overview:
                 [{"Metric": key.replace("_", " ").title(), "Value": _fmt_metric(value, pct=key in {"accuracy", "precision_macro", "recall_macro", "f1_macro", "balanced_accuracy"})}
                  for key, value in metrics.items() if value is not None]
             )
-            st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+            st.dataframe(metrics_df, width="stretch", hide_index=True)
         else:
             st.info("No aggregate metrics were exported with this bundle.")
         if eval_summary:
@@ -685,7 +691,7 @@ with overview:
             {"Field": "Training mode", "Value": training_mode},
             {"Field": "Classes", "Value": ", ".join(classes) if classes else "—"},
         ])
-        st.dataframe(details, use_container_width=True, hide_index=True)
+        st.dataframe(details, width="stretch", hide_index=True)
         if prep:
             st.subheader("Preprocessing")
             prep_rows = [{"Setting": key, "Value": str(value)} for key, value in prep.items() if key in {
@@ -693,7 +699,7 @@ with overview:
                 "forecast_horizon", "subset_percent", "scaling_strategy", "normalization",
             }]
             if prep_rows:
-                st.dataframe(pd.DataFrame(prep_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(prep_rows), width="stretch", hide_index=True)
 
 with curves:
     _plot_training_curves()
@@ -722,13 +728,13 @@ with diagnostics:
                 ax.tick_params(axis="x", rotation=35)
                 ax.legend(fontsize=8)
                 fig.tight_layout()
-                st.pyplot(fig, use_container_width=True)
+                st.pyplot(fig, width="stretch")
                 plt.close(fig)
                 st.dataframe(report_rows.rename(columns={
                     "label": "Class",
                     "f1_score": "F1",
                     "support": "Support",
-                }), use_container_width=True, hide_index=True)
+                }), width="stretch", hide_index=True)
             else:
                 st.info("Per-class classification rows were not exported for this bundle.")
         with top[1]:

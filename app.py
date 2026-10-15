@@ -8,11 +8,26 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+# Must be set before gradio is imported. Gradio's usage analytics contact
+# api.gradio.app and checkip.amazonaws.com, which contradicts the app's
+# "your data never leaves this machine" promise.
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+
 import gradio as gr
 import numpy as np
 
-from config import DEVICE, DEFAULTS, VIDEO_DEFAULTS, TEXT_DEFAULTS
-from models.registry import get_models, get_compatible_tasks, get_modes, is_sklearn, is_vit, is_whisper
+from config import DEVICE, DEFAULTS, VIDEO_DEFAULTS, TEXT_DEFAULTS, set_seed
+from training import cancel as _cancel
+from models.registry import (
+    XGBOOST_UNAVAILABLE_NOTE,
+    get_compatible_tasks,
+    get_models,
+    get_modes,
+    is_sklearn,
+    is_vit,
+    is_whisper,
+    xgboost_available,
+)
 from ui.project_state import load_project_state, save_project_state
 from ui.tooltips import TOOLTIPS
 
@@ -257,33 +272,6 @@ def _build_image_quality_lab_html(
     return _render_quality_lab_html("Data Quality Lab", subtitle, chips, cards_html)
 
 
-def _patch_gradio_schema_parser() -> None:
-    """
-    Gradio 4.44 can emit JSON schema fragments where ``additionalProperties`` is
-    a boolean. Its client-side schema parser assumes a dict and crashes while
-    building API metadata, preventing the local app from loading.
-    """
-    try:
-        from gradio_client import utils as client_utils
-    except Exception:
-        return
-
-    if getattr(client_utils, "_nocode_dl_schema_patch", False):
-        return
-
-    original = client_utils._json_schema_to_python_type
-
-    def patched(schema, defs):
-        if isinstance(schema, bool):
-            return "Any"
-        return original(schema, defs)
-
-    client_utils._json_schema_to_python_type = patched
-    client_utils._nocode_dl_schema_patch = True
-
-
-_patch_gradio_schema_parser()
-
 # Keep YOLO options local so the app doesn't touch cv2/ultralytics at startup.
 YOLO_MODELS = {
     "YOLOv8 Nano  (~6 MB  · fastest)":   "yolov8n.pt",
@@ -299,7 +287,8 @@ PROJECT_MODES = ["Beginner", "Guided", "Advanced"]
 OPTIMIZERS = ["adam", "adamw", "sgd"]
 SCHEDULERS = ["cosine", "warmup_cosine", "step", "none"]
 AUG_LEVELS = ["none", "light", "medium", "heavy"]
-TASKS      = ["classification", "multi-label", "clustering", "regression", "anomaly"]
+# "multi-label" is omitted until loaders produce multi-hot targets (see models/registry.py).
+TASKS      = ["classification", "clustering", "regression", "anomaly"]
 
 APP_THEME = gr.themes.Soft(
     primary_hue="emerald",
@@ -1665,20 +1654,21 @@ button[role="tab"]:focus-visible {
 
 def _loss_plot(history: list[dict]) -> Any:
     """
-    Reuse a single named figure on every call (num='nocode_loss') so matplotlib
-    never accumulates open figures across training epochs — preventing a memory
-    leak that would otherwise grow linearly with epoch count.
+    Training/validation loss and metric curves for ``history``.
     """
-    plt = _get_pyplot()
+    from matplotlib.figure import Figure
+
     epochs     = [h["epoch"]      for h in history]
     train_loss = [h["train_loss"] for h in history]
     val_loss   = [h["val_loss"]   for h in history]
     val_metric = [h["val_acc"]    for h in history]
 
-    # clear=True redraws into the existing figure instead of allocating a new one.
+    # A standalone Figure (not pyplot) per call: pyplot's shared named figure
+    # let two concurrent runs draw into each other's plot, and nothing is
+    # registered globally, so it is freed once Gradio has rendered it.
     # dpi=130 keeps plots sharp on high-DPI (Retina) displays.
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4), dpi=130,
-                                    num="nocode_loss_curves", clear=True)
+    fig = Figure(figsize=(10, 4), dpi=130)
+    ax1, ax2 = fig.subplots(1, 2)
     ax1.plot(epochs, train_loss, label="Train loss", marker="o", markersize=3)
     ax1.plot(epochs, val_loss,   label="Val loss",   marker="o", markersize=3)
     ax1.set_xlabel("Epoch"); ax1.set_ylabel("Loss")
@@ -2026,10 +2016,10 @@ def _build_dashboard_kpi(
         else:
             metric_val = f"{history[-1]['val_acc']:.1f}%" if history else "—"
             color = "var(--color-text-primary)"
-        metric_label = "Accuracy"
+        metric_label = "Validation accuracy"
     elif task == "regression":
         metric_val = metrics_payload.get("mae")
-        metric_label = "MAE"
+        metric_label = "Validation MAE"
         metric_val = f"{float(metric_val):.4f}" if metric_val else "—"
         color = "var(--color-text-primary)"
     elif task == "clustering":
@@ -2550,6 +2540,10 @@ def run_pipeline(
     evaluation_artifacts: dict = {}
     stopped_early_flag = False
     runtime_device = "cpu" if (modality == "video" and DEVICE == "mps") else DEVICE
+    set_seed(DEFAULTS["seed"])
+    _cancel.reset()
+    _get_pyplot().close("all")  # figures from the previous run are already rendered
+    run_temp_files: list[str] = []  # removed when the run ends, not at app exit
 
     try:
         # ── 1. Load data ──────────────────────────────────────────────────────
@@ -2612,6 +2606,9 @@ def run_pipeline(
                 "apply_lemmatization": bool(text_apply_lemmatization),
                 "use_ngrams": bool(text_use_ngrams),
             }
+            # The loader samples the subset itself unless cleaning already did;
+            # sampling twice turned a 50% subset into 25%.
+            loader_subset_percent = float(subset_percent) if bool(use_random_subset) else 100.0
             if any(text_cleaning.values()):
                 from data_pipeline.cleaning import clean_text_dataframe
                 from data_pipeline.io_utils import read_structured_file
@@ -2625,6 +2622,7 @@ def run_pipeline(
                         subset_percent=float(subset_percent),
                         subset_seed=int(subset_seed),
                     )
+                    loader_subset_percent = 100.0
                     status = log(f"  ✓ Sampled {sampled_rows} text rows before cleaning")
                     yield _emit(status)
                 cleaned_df, clean_report = clean_text_dataframe(
@@ -2643,7 +2641,7 @@ def run_pipeline(
                 _cleaning_tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
                 cleaned_df.to_csv(_cleaning_tmp.name, index=False)
                 _cleaning_tmp.close()
-                atexit.register(os.unlink, _cleaning_tmp.name)
+                run_temp_files.append(_cleaning_tmp.name)
                 data_path = _cleaning_tmp.name
 
             train_loader, val_loader, classes, prep, vocab_size, val_texts = load_text_data(
@@ -2652,7 +2650,7 @@ def run_pipeline(
                 max_length=TEXT_DEFAULTS["max_length"],
                 val_split=_val_split,
                 cleaning_options=text_cleaning,
-                subset_percent=float(subset_percent) if bool(use_random_subset) else 100.0,
+                subset_percent=loader_subset_percent,
                 subset_seed=int(subset_seed))
             extra_data.update({"vocab_size": vocab_size, "val_texts": val_texts})
 
@@ -2660,6 +2658,8 @@ def run_pipeline(
             from modalities.tabular import load_tabular_data
             # Optional data cleaning
             _cleaning_tmp = None
+            # See the text branch: don't let the loader sample a second time.
+            loader_subset_percent = float(subset_percent) if bool(use_random_subset) else 100.0
             if use_data_cleaning:
                 from data_pipeline.cleaning import clean_dataframe, cleaning_report_markdown
                 from data_pipeline.io_utils import read_structured_file
@@ -2672,6 +2672,7 @@ def run_pipeline(
                         subset_percent=float(subset_percent),
                         subset_seed=int(subset_seed),
                     )
+                    loader_subset_percent = 100.0
                     status = log(f"  ✓ Sampled {sampled_rows} tabular rows before cleaning")
                     yield _emit(status)
                 cleaned_df, clean_report = clean_dataframe(
@@ -2685,7 +2686,7 @@ def run_pipeline(
                 _cleaning_tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
                 cleaned_df.to_csv(_cleaning_tmp.name, index=False)
                 _cleaning_tmp.close()
-                atexit.register(os.unlink, _cleaning_tmp.name)
+                run_temp_files.append(_cleaning_tmp.name)
                 data_path = _cleaning_tmp.name
 
             train_loader, val_loader, classes, prep, input_size, \
@@ -2693,8 +2694,9 @@ def run_pipeline(
                     data_path, label_col=label_col, feature_cols=feature_cols, batch_size=bs,
                     val_split=_val_split, augmentation=augmentation,
                     scaling_strategy=str(tabular_scaling),
-                    subset_percent=float(subset_percent) if bool(use_random_subset) else 100.0,
-                    subset_seed=int(subset_seed))
+                    subset_percent=loader_subset_percent,
+                    subset_seed=int(subset_seed),
+                    task=task)
             extra_data.update({"input_size": input_size,
                                 "X_train": X_train, "y_train": y_train,
                                 "X_val":   X_val,   "y_val":   y_val})
@@ -2732,7 +2734,7 @@ def run_pipeline(
                 _cleaning_tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
                 cleaned_df.to_csv(_cleaning_tmp.name, index=False)
                 _cleaning_tmp.close()
-                atexit.register(os.unlink, _cleaning_tmp.name)
+                run_temp_files.append(_cleaning_tmp.name)
                 data_path = _cleaning_tmp.name
 
             train_loader, val_loader, classes, prep, input_size, \
@@ -2880,6 +2882,16 @@ def run_pipeline(
         elif modality == "video":
             from models.video_models import get_video_model
             model = get_video_model(model_name, num_classes=num_classes, mode=training_mode)
+
+        # Neural regression: train on standardized targets so the network
+        # doesn't spend its epochs learning the target's scale. The wrapper
+        # un-scales its output, so metrics, export and inference are unchanged.
+        if (task == "regression" and model is not None and not sklearn_model
+                and model_name != "Autoencoder" and extra_data.get("y_train") is not None):
+            from models.target_scaling import wrap_for_regression
+            model, (t_mean, t_std) = wrap_for_regression(model, extra_data["y_train"])
+            status = log(f"  ✓ Regression targets standardized (training mean {t_mean:.4g}, std {t_std:.4g})")
+            yield _emit(status)
 
         if runtime_device != DEVICE:
             status = log(
@@ -3043,7 +3055,7 @@ def run_pipeline(
                 try:
                     train_labels = extra_data["y"][extra_data["train_idx"]].cpu().tolist()
                     from training.trainer import compute_class_weights
-                    cw = compute_class_weights(train_labels)
+                    cw = compute_class_weights(train_labels, num_classes=num_classes)
                     status = log("  ✓ Class weights applied (imbalance correction)")
                     yield _emit(status)
                 except Exception as e:
@@ -3111,7 +3123,7 @@ def run_pipeline(
                         # Fallback: iterate (safe but slower)
                         all_labels = [int(lbl) for _, lbls in train_loader
                                       for lbl in lbls.tolist()]
-                    cw = compute_class_weights(all_labels)
+                    cw = compute_class_weights(all_labels, num_classes=num_classes)
                     status = log("  ✓ Class weights applied (imbalance correction)")
                     yield _emit(status)
                 except Exception as e:
@@ -3307,12 +3319,14 @@ def run_pipeline(
                     cm_fig, eval_summary_text = compute_confusion_matrix(
                         final_model, val_loader, classes, modality, task,
                         is_sklearn=sklearn_model,
-                        X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"))
+                        X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
+                        device=runtime_device)
                     if task in ("classification", "multi-label"):
                         roc_fig = compute_roc_curves(
                             final_model, val_loader, classes, modality, task,
                             is_sklearn=sklearn_model,
-                            X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"))
+                            X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
+                            device=runtime_device)
                     if task == "classification":
                         y_true, y_pred, y_prob = _get_preds_and_probs(
                             final_model, val_loader, classes, sklearn_model,
@@ -3513,14 +3527,20 @@ def run_pipeline(
         yield _emit(status)
 
         sample_batch = None
-        if not sklearn_model and val_loader is not None:
-            try:
-                sample_inputs, _ = next(iter(val_loader))
+        if not sklearn_model:
+            # Any real batch works for tracing the ONNX graph; fall back to the
+            # training loader when validation is empty (very small datasets).
+            for loader in (val_loader, train_loader):
+                if loader is None:
+                    continue
+                try:
+                    sample_inputs, _ = next(iter(loader))
+                except StopIteration:
+                    continue
                 sample_batch = ({k: v[:1] for k, v in sample_inputs.items()}
                                 if isinstance(sample_inputs, dict)
                                 else sample_inputs[:1])
-            except StopIteration:
-                pass
+                break
 
         from export.exporter import export_bundle
         prep["model_name"] = model_name
@@ -3608,6 +3628,9 @@ def run_pipeline(
             dash_actions=_build_action_items(task, history, metrics_payload, model_name),
         )
 
+    except _cancel.TrainingStopped:
+        _set_phase("stopped", eta_text="ETA: stopped")
+        yield _emit(log("⏹ Training stopped. Nothing was exported for this run."))
     except Exception as exc:
         _set_phase("error", eta_text="ETA: halted")
         try:
@@ -3622,12 +3645,19 @@ def run_pipeline(
             f"Traceback (most recent call last):\n{tb}"
         ))
 
+    finally:
+        for _tmp in run_temp_files:
+            try:
+                os.unlink(_tmp)
+            except OSError:
+                pass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gradio UI
 # ─────────────────────────────────────────────────────────────────────────────
 
-with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
+# Gradio 6 takes theme and css in launch(); see launch_app().
+with gr.Blocks(title="NoCode-DL") as demo:
     with gr.Column(elem_classes=["studio-shell"]):
         gr.HTML('<a href="#studio-main-content" class="studio-skip-link">Skip to main content</a>')
         gr.HTML(
@@ -4148,7 +4178,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                                         label="Num layers",
                                                         info=tip("num_layers"))
 
-                            with gr.Accordion("sklearn / XGBoost options", open=False) as sklearn_options_group:
+                            with gr.Accordion("Tree & gradient boosting options", open=False) as sklearn_options_group:
+                                gr.Markdown(XGBOOST_UNAVAILABLE_NOTE, visible=not xgboost_available())
                                 n_estimators = gr.Slider(10,  500, value=100, step=10,
                                                           label="n_estimators",
                                                           info=tip("n_estimators"))
@@ -4162,7 +4193,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                                           label="Max iter (LogReg)",
                                                           info=tip("max_iter"))
                                 lr_xgb       = gr.Slider(0.01, 0.5, value=0.1, step=0.01,
-                                                          label="Learning rate (XGBoost)",
+                                                          label="Learning rate (gradient boosting)",
                                                           info=tip("lr_xgb"))
 
             # ── Tab 3: Train ──────────────────────────────────────────────────────
@@ -4297,7 +4328,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                             interactive=False,
                                             wrap=True,
                                             line_breaks=True,
-                                            height=320,
+                                            max_height=320,
                                         )
 
                     with gr.Column(scale=2):
@@ -4368,7 +4399,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                 label="Misclassified samples — table",
                                 wrap=True,
                                 line_breaks=True,
-                                height=320,
+                                max_height=320,
                                 column_widths=["80px", "120px", "140px", "140px", "140px", "160px", "140px"],
                             )
                             sample_review_note = gr.Markdown(_DEFAULT_SAMPLE_REVIEW_NOTE)
@@ -4521,8 +4552,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                                     batch_df = gr.Dataframe(
                                         headers=["file", "prediction", "confidence"],
                                         datatype=["str", "str", "str"],
-                                        row_count=(1, "dynamic"),
-                                        col_count=(3, "fixed"),
+                                        row_count=1,
+                                        column_count=3,
                                         interactive=False,
                                         wrap=True,
                                         label="Predictions",
@@ -4550,12 +4581,12 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                     history_df   = gr.Dataframe(
                         headers=HISTORY_COLUMNS,
                         datatype=["number", "str", "str", "str", "str", "str", "number", "number", "str"],
-                        row_count=(1, "dynamic"),
-                        col_count=(len(HISTORY_COLUMNS), "fixed"),
+                        row_count=1,
+                        column_count=len(HISTORY_COLUMNS),
                         interactive=False,
                         wrap=True,
                         line_breaks=True,
-                        height=320,
+                        max_height=320,
                         column_widths=["70px", "150px", "120px", "110px", "130px", "120px", "90px", "90px", "360px"],
                         label="All training runs",
                     )
@@ -4796,8 +4827,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                         annotation_det_table = gr.Dataframe(
                             headers=["keep", "label", "confidence", "x1", "y1", "x2", "y2"],
                             datatype=["bool", "str", "number", "number", "number", "number", "number"],
-                            row_count=(1, "dynamic"),
-                            col_count=(7, "fixed"),
+                            row_count=1,
+                            column_count=7,
                             interactive=True,
                             label="Editable detection review",
                             wrap=True,
@@ -5402,6 +5433,9 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
 
     # ── File upload → auto-fill data path ────────────────────────────────────
 
+    _UPLOAD_DIRS: list[str] = []
+    _MAX_UPLOAD_DIRS = 3
+
     def handle_upload(uploaded_file, mod, current_label, current_text, current_features, current_time):
         """Extract zip → temp dir or use CSV path directly."""
         if uploaded_file is None:
@@ -5410,15 +5444,22 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         path = uploaded_file if isinstance(uploaded_file, str) else uploaded_file.name
         if path.lower().endswith(".zip"):
             tmp_dir = tempfile.mkdtemp(prefix="nocode_dl_")
-            # Register cleanup so the temp directory is removed on process exit
+            # Remove on exit, and keep only the most recent extractions while
+            # running: every upload used to add a full copy until shutdown.
             atexit.register(shutil.rmtree, tmp_dir, True)
+            _UPLOAD_DIRS.append(tmp_dir)
+            while len(_UPLOAD_DIRS) > _MAX_UPLOAD_DIRS:
+                shutil.rmtree(_UPLOAD_DIRS.pop(0), ignore_errors=True)
+            from data_pipeline.io_utils import safe_extract_zip
             try:
-                with zipfile.ZipFile(path, "r") as zf:
-                    zf.extractall(tmp_dir)
+                safe_extract_zip(path, tmp_dir)
             except zipfile.BadZipFile:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 updates = _column_choice_updates("", mod, current_label, current_text, current_features, current_time)
                 return "", *updates
+            except ValueError as exc:  # too large, zip bomb, or paths escaping the folder
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise gr.Error(f"Can't use this zip: {exc}")
             structured = []
             for root, _dirs, files in os.walk(tmp_dir):
                 for name in files:
@@ -5873,10 +5914,11 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             dashboard_kpi, dashboard_primary_chart, dashboard_explain_plot,
             dashboard_explain_html, dashboard_loss_chart, dashboard_actions,
         ],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     # Stop button cancels the running training generator
-    stop_btn.click(None, cancels=[train_event])
 
     # Auto-fill inference bundle path from training result
     bundle_out.change(
@@ -5958,15 +6000,19 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 from torch.utils.data import TensorDataset
                 from modalities.tabular import load_tabular_data
                 # We need the full dataset; load with a tiny val_split and combine
+                # augmentation="none": noise must not be applied before the data
+                # is split into folds, or validation folds see augmented rows.
                 tl, vl, classes, prep, input_size, Xtr, ytr, Xv, yv = load_tabular_data(
                     data_path_val, label_col=label_col_val, batch_size=int(batch_size_val),
-                    val_split=0.01,
+                    val_split=0.01, augmentation="none",
                     subset_percent=float(subset_percent_val) if bool(subset_enabled_val) else 100.0,
-                    subset_seed=int(subset_seed_val))
+                    subset_seed=int(subset_seed_val),
+                    task=task_val)
                 X_all = np.concatenate([Xtr, Xv])
                 y_all = np.concatenate([ytr, yv])
+                label_dtype = "float32" if task_val == "regression" else "int64"
                 full_dataset = TensorDataset(
-                    torch.tensor(X_all), torch.tensor(y_all.astype("int64")))
+                    torch.tensor(X_all), torch.tensor(y_all.astype(label_dtype)))
                 num_classes  = len(classes)
 
                 for prog in cross_validate(
@@ -6100,7 +6146,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         except Exception as exc:
             yield f"❌ Cross-validation failed: {exc}"
 
-    cv_run_btn.click(
+    cv_event = cv_run_btn.click(
         run_cv,
         inputs=[
             modality, data_path, text_col, label_col, time_col,
@@ -6111,6 +6157,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             hidden_size, num_layers, cv_k,
         ],
         outputs=cv_results_box,
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     def run_cv_significance(modality_val, data_path_val, label_col_val, time_col_val, window_size_val, subset_enabled_val, subset_percent_val, subset_seed_val, training_mode_val,
@@ -6149,8 +6197,10 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 label_col=label_col_val,
                 batch_size=int(batch_size_val),
                 val_split=0.01,
+                augmentation="none",
                 subset_percent=float(subset_percent_val) if bool(subset_enabled_val) else 100.0,
                 subset_seed=int(subset_seed_val),
+                task=task_val,
             )
             X_all = np.concatenate([Xtr, Xv])
             y_all = np.concatenate([ytr, yv])
@@ -6333,7 +6383,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         plot = _plot_cv_significance_scores(metric_name, base_model_name, baseline_scores, challenger_curves)
         return "\n".join(lines), plot
 
-    cv_significance_btn.click(
+    cv_sig_event = cv_significance_btn.click(
         run_cv_significance,
         inputs=[
             modality, data_path, label_col, time_col, window_size, use_random_subset, subset_percent, subset_seed, training_mode,
@@ -6345,6 +6395,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             cv_significance_metric, cv_significance_models,
         ],
         outputs=[cv_significance_box, cv_significance_plot],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     # ── Hyperparameter search callback ────────────────────────────────────────
@@ -6385,7 +6437,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 data_path_val, label_col=label_col_val, batch_size=int(batch_size_val),
                 val_split=float(val_split_val),
                 subset_percent=float(subset_percent_val) if bool(subset_enabled_val) else 100.0,
-                subset_seed=int(subset_seed_val))
+                subset_seed=int(subset_seed_val),
+                task=task_val)
             num_classes = len(classes)
 
             def _factory(params):
@@ -6415,7 +6468,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         except Exception as exc:
             yield f"❌ Hyperparameter search failed: {exc}"
 
-    hparam_run_btn.click(
+    hparam_event = hparam_run_btn.click(
         run_hparam_search,
         inputs=[
             modality, data_path, text_col, label_col, time_col,
@@ -6426,6 +6479,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             hparam_lr_vals, hparam_dropout_vals, hparam_n_trials, hparam_epochs,
         ],
         outputs=hparam_results_box,
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     def run_model_sweep(
@@ -6488,7 +6543,11 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             visible_cols = ["model", *selected_metrics, "status", "bundle"]
             return df[[c for c in visible_cols if c in df.columns]]
 
+        _cancel.reset()
         for idx, model_choice in enumerate(selected_models, start=1):
+            if _cancel.stop_requested():
+                status_lines.append("⏹ Sweep stopped.")
+                break
             status_lines.append(f"- Running `{model_choice}` ({idx}/{len(selected_models)})…")
             yield "\n".join(status_lines), _sorted_frame(rows)
 
@@ -6514,6 +6573,16 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
                 ))
                 last = updates[-1]
                 bundle_path_val = last[12]
+                if not bundle_path_val:
+                    # run_pipeline catches its own exceptions and yields an error
+                    # status instead of raising, so a crashed run arrives here
+                    # looking like a normal one, just without a bundle.
+                    reason = next(
+                        (line.strip().lstrip("❌").replace("**", "").strip()
+                         for line in str(last[0]).splitlines() if line.strip().startswith("❌")),
+                        "the run saved no model bundle",
+                    )
+                    raise RuntimeError(reason)
                 run_record = next((r for r in reversed(load_history()) if r.get("bundle_path") == bundle_path_val), None)
                 metric_payload = (run_record or {}).get("metrics", {})
                 row = {
@@ -6544,7 +6613,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         ])
         yield "\n".join(status_lines), _sorted_frame(rows)
 
-    sweep_run_btn.click(
+    sweep_event = sweep_run_btn.click(
         run_model_sweep,
         inputs=[
             modality, data_path, text_col, label_col, feature_cols, time_col,
@@ -6565,6 +6634,8 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             bundle_name, sweep_models, sweep_metrics, sweep_sort_metric, sweep_sort_order,
         ],
         outputs=[sweep_status_box, sweep_table],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     def _plot_cv_significance_scores(metric_name, baseline_name, baseline_scores, challenger_scores_by_name):
@@ -6591,6 +6662,7 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         ax.grid(alpha=0.22, linestyle=":")
         ax.legend(frameon=False, fontsize=8)
         fig.tight_layout()
+        plt.close(fig)  # rendered by Gradio after return; frees pyplot's reference
         return fig
 
     # ── FastAPI generator ─────────────────────────────────────────────────────
@@ -6604,10 +6676,11 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             return _format_status_block(
                 "FastAPI export",
                 (f"FastAPI app written to:\n  {path}\n\n"
-                 f"Start server:\n"
-                 f"  cd {bundle_path}\n"
+                 f"Start server (reachable only from this computer):\n"
+                 f'  cd "{bundle_path}"\n'
                  f"  pip install -r requirements_serve.txt\n"
-                 f"  uvicorn main:app --host 0.0.0.0 --port 8000"),
+                 f"  python main.py\n\n"
+                 f"Then open http://127.0.0.1:8000/docs"),
             )
         except Exception as e:
             return _format_status_block("FastAPI export", f"Error: {e}", success=False)
@@ -6626,12 +6699,10 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
             return _format_status_block(
                 "Docker export",
                 (f"Docker files written:\n  {files}\n\n"
-                 f"Build & run:\n"
-                 f"  cd {bundle_path}\n"
-                 f"  docker build -t nocode-dl-{mod} .\n"
-                 f"  docker run -p 8000:8000 nocode-dl-{mod}\n\n"
-                 f"Or with Compose:\n"
-                 f"  docker-compose up"),
+                 f"Build & run (reachable only from this computer):\n"
+                 f'  cd "{bundle_path}"\n'
+                 f"  docker compose up --build\n\n"
+                 f"See README_deploy.md for exposing it with an API key."),
             )
         except Exception as e:
             return _format_status_block("Docker export", f"Error: {e}", success=False)
@@ -6834,10 +6905,12 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         except Exception as e:
             yield f"❌ Error: {e}", None, f"```\n{e}\n```", None
 
-    det_vid_btn.click(
+    det_vid_event = det_vid_btn.click(
         detect_video,
         inputs=[det_vid_input, det_model, det_conf, det_iou],
         outputs=[det_vid_status, det_vid_output, det_vid_stats_md, det_vid_chart],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     # ── YOLO custom training ──────────────────────────────────────────────────
@@ -6890,10 +6963,19 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         except Exception as ex:
             yield f"❌ Error: {ex}", ""
 
-    yolo_train_btn.click(
+    yolo_event = yolo_train_btn.click(
         train_yolo_custom,
         inputs=[yolo_data_path, yolo_model_size, yolo_epochs, yolo_batch],
         outputs=[yolo_status_box, yolo_result_md],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
+    )
+
+    # Stop sets the cooperative flag checked between training batches (the
+    # cancel alone only lands at the next yield) and cancels every heavy job.
+    stop_btn.click(
+        _cancel.request_stop,
+        cancels=[train_event, cv_event, cv_sig_event, hparam_event, sweep_event, det_vid_event, yolo_event],
     )
 
     # ── Annotation Studio callbacks ──────────────────────────────────────────
@@ -7074,15 +7156,20 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
         if not data_path_val or row_index_val in (None, ""):
             return gr.update(), gr.update(), "*Choose a text row first.*", "*Choose a text row first.*"
         try:
-            from ui.annotation_tools import format_text_annotation_preview, list_text_annotation_rows, preview_text_row, save_text_relabel
+            from ui.annotation_tools import (
+                backup_path_for, format_text_annotation_preview, list_text_annotation_rows,
+                preview_text_row, save_text_relabel,
+            )
 
             saved_label = save_text_relabel(data_path_val, int(row_index_val), label_col_val, new_label_val)
+            backup_name = backup_path_for(Path(data_path_val).expanduser()).name
             choices, labels = list_text_annotation_rows(data_path_val, text_col_val, label_col_val)
             text, current_label = preview_text_row(data_path_val, int(row_index_val), text_col_val, label_col_val)
             return (
                 gr.update(choices=choices, value=int(row_index_val)),
                 gr.update(choices=labels, value=saved_label),
-                f"✅ Updated row `{int(row_index_val)}` to label `{saved_label}`.",
+                f"✅ Updated row `{int(row_index_val)}` to label `{saved_label}`. "
+                f"The file as it was before your first edit is kept as `{backup_name}`.",
                 format_text_annotation_preview(text, current_label, int(row_index_val)),
             )
         except Exception as exc:
@@ -7316,6 +7403,19 @@ with gr.Blocks(title="NoCode-DL", theme=APP_THEME, css=APP_CSS) as demo:
     )
 
 
+# Gradio 4 marked dark mode with a `dark` class on <html>; Gradio 6 puts it on
+# <body>. APP_CSS defines its dark tokens and ~20 overrides under `html.dark`,
+# so mirror the body class onto <html> (and keep it in sync if it changes).
+_SYNC_DARK_CLASS_JS = """
+() => {
+  const sync = () => document.documentElement.classList.toggle(
+    "dark", document.body.classList.contains("dark"));
+  sync();
+  new MutationObserver(sync).observe(document.body, {attributes: true, attributeFilter: ["class"]});
+}
+"""
+
+
 def launch_app(
     *,
     inbrowser: bool = True,
@@ -7331,7 +7431,14 @@ def launch_app(
         server_name="127.0.0.1",
         server_port=server_port,
         prevent_thread_lock=prevent_thread_lock,
-        show_api=show_api,
+        theme=APP_THEME,
+        css=APP_CSS,
+        js=_SYNC_DARK_CLASS_JS,
+        # Gradio 6 replaced show_api with footer_links.
+        footer_links=["api", "gradio", "settings"] if show_api else ["gradio", "settings"],
+        # Gradio 6 only serves files from the working directory, the temp dir
+        # and allowed_paths; outputs/ holds trained bundles, previews and plots.
+        allowed_paths=[str(_OUTPUTS_ROOT)],
         _frontend=frontend,
     )
 

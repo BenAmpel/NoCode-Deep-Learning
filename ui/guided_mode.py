@@ -5,6 +5,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from models.registry import xgboost_available
+
+
+def _boosted_tree_model() -> str:
+    return "XGBoost" if xgboost_available() else "HistGradientBoosting"
+
 
 def recommend(
     modality: str,
@@ -81,7 +87,7 @@ def recommend(
         rec.update(
             training_mode="from_scratch",
             task="classification",
-            model_name="RandomForest" if n_samples < 5000 else "XGBoost",
+            model_name="RandomForest" if n_samples < 5000 else _boosted_tree_model(),
             augmentation="none",
             image_size=160,
             batch_size=32,

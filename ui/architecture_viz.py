@@ -55,6 +55,7 @@ def _param_chart(model: nn.Module) -> plt.Figure:
         fig, ax = plt.subplots(figsize=(6, 2))
         ax.text(0.5, 0.5, "No parameterised layers", ha="center", va="center")
         ax.axis("off")
+        plt.close(fig)  # rendered by Gradio after return; frees pyplot's reference
         return fig
 
     n = len(names)
@@ -71,6 +72,7 @@ def _param_chart(model: nn.Module) -> plt.Figure:
     ]
     ax.legend(handles=legend_patches, fontsize=8)
     fig.tight_layout()
+    plt.close(fig)  # rendered by Gradio after return; frees pyplot's reference
     return fig
 
 

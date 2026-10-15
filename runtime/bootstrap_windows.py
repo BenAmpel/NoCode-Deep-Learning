@@ -22,6 +22,9 @@ SYNC_EXCLUDES = {
     "build",
     "dist",
 }
+# User data inside the runtime app folder that must survive an upgrade
+# (trained models, checkpoints, exports, run history, project state).
+PRESERVE_ON_UPGRADE = {"outputs"}
 SERVER_PORT = 7860
 
 
@@ -45,13 +48,21 @@ def _sync_bundle_to_runtime(source_root: Path, target_root: Path) -> None:
     if target_root.exists() and source_version == target_version:
         return
 
+    # Replace the previous version's files but keep user data. Deleting the
+    # whole folder here used to wipe every trained model on each upgrade.
     if target_root.exists():
-        shutil.rmtree(target_root)
+        for child in target_root.iterdir():
+            if child.name in PRESERVE_ON_UPGRADE:
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     def ignore(_dir: str, names: list[str]) -> set[str]:
         return {name for name in names if name in SYNC_EXCLUDES}
 
-    shutil.copytree(source_root, target_root, ignore=ignore)
+    shutil.copytree(source_root, target_root, ignore=ignore, dirs_exist_ok=True)
 
 
 def _run(cmd: list[str], *, cwd: Path) -> None:
@@ -59,41 +70,26 @@ def _run(cmd: list[str], *, cwd: Path) -> None:
 
 
 def _bootstrap_without_venv(app_root: Path, venv_dir: Path) -> None:
-    from data_pipeline.network_utils import download_file
+    """Install into the launching Python when it cannot create a venv.
+
+    Only used when install.py reports VENV_UNAVAILABLE_EXIT. pip comes from the
+    interpreter's own bundled ensurepip rather than a downloaded get-pip.py.
+    """
+    from runtime.runtime_setup import pip_install_commands, save_install_state
 
     python = sys.executable
-    requirements = app_root / "requirements.txt"
-
     try:
         subprocess.run([python, "-m", "pip", "--version"], capture_output=True, check=True)
         print("[bootstrap] pip already available", flush=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        print("[bootstrap] downloading get-pip.py ...", flush=True)
-        get_pip = app_root / "get-pip.py"
-        download_file(
-            "https://bootstrap.pypa.io/get-pip.py",
-            get_pip,
-            allowed_hosts={"bootstrap.pypa.io"},
-        )
-        subprocess.run([python, str(get_pip)], cwd=app_root, check=True)
+        print("[bootstrap] installing pip with ensurepip ...", flush=True)
+        subprocess.run([python, "-m", "ensurepip", "--upgrade"], cwd=app_root, check=True)
 
-    subprocess.run([python, "-m", "pip", "install", "--upgrade", "pip"], cwd=app_root, check=True)
-    subprocess.run(
-        [
-            python, "-m", "pip", "install",
-            "-r", str(requirements),
-            "--extra-index-url", "https://download.pytorch.org/whl/cpu",
-        ],
-        cwd=app_root,
-        check=True,
-    )
+    for cmd in pip_install_commands(python):
+        subprocess.run(cmd, cwd=app_root, check=True)
 
     venv_dir.mkdir(parents=True, exist_ok=True)
-    scripts_dir = venv_dir / "Scripts"
-    scripts_dir.mkdir(exist_ok=True)
-
-    from runtime.runtime_setup import save_install_state
-    save_install_state(venv_dir)
+    save_install_state(venv_dir, python_path=Path(python))
 
 
 def main() -> int:
@@ -105,7 +101,12 @@ def main() -> int:
     if str(RUNTIME_APP_ROOT) not in sys.path:
         sys.path.insert(0, str(RUNTIME_APP_ROOT))
 
-    from runtime.runtime_setup import install_is_current
+    from runtime.runtime_setup import (
+        VENV_UNAVAILABLE_EXIT,
+        find_free_port,
+        install_is_current,
+        load_install_state,
+    )
 
     install_script = RUNTIME_APP_ROOT / "install.py"
     run_script = RUNTIME_APP_ROOT / "run_local.py"
@@ -113,40 +114,36 @@ def main() -> int:
     if not install_script.is_file() or not run_script.is_file():
         raise RuntimeError("Bundled app is missing install.py or run_local.py.")
 
-    is_current, _reason = install_is_current(VENV_DIR)
-
-    if is_current and not (VENV_DIR / "Scripts" / "python.exe").is_file():
-        try:
-            import gradio  # noqa: F401
-        except ImportError:
-            print("[bootstrap] install state is stale — packages missing; reinstalling", flush=True)
-            is_current = False
-            state_file = VENV_DIR / "install_state.json"
-            if state_file.exists():
-                state_file.unlink()
-
+    is_current, reason = install_is_current(VENV_DIR)
     if not is_current:
-        print(f"[bootstrap] creating fresh environment in {VENV_DIR}", flush=True)
-        try:
-            _run([sys.executable, str(install_script), "--venv-dir", str(VENV_DIR)], cwd=RUNTIME_APP_ROOT)
-        except subprocess.CalledProcessError:
-            print("[bootstrap] venv creation failed — using pip install fallback", flush=True)
+        print(f"[bootstrap] {reason} Installing dependencies into {VENV_DIR}", flush=True)
+        code = subprocess.run(
+            [sys.executable, str(install_script), "--venv-dir", str(VENV_DIR)], cwd=RUNTIME_APP_ROOT,
+        ).returncode
+        if code == VENV_UNAVAILABLE_EXIT:
+            # This Python can't make virtual environments at all.
+            print("[bootstrap] virtual environments unavailable; installing into this Python", flush=True)
             _bootstrap_without_venv(RUNTIME_APP_ROOT, VENV_DIR)
+        elif code != 0:
+            # A pip/network failure: retrying the same ~2 GB install elsewhere
+            # would only hide the real error.
+            raise RuntimeError(
+                f"Installing dependencies failed (exit code {code}). See the messages above; "
+                "check your internet connection or proxy, then launch again."
+            )
 
-    venv_python = VENV_DIR / "Scripts" / "python.exe"
-    if not venv_python.is_file():
-        venv_python = Path(sys.executable)
+    state = load_install_state(VENV_DIR) or {}
+    python = Path(state.get("venv_python") or VENV_DIR / "Scripts" / "python.exe")
+    port = find_free_port(SERVER_PORT)
 
-    print(f"[bootstrap] launching app with {venv_python}", flush=True)
-    os.execv(
-        str(venv_python),
-        [
-            str(venv_python),
-            str(run_script),
-            "--venv-dir", str(VENV_DIR),
-            "--server-port", str(SERVER_PORT),
-        ],
-    )
+    print(f"[bootstrap] launching app with {python} on port {port}", flush=True)
+    # subprocess.run, not os.execv: on Windows execv does not quote arguments
+    # (paths with spaces split) and the PowerShell launcher sees exit code 0
+    # immediately, hiding failures. Here the app's exit code is passed through.
+    return subprocess.run(
+        [str(python), str(run_script), "--venv-dir", str(VENV_DIR), "--server-port", str(port)],
+        cwd=RUNTIME_APP_ROOT,
+    ).returncode
 
 
 if __name__ == "__main__":

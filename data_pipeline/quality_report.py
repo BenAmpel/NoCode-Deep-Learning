@@ -7,6 +7,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from data_pipeline.type_inference import name_tokens
+
 
 def build_quality_report(
     data_path: str,
@@ -31,7 +33,11 @@ def build_quality_report(
         return report
 
     for msg in validation_messages:
-        if "error" in msg.lower() or "not found" in msg.lower():
+        # Validation marks blocking problems with ❌ ("Only 1 unique class",
+        # "Cannot read CSV", ...); those used to fall through to "info", so
+        # the report said Ready for data that cannot train.
+        lowered = msg.lower()
+        if msg.lstrip().startswith("❌") or "error" in lowered or "not found" in lowered:
             report["blocking_issues"].append(msg)
         elif "warning" in msg.lower() or "⚠" in msg:
             report["warnings"].append(msg)
@@ -134,26 +140,26 @@ def _structured_quality_checks(df, label_col: str, modality: str, report: dict[s
         nunique = int(series.nunique(dropna=True))
         if col != label_col and len(df) > 0 and nunique >= max(5, int(len(df) * 0.95)):
             suspicious_columns.append(col)
-        lowered = col.lower()
-        if any(token in lowered for token in ("id", "uuid", "filename", "path", "index")):
+        # Whole words only: "humidity" or "valid" are not identifiers.
+        if name_tokens(col) & {"id", "uuid", "guid", "filename", "path", "index", "idx"}:
             leakage_columns.append(col)
 
     if suspicious_columns:
         report["warnings"].append(
-            f"Near-unique columns detected: {', '.join(suspicious_columns[:6])}."
+            f"Near-unique columns detected: {', '.join(map(str, suspicious_columns[:6]))}."
         )
         report["suggested_actions"].append("Review whether ID-like columns should be removed before training.")
 
     if leakage_columns:
         report["warnings"].append(
-            f"Potential leakage columns detected: {', '.join(leakage_columns[:6])}."
+            f"Potential leakage columns detected: {', '.join(map(str, leakage_columns[:6]))}."
         )
 
     if modality == "tabular":
         cat_cols = df.drop(columns=[label_col], errors="ignore").select_dtypes(include=["object", "category"]).columns.tolist()
         if cat_cols:
             report["info"].append(
-                f"Categorical columns will be one-hot encoded: {', '.join(cat_cols[:6])}."
+                f"Categorical columns will be one-hot encoded: {', '.join(map(str, cat_cols[:6]))}."
             )
             report["info"].append(
                 f"Encoding review: {len(cat_cols)} categorical columns will expand into indicator features during preprocessing."

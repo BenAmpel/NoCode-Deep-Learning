@@ -13,7 +13,7 @@
 [![GitHub Stars](https://img.shields.io/github/stars/BenAmpel/NoCode-Deep-Learning?style=social)](https://github.com/BenAmpel/NoCode-Deep-Learning/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![PyTorch 2.8](https://img.shields.io/badge/PyTorch-2.8-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![PyTorch 2.14](https://img.shields.io/badge/PyTorch-2.14-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-☕-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/bampel)
 
 [Download](https://github.com/BenAmpel/NoCode-Deep-Learning/releases/latest) · [Quickstart](#quickstart) · [Documentation](docs/index.md) · [Contributing](CONTRIBUTING.md)
@@ -85,7 +85,7 @@ Inspect metrics and visual diagnostics, then export the trained model as ONNX or
 | Modality | Example Tasks | Example Models | Built-in Tutorial |
 |---|---|---|---|
 | Image | Classification, object detection | ResNet, ViT, MobileNetV3, YOLOv8 | MNIST digits |
-| Tabular | Classification, regression | XGBoost, RandomForest, MLP | Iris species |
+| Tabular | Classification, regression | HistGradientBoosting, XGBoost (Windows only), RandomForest, MLP | Iris species |
 | Text | Classification, sentiment | BERT, DistilBERT, TF-IDF + LR | 20 Newsgroups subset |
 | Audio | Classification | CNN-spectrogram, Whisper features | Spoken digits |
 | Time Series | Classification, forecasting | LSTM, GRU, CNN1D, TCN | Synthetic signals |

@@ -33,6 +33,12 @@ VENDOR_DIR = ROOT / "packaging" / "vendor"
 
 PYTHON_VERSION = "3.12.10"
 PYTHON_INSTALLER_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-{{arch}}.exe"
+# SHA-256 of the official installers, checked against python.org's Sigstore
+# signatures (identity thomas@python.org, the 3.12 release manager).
+PYTHON_INSTALLER_SHA256 = {
+    "amd64": "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb",
+    "arm64": "377ac8fd478987940088e879441e702a71b53164d2a1e6f1d51ff77a7e470258",
+}
 
 RUNTIME_ITEMS = [
     "SETUP.md",
@@ -143,23 +149,25 @@ def stage_files(staging: Path, version: str) -> None:
         f'try {{ $host.UI.RawUI.WindowTitle = "{APP_NAME}" }} catch {{}}\r\n'
         f'Set-Location $PSScriptRoot\r\n'
         f'\r\n'
+        f'# 3.11-3.13 only: numpy 2.4 / scikit-learn 1.8 need >= 3.11.\r\n'
+        f'$versionCheck = "import sys; exit(0 if (3,11) <= sys.version_info[:2] <= (3,13) else 1)"\r\n'
         f'function Find-Python {{\r\n'
         f'    $candidates = @(\r\n'
         f'        "$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe",\r\n'
+        f'        "$env:LOCALAPPDATA\\Programs\\Python\\Python313\\python.exe",\r\n'
         f'        "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe",\r\n'
-        f'        "$env:LOCALAPPDATA\\Programs\\Python\\Python310\\python.exe",\r\n'
         f'        "C:\\Python312\\python.exe",\r\n'
         f'        "$env:ProgramFiles\\Python312\\python.exe"\r\n'
         f'    )\r\n'
         f'    foreach ($c in $candidates) {{\r\n'
         f'        if (Test-Path $c) {{\r\n'
-        f'            $ok = & $c -c "import sys; exit(0 if sys.version_info>=(3,10) else 1)" 2>$null\r\n'
+        f'            $ok = & $c -c $versionCheck 2>$null\r\n'
         f'            if ($LASTEXITCODE -eq 0) {{ return $c }}\r\n'
         f'        }}\r\n'
         f'    }}\r\n'
         f'    try {{\r\n'
         f'        $cmd = (Get-Command python -ErrorAction Stop).Source\r\n'
-        f'        $ok = & $cmd -c "import sys; exit(0 if sys.version_info>=(3,10) else 1)" 2>$null\r\n'
+        f'        $ok = & $cmd -c $versionCheck 2>$null\r\n'
         f'        if ($LASTEXITCODE -eq 0) {{ return $cmd }}\r\n'
         f'    }} catch {{}}\r\n'
         f'    return $null\r\n'
@@ -185,19 +193,37 @@ def stage_files(staging: Path, version: str) -> None:
         f'    }}\r\n'
         f'    $arch = if ($isArm64) {{ "arm64" }} else {{ "amd64" }}\r\n'
         f'    $url  = if ($isArm64) {{ "{arm64_url}" }} else {{ "{amd64_url}" }}\r\n'
-        f'    Write-Host "Python 3.10+ not found. Downloading Python {PYTHON_VERSION} ($arch)..."\r\n'
+        f'    $expected = if ($isArm64) {{ "{PYTHON_INSTALLER_SHA256["arm64"]}" }} else {{ "{PYTHON_INSTALLER_SHA256["amd64"]}" }}\r\n'
+        f'    Write-Host "Python 3.11-3.13 not found. Downloading Python {PYTHON_VERSION} ($arch)..."\r\n'
         f'    $installer = "$env:TEMP\\python-{PYTHON_VERSION}-installer.exe"\r\n'
-        f'    (New-Object System.Net.WebClient).DownloadFile($url, $installer)\r\n'
+        f'    # Use the system proxy with the signed-in user\'s credentials (corporate networks).\r\n'
+        f'    [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials\r\n'
+        f'    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\r\n'
+        f'    Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -UseDefaultCredentials\r\n'
+        f'    $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLower()\r\n'
+        f'    if ($actual -ne $expected) {{\r\n'
+        f'        Remove-Item $installer -Force -ErrorAction SilentlyContinue\r\n'
+        f'        Write-Host "ERROR: the downloaded Python installer failed its checksum check."\r\n'
+        f'        Write-Host "Expected $expected"\r\n'
+        f'        Write-Host "Got      $actual"\r\n'
+        f'        Read-Host "Press Enter to exit"\r\n'
+        f'        exit 1\r\n'
+        f'    }}\r\n'
         f'    Write-Host "Installing Python (this may take a minute)..."\r\n'
-        f'    Start-Process $installer -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_launcher=0" -Wait\r\n'
+        f'    $proc = Start-Process $installer -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_launcher=0" -Wait -PassThru\r\n'
         f'    Remove-Item $installer -Force -ErrorAction SilentlyContinue\r\n'
+        f'    if ($proc.ExitCode -ne 0) {{\r\n'
+        f'        Write-Host "ERROR: the Python installer exited with code $($proc.ExitCode)."\r\n'
+        f'        Read-Host "Press Enter to exit"\r\n'
+        f'        exit 1\r\n'
+        f'    }}\r\n'
         f'    $python = "$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe"\r\n'
         f'}}\r\n'
         f'\r\n'
         f'if (-not (Test-Path $python)) {{\r\n'
         f'    Write-Host ""\r\n'
         f'    Write-Host "ERROR: Python could not be found or installed."\r\n'
-        f'    Write-Host "Please install Python 3.10+ from https://www.python.org and re-launch."\r\n'
+        f'    Write-Host "Please install Python 3.12 from https://www.python.org and re-launch."\r\n'
         f'    Read-Host "Press Enter to exit"\r\n'
         f'    exit 1\r\n'
         f'}}\r\n'
@@ -261,7 +287,7 @@ Source: "NoCode-DL-staged\\.bundle_version"; DestDir: "{{app}}"
 
 [Icons]
 Name: "{{group}}\\{APP_NAME}"; Filename: "{{app}}\\{APP_NAME}.bat"; IconFilename: "{{app}}\\icon.ico"; Comment: "Launch {APP_NAME}"
-Name: "{{commondesktop}}\\{APP_NAME}"; Filename: "{{app}}\\{APP_NAME}.bat"; IconFilename: "{{app}}\\icon.ico"; Comment: "Launch {APP_NAME}"; Tasks: desktopicon
+Name: "{{autodesktop}}\\{APP_NAME}"; Filename: "{{app}}\\{APP_NAME}.bat"; IconFilename: "{{app}}\\icon.ico"; Comment: "Launch {APP_NAME}"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"

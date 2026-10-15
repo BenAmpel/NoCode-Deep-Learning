@@ -6,7 +6,6 @@ Expected data format:
     Numeric columns are standardized; categorical columns are one-hot encoded.
 """
 import logging
-import random
 
 import numpy as np
 import pandas as pd
@@ -27,6 +26,7 @@ def load_tabular_data(
     scaling_strategy: str = "standard",
     subset_percent: float = 100.0,
     subset_seed: int = 42,
+    task: str = "classification",
 ) -> tuple[DataLoader, DataLoader, list[str], dict, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     df = read_structured_file(data_path)
     df, dropped_missing = drop_missing_label_rows(df, label_col)
@@ -40,10 +40,22 @@ def load_tabular_data(
         subset_seed=subset_seed,
     )
 
-    labels_raw   = df[label_col].tolist()
-    classes      = sorted(set(str(l) for l in labels_raw))
-    class_to_idx = {c: i for i, c in enumerate(classes)}
-    labels       = np.array([class_to_idx[str(l)] for l in labels_raw], dtype=np.int64)
+    if task == "regression":
+        # Keep the real target values; mapping them to sorted class indices
+        # would train on string rank ("100000" < "99000") instead of magnitude.
+        targets = pd.to_numeric(df[label_col], errors="coerce")
+        if targets.isna().any():
+            bad = df.loc[targets.isna(), label_col].astype(str).head(3).tolist()
+            raise ValueError(
+                f"Regression needs a numeric target, but '{label_col}' has non-numeric values: {bad}"
+            )
+        classes = ["target"]
+        labels  = targets.to_numpy(dtype=np.float32)
+    else:
+        labels_raw   = df[label_col].tolist()
+        classes      = sorted(set(str(l) for l in labels_raw))
+        class_to_idx = {c: i for i, c in enumerate(classes)}
+        labels       = np.array([class_to_idx[str(l)] for l in labels_raw], dtype=np.int64)
 
     if feature_cols:
         usable_feature_cols = [col for col in feature_cols if col in df.columns and col != label_col]
@@ -55,15 +67,24 @@ def load_tabular_data(
     cat_cols    = features_df.select_dtypes(include=["object", "category"]).columns.tolist()
     num_cols    = features_df.select_dtypes(include=[np.number]).columns.tolist()
 
+    # Train/val split comes first so scaling statistics are fit on training
+    # rows only. Fitting on all rows leaked validation data into the inputs.
+    from data_pipeline.splits import random_split, stratified_split
+    if task == "regression":
+        train_idx, val_idx = random_split(len(features_df), val_split)
+    else:
+        train_idx, val_idx = stratified_split(labels.tolist(), val_split)
+
     # Scale numeric features
     num_array = features_df[num_cols].fillna(0).values.astype(np.float32)
-    mean = num_array.mean(axis=0)
-    std = num_array.std(axis=0) + 1e-8
-    min_vals = num_array.min(axis=0) if len(num_cols) else np.array([], dtype=np.float32)
-    max_vals = num_array.max(axis=0) if len(num_cols) else np.array([], dtype=np.float32)
-    median_vals = np.median(num_array, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
-    q1 = np.quantile(num_array, 0.25, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
-    q3 = np.quantile(num_array, 0.75, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    fit_rows = num_array[train_idx] if len(train_idx) else num_array
+    mean = fit_rows.mean(axis=0)
+    std = fit_rows.std(axis=0) + 1e-8
+    min_vals = fit_rows.min(axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    max_vals = fit_rows.max(axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    median_vals = np.median(fit_rows, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    q1 = np.quantile(fit_rows, 0.25, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
+    q3 = np.quantile(fit_rows, 0.75, axis=0) if len(num_cols) else np.array([], dtype=np.float32)
     iqr = (q3 - q1) + 1e-8 if len(num_cols) else np.array([], dtype=np.float32)
 
     if scaling_strategy == "minmax" and len(num_cols):
@@ -87,14 +108,6 @@ def load_tabular_data(
         parts.append(dummies.fillna(0).values.astype(np.float32))
 
     X = np.concatenate(parts, axis=1)
-
-    # Train/val split
-    indices = list(range(len(X)))
-    random.seed(42)
-    random.shuffle(indices)
-    n_val      = max(1, int(len(X) * val_split))
-    val_idx    = indices[:n_val]
-    train_idx  = indices[n_val:]
 
     X_train, X_val = X[train_idx], X[val_idx]
     y_train, y_val = labels[train_idx], labels[val_idx]
@@ -143,6 +156,7 @@ def load_tabular_data(
         "dropped_missing_labels": dropped_missing,
         "subset_rows": sampled_rows,
         "subset_percent": float(subset_percent),
+        "task": task,
     }
 
     return train_loader, val_loader, classes, preprocessing_config, X.shape[1], X_train, y_train, X_val, y_val

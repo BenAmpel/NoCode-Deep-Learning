@@ -82,11 +82,10 @@ def load_image_data(
     if not samples:
         raise ValueError(f"No images found in {data_path}")
 
-    random.seed(42)
-    random.shuffle(samples)
-    n_val          = max(1, int(len(samples) * val_split))
-    train_samples  = samples[n_val:]
-    val_samples    = samples[:n_val]
+    from data_pipeline.splits import stratified_split
+    train_idx, val_idx = stratified_split([label for _, label in samples], val_split)
+    train_samples  = [samples[i] for i in train_idx]
+    val_samples    = [samples[i] for i in val_idx]
 
     normalization_presets = {
         "imagenet": (IMAGENET_MEAN, IMAGENET_STD),
@@ -106,10 +105,12 @@ def load_image_data(
             force_grayscale=force_grayscale,
         )
     except Exception:
-        # Fallback: simple transforms if augmentation module unavailable
+        # Fallback: simple transforms if augmentation module unavailable.
+        # No transforms.Lambda here: lambdas can't be pickled for DataLoader workers.
+        gray = [transforms.Grayscale(num_output_channels=3)] if force_grayscale else []
         train_tf = transforms.Compose([
             transforms.Resize((image_size, image_size)),
-            transforms.Grayscale(num_output_channels=3) if force_grayscale else transforms.Lambda(lambda x: x),
+            *gray,
             transforms.RandomHorizontalFlip(),
             transforms.ColorJitter(brightness=0.2, contrast=0.2),
             transforms.ToTensor(),
@@ -117,7 +118,7 @@ def load_image_data(
         ])
         val_tf = transforms.Compose([
             transforms.Resize((image_size, image_size)),
-            transforms.Grayscale(num_output_channels=3) if force_grayscale else transforms.Lambda(lambda x: x),
+            *gray,
             transforms.ToTensor(),
             transforms.Normalize(mean, std),
         ])

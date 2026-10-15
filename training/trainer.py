@@ -14,6 +14,7 @@ from torch.optim.lr_scheduler import (
     LinearLR, CosineAnnealingLR as CosLR,
 )
 from config import DEVICE
+from training import cancel as _cancel
 
 # ---------------------------------------------------------------------------
 # Batch helpers
@@ -44,6 +45,10 @@ def _make_scheduler(optimizer, name: str, epochs: int, steps_per_epoch: int):
         return CosineAnnealingLR(optimizer, T_max=epochs)
     if name == "step":
         return StepLR(optimizer, step_size=max(1, epochs // 3), gamma=0.5)
+    if name == "warmup_cosine" and epochs < 2:
+        # No room for a warmup phase; the cosine half would get T_max=0 and
+        # divide by zero. Plain cosine over the single epoch instead.
+        return CosineAnnealingLR(optimizer, T_max=max(1, epochs))
     if name == "warmup_cosine":
         warmup = LinearLR(optimizer, start_factor=0.1, end_factor=1.0,
                           total_iters=max(1, epochs // 10))
@@ -121,6 +126,7 @@ def train_pytorch(
         model.train()
         train_loss = 0.0
         for batch in train_loader:
+            _cancel.check()  # Stop pressed: end between batches
             optimizer.zero_grad()
             if amp_enabled:
                 with torch.autocast(device):
@@ -225,8 +231,9 @@ def _compute_loss(criterion, logits, labels, task: str) -> torch.Tensor:
         return criterion(logits, labels)
     if task == "multi-label":
         return criterion(logits, labels.float())
-    # regression
-    return criterion(logits.squeeze(), labels.float())
+    # regression: flatten both sides. A bare .squeeze() turns a (1, 1) final
+    # batch into a 0-d tensor, which then broadcasts against labels of shape (1,).
+    return criterion(logits.reshape(-1), labels.float().reshape(-1))
 
 
 # ---------------------------------------------------------------------------
@@ -253,17 +260,21 @@ def _save_ckpt(model, optimizer, epoch, history, val_loss, ckpt_dir, tag):
 # Class-weight helpers
 # ---------------------------------------------------------------------------
 
-def compute_class_weights(labels_list: list) -> torch.Tensor:
+def compute_class_weights(labels_list: list, num_classes: int | None = None) -> torch.Tensor:
     """
     Compute inverse-frequency class weights for imbalanced datasets.
 
     Parameters
     ----------
     labels_list : flat list of integer class indices
+    num_classes : total number of classes. Pass it: sizing the tensor from the
+        largest label seen makes it too short when the last class is missing
+        from the training labels, and CrossEntropyLoss then errors.
+        Classes with no examples get weight 1.0.
 
     Returns
     -------
-    torch.Tensor of shape (n_classes,) with float weights
+    torch.Tensor of shape (num_classes,) with float weights
     """
     import numpy as np
     labels = np.array(labels_list)
@@ -271,7 +282,8 @@ def compute_class_weights(labels_list: list) -> torch.Tensor:
     # inverse frequency, normalised so mean weight ≈ 1
     weights = 1.0 / counts.astype(float)
     weights = weights / weights.mean()
-    weight_tensor = torch.ones(int(classes.max()) + 1)
+    size = max(int(num_classes or 0), int(classes.max()) + 1)
+    weight_tensor = torch.ones(size)
     for cls, w in zip(classes, weights):
         weight_tensor[int(cls)] = float(w)
     return weight_tensor

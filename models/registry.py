@@ -2,6 +2,7 @@
 Central registry mapping modality + training mode → available models,
 and modality → compatible tasks.
 """
+import sys
 
 REGISTRY: dict[str, dict[str, dict]] = {
     "graph": {
@@ -57,6 +58,7 @@ REGISTRY: dict[str, dict[str, dict]] = {
             "RandomForest":       {"params": ["n_estimators", "max_depth"]},
             "LogisticRegression": {"params": ["C", "max_iter"]},
             "XGBoost":            {"params": ["n_estimators", "max_depth", "learning_rate"]},
+            "HistGradientBoosting": {"params": ["n_estimators", "max_depth", "learning_rate"]},
             "Autoencoder":        {"params": ["learning_rate", "batch_size", "epochs"]},
         },
     },
@@ -77,6 +79,7 @@ REGISTRY: dict[str, dict[str, dict]] = {
             "LinearRegression": {"params": []},
             "Ridge":            {"params": ["C"]},
             "XGBoost":          {"params": ["n_estimators", "max_depth", "learning_rate"]},
+            "HistGradientBoosting": {"params": ["n_estimators", "max_depth", "learning_rate"]},
         },
     },
     "audio": {
@@ -87,8 +90,9 @@ REGISTRY: dict[str, dict[str, dict]] = {
             "ResNet18":          {"params": ["learning_rate", "batch_size", "epochs", "dropout", "optimizer"]},
             "EfficientNet-B0":   {"params": ["learning_rate", "batch_size", "epochs", "dropout", "optimizer"]},
             "EfficientNet-B2":   {"params": ["learning_rate", "batch_size", "epochs", "dropout", "optimizer"]},
-            "Whisper-Tiny":      {"params": ["learning_rate", "batch_size", "epochs", "optimizer"]},
-            "Whisper-Base":      {"params": ["learning_rate", "batch_size", "epochs", "optimizer"]},
+            # Whisper-Tiny / Whisper-Base are hidden until the audio loader can
+            # produce Whisper's 80-band, 16 kHz, 3000-frame log-mel input. The
+            # shared loader yields 3x224x224 mel images, which crash the encoder.
             "Autoencoder":       {"params": ["learning_rate", "batch_size", "epochs"]},
         },
         "from_scratch": {
@@ -117,21 +121,61 @@ SKLEARN_MODELS = {
     "LinearRegression",
     "Ridge",
     "XGBoost",
+    "HistGradientBoosting",
 }
 VIT_MODELS     = {"ViT-Tiny", "ViT-Small"}
 WHISPER_MODELS = {"Whisper-Tiny", "Whisper-Base"}
 
 TASK_MODALITY_SUPPORT: dict[str, list[str]] = {
     "classification":  ["graph", "image", "text", "tabular", "timeseries", "audio", "video"],
-    "multi-label":     ["image", "text", "tabular", "audio"],
+    # Multi-label is hidden until loaders emit multi-hot targets; today every
+    # loader yields one integer label, so BCEWithLogitsLoss fails on shape.
+    "multi-label":     [],
     "clustering":      ["image", "text", "tabular", "timeseries", "audio"],
     "regression":      ["tabular", "timeseries"],
     "anomaly":         ["image", "tabular", "audio"],
 }
 
 
+XGBOOST_UNAVAILABLE_NOTE = (
+    "XGBoost is not available on this computer. Use **HistGradientBoosting**, "
+    "scikit-learn's built-in gradient-boosted trees, for the same kind of model."
+)
+
+_xgboost_status: tuple[bool, str] | None = None
+
+
+def xgboost_status() -> tuple[bool, str]:
+    """Return (available, reason). Cached after the first call.
+
+    On macOS XGBoost is never offered. Its wheels link an external
+    ``@rpath/libomp.dylib`` that end users (no Homebrew) do not have, and even
+    when one is found it is a second OpenMP runtime next to the one torch
+    ships, which segfaults on the first fit once torch has been imported.
+    The app always imports torch first, so the import must not be attempted.
+    """
+    global _xgboost_status
+    if _xgboost_status is None:
+        if sys.platform == "darwin":
+            _xgboost_status = (False, "XGBoost is disabled on macOS (its OpenMP runtime conflicts with PyTorch's).")
+        else:
+            try:
+                import xgboost  # noqa: F401
+                _xgboost_status = (True, "")
+            except Exception as exc:  # ImportError, or XGBoostError when the native library fails to load
+                _xgboost_status = (False, f"XGBoost could not be loaded: {exc}")
+    return _xgboost_status
+
+
+def xgboost_available() -> bool:
+    return xgboost_status()[0]
+
+
 def get_models(modality: str, mode: str) -> list[str]:
-    return list(REGISTRY.get(modality, {}).get(mode, {}).keys())
+    models = list(REGISTRY.get(modality, {}).get(mode, {}).keys())
+    if "XGBoost" in models and not xgboost_available():
+        models.remove("XGBoost")
+    return models
 
 
 def get_compatible_tasks(modality: str) -> list[str]:

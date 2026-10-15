@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import os
 import re
 import shutil
@@ -24,7 +25,12 @@ SYNC_EXCLUDES = {
     "build",
     "dist",
 }
-SERVER_URL = "http://127.0.0.1:7860"
+# User data that lives inside the runtime app folder and must survive an
+# upgrade. The app writes trained models, checkpoints, exports, run history
+# and project state under app/outputs.
+PRESERVE_ON_UPGRADE = {"outputs"}
+LOG_DIR = Path.home() / "Library" / "Logs" / APP_NAME
+SERVER_LOG = LOG_DIR / "server.log"
 POLL_INTERVAL = 0.5
 POLL_TIMEOUT = 180
 SERVER_TYPICAL_SECS = 45
@@ -52,13 +58,21 @@ def _sync_bundle_to_runtime(source_root: Path, target_root: Path) -> None:
     if target_root.exists() and source_version == target_version:
         return
 
+    # Replace the previous version's files but keep user data. Deleting the
+    # whole folder here used to wipe every trained model on each upgrade.
     if target_root.exists():
-        shutil.rmtree(target_root)
+        for child in target_root.iterdir():
+            if child.name in PRESERVE_ON_UPGRADE:
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     def ignore(_dir: str, names: list[str]) -> set[str]:
         return {name for name in names if name in SYNC_EXCLUDES}
 
-    shutil.copytree(source_root, target_root, ignore=ignore)
+    shutil.copytree(source_root, target_root, ignore=ignore, dirs_exist_ok=True)
 
 
 def _fmt_elapsed(secs: float) -> str:
@@ -77,12 +91,12 @@ def _fmt_eta(elapsed: float, typical: float) -> str:
     return "taking longer than usual\u2026"
 
 
-def _wait_for_server(timeout: float = POLL_TIMEOUT) -> bool:
+def _wait_for_server(port: int, timeout: float = POLL_TIMEOUT) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         conn = None
         try:
-            conn = HTTPConnection("127.0.0.1", 7860, timeout=1)
+            conn = HTTPConnection("127.0.0.1", port, timeout=1)
             conn.request("GET", "/")
             response = conn.getresponse()
             if 200 <= response.status < 500:
@@ -101,6 +115,7 @@ def _wait_for_server(timeout: float = POLL_TIMEOUT) -> bool:
 def main() -> int:
     try:
         import tkinter as tk
+        from tkinter import ttk  # submodule: `import tkinter` alone does not load it
         has_tk = True
     except ImportError:
         has_tk = False
@@ -151,8 +166,14 @@ def main() -> int:
                 pkg_pattern = re.compile(
                     r"(?:Collecting|Downloading|Installing collected packages:|Successfully installed)\s+(.+)"
                 )
+                recent: collections.deque[str] = collections.deque(maxlen=20)
                 for line in proc.stdout:
                     line = line.rstrip()
+                    # Our stdout is launcher.log (see the .app launcher), so pip's
+                    # full output, including any error, ends up there.
+                    print(line, flush=True)
+                    if line:
+                        recent.append(line)
                     match = pkg_pattern.match(line)
                     if match:
                         raw = match.group(1).strip()
@@ -168,43 +189,64 @@ def main() -> int:
                             detail_holder[0] = f"Installing: {pkg_name}"
                 proc.wait()
                 if proc.returncode != 0:
-                    raise RuntimeError(f"install.py exited with code {proc.returncode}")
+                    reason = next((l for l in reversed(recent) if "error" in l.lower()),
+                                  recent[-1] if recent else "")
+                    raise RuntimeError(
+                        f"Installing dependencies failed (exit code {proc.returncode}). {reason[:200]}\n"
+                        f"Full log: {LOG_DIR / 'launcher.log'}"
+                    )
 
             venv_python = VENV_DIR / "bin" / "python"
             if not venv_python.is_file():
                 raise RuntimeError(f"Expected virtualenv Python at {venv_python}")
 
+            from runtime.runtime_setup import find_free_port
+
+            port = find_free_port()
             set_phase("Starting server\u2026", typical_secs=SERVER_TYPICAL_SECS)
             detail_holder[0] = "Loading models and initialising Gradio\u2026"
-            server_proc = subprocess.Popen(
-                [
-                    str(venv_python),
-                    str(run_script),
-                    "--venv-dir", str(VENV_DIR),
-                    "--no-browser",
-                ],
-                cwd=RUNTIME_APP_ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
+            # The server outlives this launcher, so its output goes to a log
+            # file rather than a pipe: once nobody reads a pipe it fills up
+            # and the server blocks (or dies with BrokenPipe) on its next print.
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            log_start = SERVER_LOG.stat().st_size if SERVER_LOG.exists() else 0
+            with open(SERVER_LOG, "a", encoding="utf-8") as server_log:
+                server_log.write(f"\n--- launch {time.strftime('%Y-%m-%d %H:%M:%S')} on port {port} ---\n")
+                server_log.flush()
+                subprocess.Popen(
+                    [
+                        str(venv_python),
+                        str(run_script),
+                        "--venv-dir", str(VENV_DIR),
+                        "--server-port", str(port),
+                        "--no-browser",
+                    ],
+                    cwd=RUNTIME_APP_ROOT,
+                    stdout=server_log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
 
             server_ready = threading.Event()
 
-            def _stream_server() -> None:
-                skip = re.compile(r"^\s*$|uvicorn|httpx|HTTP Request")
-                for line in server_proc.stdout:
-                    if server_ready.is_set():
-                        break
-                    line = line.rstrip()
-                    if line and not skip.search(line):
-                        clean = re.sub(r"^\S+\s+\S+\s+\S+\s+", "", line).strip()
-                        if clean:
-                            detail_holder[0] = clean[:80]
+            def _follow_server_log() -> None:
+                skip = re.compile(r"^\s*$|uvicorn|httpx|HTTP Request|^---")
+                with open(SERVER_LOG, encoding="utf-8", errors="replace") as fh:
+                    fh.seek(log_start)
+                    while not server_ready.is_set():
+                        line = fh.readline()
+                        if not line:
+                            time.sleep(0.2)
+                            continue
+                        line = line.rstrip()
+                        if line and not skip.search(line):
+                            clean = re.sub(r"^\S+\s+\S+\s+\S+\s+", "", line).strip()
+                            if clean:
+                                detail_holder[0] = clean[:80]
 
-            threading.Thread(target=_stream_server, daemon=True).start()
+            threading.Thread(target=_follow_server_log, daemon=True).start()
 
-            ready = _wait_for_server()
+            ready = _wait_for_server(port)
             server_ready.set()
 
             if ready:
@@ -212,11 +254,11 @@ def main() -> int:
                 detail_holder[0] = ""
                 phase_typical[0] = -1.0
                 import webbrowser
-                webbrowser.open(SERVER_URL)
+                webbrowser.open(f"http://127.0.0.1:{port}")
                 status_holder[0] = "Done"
             else:
                 status_holder[0] = "Server did not start in time."
-                detail_holder[0] = "Check ~/Library/Logs/NoCode-DL/launcher.log for details."
+                detail_holder[0] = f"Check {SERVER_LOG} for details."
 
         except Exception as exc:
             error_holder.append(exc)
@@ -244,7 +286,7 @@ def main() -> int:
         detail_var = tk.StringVar(value="")
         tk.Label(root, textvariable=status_var, font=("Helvetica Neue", 13, "bold"), fg="#e9fff8", bg="#1a1a2e").pack(pady=(10, 2))
         tk.Label(root, textvariable=detail_var, font=("Helvetica Neue", 11), fg="#b7d3cb", bg="#1a1a2e", wraplength=400, justify="center").pack(pady=(0, 12))
-        progress = tk.ttk.Progressbar(root, orient="horizontal", mode="indeterminate", length=360)
+        progress = ttk.Progressbar(root, orient="horizontal", mode="indeterminate", length=360)
         progress.pack(pady=(0, 16))
         progress.start(10)
 
@@ -257,8 +299,16 @@ def main() -> int:
                 detail_var.set(detail_holder[0])
             if done_event.is_set():
                 progress.stop()
-                if error_holder:
-                    status_var.set(f"Error: {error_holder[0]}")
+                if error_holder or status_holder[0] != "Done":
+                    # Leave failures on screen until the user closes the window;
+                    # closing after 1.2 s made errors effectively invisible.
+                    if error_holder:
+                        status_var.set(f"Error: {error_holder[0]}")
+                    if not detail_var.get():
+                        detail_var.set("Details: ~/Library/Logs/NoCode-DL/launcher.log")
+                    progress.pack_forget()
+                    tk.Button(root, text="Close", command=root.destroy).pack(pady=(0, 12))
+                    return
                 root.after(1200, root.destroy)
                 return
             root.after(200, _poll)

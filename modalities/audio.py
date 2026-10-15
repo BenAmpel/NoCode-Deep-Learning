@@ -13,14 +13,8 @@ Expected data format:
             ...
 """
 import random
-import shutil
-import subprocess
-import tempfile
-import warnings
 from pathlib import Path
 
-import numpy as np
-import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
@@ -30,104 +24,9 @@ from config import DEFAULTS
 AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 
 
-def _read_wav_with_scipy(path: str) -> tuple[torch.Tensor, int]:
-    from scipy.io import wavfile
-
-    sample_rate, data = wavfile.read(path)
-    arr = np.asarray(data)
-
-    if arr.ndim == 1:
-        arr = arr[np.newaxis, :]
-    else:
-        arr = arr.T
-
-    if np.issubdtype(arr.dtype, np.integer):
-        if arr.dtype == np.uint8:
-            waveform = (arr.astype(np.float32) - 128.0) / 128.0
-        else:
-            scale = float(np.iinfo(arr.dtype).max)
-            waveform = arr.astype(np.float32) / max(scale, 1.0)
-    else:
-        waveform = arr.astype(np.float32)
-
-    return torch.from_numpy(waveform), int(sample_rate)
-
-
-def _decode_audio_with_ffmpeg(path: str) -> tuple[torch.Tensor, int]:
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("ffmpeg is not installed")
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_path = tmp.name
-
-    try:
-        subprocess.run(
-            [
-                ffmpeg,
-                "-y",
-                "-loglevel",
-                "error",
-                "-i",
-                path,
-                tmp_path,
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        return _read_wav_with_scipy(tmp_path)
-    except subprocess.CalledProcessError as exc:
-        detail = exc.stderr.strip() or "ffmpeg could not decode the file"
-        raise RuntimeError(f"ffmpeg decode failed: {detail}") from exc
-    finally:
-        try:
-            Path(tmp_path).unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
-def load_audio_waveform(path: str, target_sr: int | None = None) -> tuple[torch.Tensor, int]:
-    import torchaudio
-
-    waveform = None
-    sample_rate = None
-    load_errors: list[str] = []
-    suffix = Path(path).suffix.lower()
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            waveform, sample_rate = torchaudio.load(path)
-    except Exception as exc:
-        load_errors.append(f"torchaudio.load failed: {exc}")
-
-    if waveform is None or sample_rate is None:
-        if suffix == ".wav":
-            try:
-                waveform, sample_rate = _read_wav_with_scipy(path)
-            except Exception as exc:
-                load_errors.append(f"scipy wavfile.read failed: {exc}")
-        else:
-            try:
-                waveform, sample_rate = _decode_audio_with_ffmpeg(path)
-            except Exception as exc:
-                load_errors.append(str(exc))
-
-    if waveform is None or sample_rate is None:
-        hint = ""
-        if suffix in {".mp3", ".m4a", ".ogg", ".flac"} and not shutil.which("ffmpeg"):
-            hint = " Install ffmpeg to enable fallback decoding for compressed audio."
-        raise RuntimeError(
-            ("; ".join(load_errors) or f"Unable to decode audio file: {path}") + hint
-        )
-
-    if target_sr is not None and sample_rate != target_sr:
-        waveform = torchaudio.functional.resample(waveform, sample_rate, target_sr)
-        sample_rate = target_sr
-
-    return waveform, int(sample_rate)
+# Decoding lives in the bundle runtime so training and exported inference
+# read audio identically.
+from export.bundle_runtime import load_audio_waveform, scale_spectrogram  # noqa: E402
 
 
 class AudioDataset(Dataset):
@@ -196,7 +95,10 @@ class AudioDataset(Dataset):
                 mel = self.spectrogram_transform(mel)
             except Exception:
                 pass
-        mel_db = self.to_db(mel)
+        # Scale dB (roughly -100..+40) to [0, 1] before Normalize(0.5, 0.5).
+        # Without this the network saw values far outside the [-1, 1] range
+        # inference (and pretrained image backbones) assume.
+        mel_db = scale_spectrogram(self.to_db(mel))
         img    = mel_db.repeat(3, 1, 1)             # (3, n_mels, time) — 3-ch "image"
 
         if self.transform:
@@ -247,11 +149,10 @@ def load_audio_data(
     if not samples:
         raise ValueError(f"No audio files found in {data_path}")
 
-    random.seed(42)
-    random.shuffle(samples)
-    n_val         = max(1, int(len(samples) * val_split))
-    train_samples = samples[n_val:]
-    val_samples   = samples[:n_val]
+    from data_pipeline.splits import stratified_split
+    train_idx, val_idx = stratified_split([label for _, label in samples], val_split)
+    train_samples = [samples[i] for i in train_idx]
+    val_samples   = [samples[i] for i in val_idx]
 
     normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     resize    = transforms.Resize((image_size, image_size), antialias=True)

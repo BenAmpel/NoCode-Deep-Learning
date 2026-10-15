@@ -15,7 +15,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
 
 from config import DEVICE
-from training.trainer import _forward, _make_optimizer, _make_scheduler
+from training import cancel as _cancel
+from training.trainer import _compute_loss, _forward, _make_optimizer, _make_scheduler
 from eval.metrics import classification_metric_summary, regression_metric_summary
 
 # ---------------------------------------------------------------------------
@@ -51,9 +52,12 @@ def _train_one_fold(
         model.train()
         train_loss = 0.0
         for batch in train_loader:
+            _cancel.check()  # Stop pressed: end between batches
             optimizer.zero_grad()
             logits, labels = _forward(model, batch)
-            loss = criterion(logits, labels.float() if not is_clf else labels)
+            # Shared with train_pytorch so regression logits (B, 1) are flattened
+            # before MSE instead of broadcasting against labels (B,) to (B, B).
+            loss = _compute_loss(criterion, logits, labels, task)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -68,13 +72,12 @@ def _train_one_fold(
         with torch.no_grad():
             for batch in val_loader:
                 logits, labels = _forward(model, batch)
-                lbl = labels.float() if not is_clf else labels
-                val_loss += criterion(logits, lbl).item()
+                val_loss += _compute_loss(criterion, logits, labels, task).item()
                 if is_clf:
                     n_correct += (logits.argmax(1) == labels).sum().item()
                     n_total   += labels.size(0)
                 else:
-                    val_metric += (logits.squeeze() - labels.float()).abs().mean().item()
+                    val_metric += (logits.reshape(-1) - labels.float().reshape(-1)).abs().mean().item()
         val_loss /= max(len(val_loader), 1)
         if is_clf:
             val_metric = (n_correct / max(n_total, 1)) * 100
@@ -263,6 +266,12 @@ def cross_validate(
         )
 
         model = model_factory()
+        if task == "regression" and isinstance(model, torch.nn.Module):
+            # Standardize targets with this fold's training labels only.
+            from models.target_scaling import wrap_for_regression
+            fold_labels = _extract_labels(dataset)
+            if fold_labels is not None:
+                model, _ = wrap_for_regression(model, np.asarray(fold_labels)[train_idx])
         fold_history: list[dict] = []
 
         for update in _train_one_fold(

@@ -15,6 +15,8 @@ from sklearn.metrics import (
 from sklearn.exceptions import UndefinedMetricWarning
 from sklearn.preprocessing import label_binarize
 
+from eval.regression_metrics import VALIDATION_NOTE
+
 
 def compute_confusion_matrix_from_arrays(y_true, y_pred, classes) -> tuple[plt.Figure | None, str]:
     """Build a confusion matrix figure and report text from arrays."""
@@ -31,7 +33,7 @@ def compute_confusion_matrix_from_arrays(y_true, y_pred, classes) -> tuple[plt.F
         target_names=classes,
         zero_division=0,
     )
-    summary = f"Validation Accuracy: {acc:.2f}%\n\n{report}"
+    summary = f"Validation Accuracy: {acc:.2f}%\n{VALIDATION_NOTE}\n\n{report}"
 
     cm = confusion_matrix(y_true, y_pred, labels=label_space)
     n = len(classes)
@@ -144,13 +146,18 @@ def regression_metric_summary(y_true, y_pred) -> dict[str, float]:
         "r2": float(r2_score(y_true, y_pred)),
     }
 
-def compute_confusion_matrix(model, val_loader, classes, modality, task, is_sklearn=False, X_val=None, y_val=None) -> tuple[plt.Figure | None, str]:
-    """Returns (fig, summary_text)"""
+def compute_confusion_matrix(model, val_loader, classes, modality, task, is_sklearn=False, X_val=None, y_val=None, device=None) -> tuple[plt.Figure | None, str]:
+    """Returns (fig, summary_text).
+
+    ``device`` should be the device the model was trained on. Video falls back
+    to CPU on Apple Silicon because MPS lacks 3-D pooling ops.
+    """
     if task == "clustering":
         return None, "Confusion matrix not available for clustering task."
-    from config import DEVICE
+    if device is None:
+        from config import DEVICE as device
     try:
-        y_true, y_pred, _ = _get_preds_and_probs(model, val_loader, classes, is_sklearn, X_val, y_val, DEVICE)
+        y_true, y_pred, _ = _get_preds_and_probs(model, val_loader, classes, is_sklearn, X_val, y_val, device)
     except Exception as e:
         return None, f"Evaluation error: {e}"
 
@@ -163,7 +170,7 @@ def compute_confusion_matrix(model, val_loader, classes, modality, task, is_skle
         target_names=classes,
         zero_division=0,
     )
-    summary = f"Validation Accuracy: {acc:.2f}%\n\n{report}"
+    summary = f"Validation Accuracy: {acc:.2f}%\n{VALIDATION_NOTE}\n\n{report}"
 
     cm = confusion_matrix(y_true, y_pred, labels=label_space)
     n = len(classes)
@@ -185,12 +192,13 @@ def compute_confusion_matrix(model, val_loader, classes, modality, task, is_skle
     fig.tight_layout()
     return fig, summary
 
-def compute_roc_curves(model, val_loader, classes, modality, task, is_sklearn=False, X_val=None, y_val=None) -> plt.Figure | None:
+def compute_roc_curves(model, val_loader, classes, modality, task, is_sklearn=False, X_val=None, y_val=None, device=None) -> plt.Figure | None:
     if task == "clustering":
         return None
-    from config import DEVICE
+    if device is None:
+        from config import DEVICE as device
     try:
-        y_true, y_pred, y_prob = _get_preds_and_probs(model, val_loader, classes, is_sklearn, X_val, y_val, DEVICE)
+        y_true, y_pred, y_prob = _get_preds_and_probs(model, val_loader, classes, is_sklearn, X_val, y_val, device)
     except Exception as e:
         return None
     if y_prob is None or len(classes) < 2:

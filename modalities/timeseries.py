@@ -17,44 +17,8 @@ from config import DEFAULTS
 from data_pipeline.io_utils import drop_missing_label_rows, read_structured_file
 
 
-def build_temporal_feature_matrix(
-    values: np.ndarray,
-    *,
-    lag_steps: int = 0,
-    rolling_window: int = 0,
-) -> tuple[np.ndarray, int]:
-    """Expand base time-series features with lag and rolling statistics.
-
-    Returns the engineered feature matrix and the number of leading rows that
-    must be discarded to avoid NaNs caused by lagging/rolling windows.
-    """
-    engineered = [values]
-    trim = 0
-
-    if int(lag_steps) > 0:
-        trim = max(trim, int(lag_steps))
-        for lag in range(1, int(lag_steps) + 1):
-            lagged = np.roll(values, shift=lag, axis=0)
-            lagged[:lag, :] = np.nan
-            engineered.append(lagged)
-
-    if int(rolling_window) > 1:
-        window = int(rolling_window)
-        trim = max(trim, window - 1)
-        means = np.full_like(values, np.nan, dtype=np.float32)
-        stds = np.full_like(values, np.nan, dtype=np.float32)
-        mins = np.full_like(values, np.nan, dtype=np.float32)
-        maxs = np.full_like(values, np.nan, dtype=np.float32)
-        for idx in range(window - 1, len(values)):
-            chunk = values[idx - window + 1: idx + 1]
-            means[idx] = chunk.mean(axis=0)
-            stds[idx] = chunk.std(axis=0)
-            mins[idx] = chunk.min(axis=0)
-            maxs[idx] = chunk.max(axis=0)
-        engineered.extend([means, stds, mins, maxs])
-
-    matrix = np.concatenate(engineered, axis=1).astype(np.float32)
-    return matrix, trim
+# Defined in the bundle runtime so training and exported inference share it.
+from export.bundle_runtime import build_temporal_feature_matrix  # noqa: E402,F401
 
 
 def _engineered_feature_names(
@@ -87,7 +51,18 @@ def prepare_timeseries_windows(
     forecast_horizon: int = 1,
     lag_steps: int = 0,
     rolling_window: int = 0,
-) -> tuple[np.ndarray, np.ndarray, list[str], dict, int]:
+    *,
+    fit_fraction: float = 1.0,
+    return_window_starts: bool = False,
+):
+    """Build sliding windows over a time series.
+
+    ``fit_fraction`` fits the normalizer on only the first fraction of rows
+    (the training span), so validation rows don't leak into the scaling. The
+    row count used is stored as ``preprocessing_config["train_rows"]``.
+    With ``return_window_starts`` a sixth value is returned: the first row of
+    each window, aligned with the returned windows.
+    """
     import pandas as pd
 
     df = read_structured_file(data_path)
@@ -143,12 +118,17 @@ def prepare_timeseries_windows(
     if X.size == 0:
         raise ValueError("No valid rows remain after applying time-series lag/rolling features. Reduce the lag steps or rolling window.")
 
-    mean = X.mean(axis=0)
-    std = X.std(axis=0) + 1e-8
+    train_rows = len(X)
+    if fit_fraction < 1.0:
+        train_rows = max(window_size, int(len(X) * float(fit_fraction)))
+        train_rows = min(train_rows, len(X))
+    mean = X[:train_rows].mean(axis=0)
+    std = X[:train_rows].std(axis=0) + 1e-8
     X = (X - mean) / std
 
-    windows, window_labels = [], []
+    windows, window_labels, window_starts = [], [], []
     for i in range(0, len(X) - window_size + 1, stride):
+        window_starts.append(i)
         windows.append(X[i: i + window_size])
         segment = targets[i: i + window_size]
         if task == "regression" or bool(forecast_mode):
@@ -168,14 +148,18 @@ def prepare_timeseries_windows(
     else:
         window_labels = np.array(window_labels, dtype=np.int64)
 
+    window_starts = np.array(window_starts, dtype=np.int64)
     sampled_windows = len(windows)
     if float(subset_percent) < 100.0:
         rng = np.random.default_rng(int(subset_seed))
         subset_size = max(1, int(round(len(windows) * (float(subset_percent) / 100.0))))
         subset_size = min(subset_size, len(windows))
-        selected_idx = rng.choice(len(windows), size=subset_size, replace=False)
+        # Sorted, so the subset stays in time order; a shuffled subset turned
+        # the "chronological" split and TimeSeriesSplit into random splits.
+        selected_idx = np.sort(rng.choice(len(windows), size=subset_size, replace=False))
         windows = windows[selected_idx]
         window_labels = window_labels[selected_idx]
+        window_starts = window_starts[selected_idx]
         sampled_windows = subset_size
 
     preprocessing_config = {
@@ -196,8 +180,11 @@ def prepare_timeseries_windows(
         "forecast_horizon": int(forecast_horizon),
         "lag_steps": int(lag_steps),
         "rolling_window": int(rolling_window),
+        "train_rows": int(train_rows),
     }
 
+    if return_window_starts:
+        return windows, window_labels, classes, preprocessing_config, X.shape[1], window_starts
     return windows, window_labels, classes, preprocessing_config, X.shape[1]
 
 
@@ -219,7 +206,7 @@ def load_timeseries_data(
     lag_steps: int = 0,
     rolling_window: int = 0,
 ) -> tuple[DataLoader, DataLoader, list[str], dict, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    windows, window_labels, classes, preprocessing_config, input_size = prepare_timeseries_windows(
+    windows, window_labels, classes, preprocessing_config, input_size, window_starts = prepare_timeseries_windows(
         data_path=data_path,
         label_col=label_col,
         feature_cols=feature_cols,
@@ -233,12 +220,24 @@ def load_timeseries_data(
         forecast_horizon=forecast_horizon,
         lag_steps=lag_steps,
         rolling_window=rolling_window,
+        fit_fraction=1.0 - float(val_split),
+        return_window_starts=True,
     )
 
-    n_val = max(1, int(len(windows) * val_split))
-    split_at = max(1, len(windows) - n_val)
-    train_idx = list(range(0, split_at))
-    val_idx = list(range(split_at, len(windows)))
+    # Split on rows, not window positions: validation windows start at or after
+    # split_row, and training windows must end before it (plus the forecast
+    # horizon, whose target lies beyond the window). With stride 1 the last
+    # window_size - 1 training windows used to overlap the validation rows.
+    split_row = preprocessing_config["train_rows"]
+    reach = window_size + (int(forecast_horizon) if forecast_mode else 0)
+    val_idx = [i for i, start in enumerate(window_starts) if start >= split_row]
+    train_idx = [i for i, start in enumerate(window_starts) if start + reach <= split_row]
+    if not train_idx or not val_idx:
+        raise ValueError(
+            f"Not enough rows for window_size={window_size} with a {val_split:.0%} validation "
+            "split: no training window fits before the validation period without overlapping "
+            "it. Reduce the window size or the validation split, or use a longer series."
+        )
 
     # Apply timeseries augmentation to training windows only
     try:

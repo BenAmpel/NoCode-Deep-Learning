@@ -1,170 +1,186 @@
 """
-Generates a self-contained FastAPI inference app inside the model bundle folder.
-The generated app loads the ONNX model and serves predictions over HTTP.
+Generates a FastAPI inference server inside a model bundle folder.
+
+The generated main.py is a thin HTTP layer over bundle_runtime.py (copied into
+every bundle by the exporter), so served predictions use exactly the same
+preprocessing as the app's "Try Your Model" tab.
 """
 from __future__ import annotations
-from pathlib import Path
+
 import json
+import shutil
+from pathlib import Path
+
+from export.exporter import RUNTIME_SOURCE, _pinned, runtime_requirements
+
+SERVE_PACKAGES = ["fastapi", "uvicorn[standard]", "python-multipart"]
+FILE_MODALITIES = {"image", "audio", "video"}
 
 
-def generate_fastapi_app(bundle_path: str, modality: str) -> str:
-    """
-    Writes main.py and requirements_serve.txt to bundle_path.
+def serve_requirements(prep: dict, bundle: Path) -> list[str]:
+    reqs = runtime_requirements(prep, bundle)
+    for pkg in SERVE_PACKAGES:
+        base = pkg.split("[")[0]
+        pinned = _pinned(base)
+        reqs.append(pinned.replace(base, pkg, 1))
+    return reqs
+
+
+def generate_fastapi_app(bundle_path: str, modality: str | None = None) -> str:
+    """Write main.py, requirements_serve.txt (and bundle_runtime.py if missing).
+
+    The modality is read from the bundle's preprocessing.json; the ``modality``
+    argument is accepted for backwards compatibility but the bundle wins, so a
+    stale UI selection can't produce a server for the wrong input type.
     Returns the path to main.py.
     """
     bundle = Path(bundle_path)
+    prep = json.loads((bundle / "preprocessing.json").read_text(encoding="utf-8"))
+    bundle_modality = prep.get("modality") or modality or ""
+    if bundle_modality == "graph":
+        raise ValueError("Graph bundles can't be served over HTTP yet: inference needs the full graph.")
+    if bundle_modality not in FILE_MODALITIES | {"tabular", "timeseries", "text"}:
+        raise ValueError(f"Serving is not supported for '{bundle_modality}' bundles.")
 
-    with open(bundle / "preprocessing.json") as f:
-        prep = json.load(f)
-    with open(bundle / "labels.json") as f:
-        labels = json.load(f)
+    if not (bundle / "bundle_runtime.py").is_file():  # bundles exported before the runtime existed
+        shutil.copy2(RUNTIME_SOURCE, bundle / "bundle_runtime.py")
 
-    app_code = _generate_app_code(modality, prep, labels)
     main_path = bundle / "main.py"
-    main_path.write_text(app_code)
-
-    req_path = bundle / "requirements_serve.txt"
-    req_path.write_text(
-        "fastapi>=0.104.0\n"
-        "uvicorn[standard]>=0.24.0\n"
-        "onnxruntime>=1.16.0\n"
-        "numpy>=1.24.0\n"
-        "python-multipart>=0.0.6\n"
-        + _extra_requirements(modality)
-    )
-
+    main_path.write_text(_app_code(bundle_modality), encoding="utf-8")
+    (bundle / "requirements_serve.txt").write_text(
+        "\n".join(serve_requirements(prep, bundle)) + "\n", encoding="utf-8")
     return str(main_path)
 
 
-def _extra_requirements(modality: str) -> str:
-    extras = {
-        "image": "Pillow>=10.0.0\n",
-        "audio": "torchaudio>=2.1.0\n",
-        "video": "opencv-python-headless>=4.8.0\n",
-        "text":  "",
-        "tabular": "pandas>=2.0.0\n",
-        "timeseries": "pandas>=2.0.0\n",
-    }
-    return extras.get(modality, "")
-
-
-def _generate_app_code(modality: str, prep: dict, labels: dict) -> str:
-    label_map = repr(labels)
-
-    base = f'''\
+_HEADER = '''\
 """
-Auto-generated FastAPI inference server.
-Start with: uvicorn main:app --host 0.0.0.0 --port 8000
+FastAPI server for this NoCode-DL {modality} model.
+
+Preprocessing comes from bundle_runtime.py in this folder: the same code the
+NoCode-DL app uses, so predictions match "Try Your Model".
+
+Run (reachable only from this computer):
+    pip install -r requirements_serve.txt
+    python main.py
+
+Interactive docs: http://127.0.0.1:8000/docs
+
+Environment variables:
+    NOCODE_DL_API_KEY        if set, /predict requires this value in an X-API-Key header
+    NOCODE_DL_MAX_UPLOAD_MB  largest accepted upload in MB (default 25)
+    HOST, PORT               bind address (default 127.0.0.1) and port (default 8000).
+                             Only bind 0.0.0.0 on a trusted network, ideally with an API key.
 """
-import json
-import numpy as np
-import onnxruntime as ort
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+import hmac
+import logging
+import os
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
 
-app    = FastAPI(title="NoCode-DL Inference", version="1.0")
-LABELS = {label_map}
-session = ort.InferenceSession("model.onnx", providers=["CPUExecutionProvider"])
-INPUT_NAME = session.get_inputs()[0].name
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from pydantic import BaseModel
 
-with open("preprocessing.json") as f:
-    PREP = json.load(f)
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+from bundle_runtime import Bundle, BundleInputError  # noqa: E402
+
+log = logging.getLogger("nocode_dl.server")
+BUNDLE = Bundle(HERE, trust_pickle=True)  # this folder is your own export
+API_KEY = os.environ.get("NOCODE_DL_API_KEY", "")
+MAX_UPLOAD_BYTES = int(float(os.environ.get("NOCODE_DL_MAX_UPLOAD_MB", "25")) * 1024 * 1024)
+
+app = FastAPI(title="NoCode-DL {modality} model", version="1.0")
 
 
-def run_inference(x: np.ndarray) -> dict:
-    if x.ndim == len(session.get_inputs()[0].shape) - 1:
-        x = x[np.newaxis]
-    logits  = session.run(None, {{INPUT_NAME: x.astype(np.float32)}})[0]
-    probs   = np.exp(logits) / np.exp(logits).sum(axis=1, keepdims=True)
-    pred_idx = int(np.argmax(probs, axis=1)[0])
-    return {{
-        "predicted_class": LABELS[str(pred_idx)],
-        "confidence":      round(float(probs[0, pred_idx]), 4),
-        "all_probabilities": {{LABELS[str(i)]: round(float(p), 4)
-                               for i, p in enumerate(probs[0])}},
-    }}
+def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    if API_KEY and not (x_api_key and hmac.compare_digest(x_api_key, API_KEY)):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header.")
+
+
+def run_prediction(raw: Any, top_k: int) -> dict:
+    try:
+        return BUNDLE.predict(raw, top_k=top_k)
+    except BundleInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception:
+        # Log the details here; don't send internals back to the caller.
+        log.exception("Prediction failed")
+        raise HTTPException(status_code=500, detail="Prediction failed. See the server log.")
+
 
 @app.get("/health")
-def health():
-    return {{"status": "ok", "model_input": INPUT_NAME}}
+def health() -> dict:
+    info = {{"status": "ok", "modality": BUNDLE.modality, "task": BUNDLE.task}}
+    if BUNDLE.task == "classification":
+        info["classes"] = BUNDLE.classes
+    return info
 
 '''
 
-    if modality in ("image", "audio"):
-        return base + '''\
-from fastapi import UploadFile, File
-from PIL import Image
-import io
-
-@app.post("/predict")
-async def predict_image(file: UploadFile = File(...)):
+_FILE_ENDPOINT = '''
+@app.post("/predict", dependencies=[Depends(require_api_key)])
+async def predict(file: UploadFile = File(...), top_k: int = 3) -> dict:
+    """Upload one {modality} file."""
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File is larger than NOCODE_DL_MAX_UPLOAD_MB.")
+    if BUNDLE.modality == "image":
+        return run_prediction(data, top_k)
+    # Audio/video decoders need a real file; keep the extension for format detection.
+    suffix = Path(file.filename or "").suffix[:10] or ".bin"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(data)
     try:
-        img = Image.open(io.BytesIO(await file.read())).convert("RGB")
-        img = img.resize(tuple(PREP["resize"]))
-        x   = np.array(img, dtype=np.float32) / 255.0
-        mean = np.array(PREP["mean"]); std = np.array(PREP["std"])
-        x   = (x - mean) / std
-        x   = x.transpose(2, 0, 1)   # HWC → CHW
-        return run_inference(x)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return run_prediction(tmp.name, top_k)
+    finally:
+        os.unlink(tmp.name)
 '''
 
-    if modality == "tabular":
-        return base + '''\
-from pydantic import BaseModel
-
+_JSON_ENDPOINTS = {
+    "tabular": '''
 class TabularInput(BaseModel):
-    features: list[float]
+    features: dict[str, Any]   # raw column values, e.g. {{"age": 31, "city": "oslo"}}
+    top_k: int = 3
 
-@app.post("/predict")
-def predict_tabular(payload: TabularInput):
-    try:
-        x = np.array(payload.features, dtype=np.float32)
-        return run_inference(x)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-'''
 
-    if modality == "text":
-        return base + '''\
-from pydantic import BaseModel
+@app.post("/predict", dependencies=[Depends(require_api_key)])
+def predict(payload: TabularInput) -> dict:
+    return run_prediction(payload.features, payload.top_k)
+''',
+    "timeseries": '''
+class TimeseriesInput(BaseModel):
+    rows: list[list[float]] | list[dict[str, float]]   # recent rows, oldest first
+    top_k: int = 3
 
+
+@app.post("/predict", dependencies=[Depends(require_api_key)])
+def predict(payload: TimeseriesInput) -> dict:
+    return run_prediction(payload.rows, payload.top_k)
+''',
+    "text": '''
 class TextInput(BaseModel):
     text: str
+    top_k: int = 3
 
-@app.post("/predict")
-def predict_text(payload: TextInput):
-    try:
-        vocab     = PREP.get("vocab", {})
-        max_len   = PREP.get("max_length", 128)
-        tokens    = payload.text.lower().split()[:max_len]
-        ids       = [vocab.get(t, 1) for t in tokens]
-        ids      += [0] * (max_len - len(ids))
-        x         = np.array([ids], dtype=np.int64)
-        logits    = session.run(None, {INPUT_NAME: x})[0]
-        probs     = np.exp(logits) / np.exp(logits).sum(axis=1, keepdims=True)
-        pred_idx  = int(np.argmax(probs, axis=1)[0])
-        return {
-            "predicted_class":   LABELS[str(pred_idx)],
-            "confidence":        round(float(probs[0, pred_idx]), 4),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/predict", dependencies=[Depends(require_api_key)])
+def predict(payload: TextInput) -> dict:
+    return run_prediction(payload.text, payload.top_k)
+''',
+}
+
+_FOOTER = '''
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "8000")))
 '''
 
-    # timeseries / video fallback
-    return base + '''\
-from pydantic import BaseModel
 
-class ArrayInput(BaseModel):
-    data: list[list[float]]
-
-@app.post("/predict")
-def predict(payload: ArrayInput):
-    try:
-        x = np.array(payload.data, dtype=np.float32)
-        return run_inference(x)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-'''
+def _app_code(modality: str) -> str:
+    endpoint = _FILE_ENDPOINT if modality in FILE_MODALITIES else _JSON_ENDPOINTS[modality]
+    return _HEADER.format(modality=modality) + endpoint.format(modality=modality) + _FOOTER

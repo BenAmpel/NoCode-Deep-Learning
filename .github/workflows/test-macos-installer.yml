@@ -22,8 +22,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build macOS installer (unsigned)
-        run: python packaging/build_macos_installer.py --version 1.0.0-ci
+      - name: Build macOS installer (ad-hoc signed)
+        # Ad-hoc signature ("-"): needs no certificate, but proves the app is
+        # signed before it is packaged and that the signature survives install.
+        run: python packaging/build_macos_installer.py --version 1.0.0-ci --app-sign-identity -
 
       - name: Show installer size
         run: |
@@ -35,6 +37,9 @@ jobs:
         run: |
           pkg=$(ls dist/NoCode-DL-*.pkg | head -1)
           sudo installer -pkg "$pkg" -target /
+
+      - name: Verify installed app signature
+        run: codesign --verify --strict --verbose=2 /Applications/NoCode-DL.app
 
       - name: Verify installed app bundle
         run: |

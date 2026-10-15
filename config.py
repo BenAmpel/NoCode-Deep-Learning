@@ -2,8 +2,24 @@ import os
 import torch
 
 
+def _mps_usable() -> bool:
+    # Virtualised Macs (including GitHub's macOS runners) report MPS as
+    # available but fail every allocation with "MPS backend out of memory".
+    if not torch.backends.mps.is_available():
+        return False
+    try:
+        torch.zeros(1, device="mps")
+        return True
+    except RuntimeError:
+        return False
+
+
 def get_device() -> str:
-    if torch.backends.mps.is_available():
+    # NOCODE_DL_DEVICE=cpu|mps|cuda forces a device (e.g. to compare results).
+    forced = os.environ.get("NOCODE_DL_DEVICE", "").strip().lower()
+    if forced in {"cpu", "mps", "cuda"}:
+        return forced
+    if _mps_usable():
         return "mps"
     if torch.cuda.is_available():
         return "cuda"
@@ -11,6 +27,21 @@ def get_device() -> str:
 
 
 DEVICE = get_device()
+
+
+def set_seed(seed: int) -> None:
+    """Seed every RNG a training run touches so repeated runs are comparable.
+
+    DataLoader shuffling and default weight init draw from torch's global
+    generator, so seeding it here covers them.
+    """
+    import random
+
+    import numpy as np
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)  # also seeds CUDA and MPS generators
 
 
 def _num_workers() -> int:

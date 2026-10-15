@@ -1,33 +1,45 @@
 # Security Audit Notes
 
-This repository now includes a GitHub Actions workflow-based security scan:
+The `Security Scan` GitHub Actions workflow runs on every push and pull request
+to `main`:
 
-- dependency audit via `pip-audit`
-- static analysis via `bandit`
+- **Dependency audit** with `pip-audit -r requirements.txt`. Any known
+  vulnerability in a pinned package or anything it pulls in fails the job.
+- **Static analysis** with `bandit`. High-severity findings fail the job;
+  medium-severity findings are listed in the job summary and the uploaded report.
 
 ## Most recent local scan snapshot
 
-Local scan performed on 2026-04-08 in the project environment found:
+Local scan performed on 2026-10-14 after the dependency upgrade:
 
-- 24 known dependency vulnerabilities across 4 packages
-- 1 high-severity code-level finding before remediation in the macOS packaging checksum path
-- multiple medium-severity findings related to unpinned model downloads and unsafe deserialization patterns
+- `pip-audit`: no known vulnerabilities (Python 3.12).
+- `bandit`: no high-severity findings; 10 medium-severity findings.
 
-## Dependency findings surfaced by `pip-audit`
+The upgrade that cleared the dependency audit (previously 68 known
+vulnerabilities across gradio, Pillow, torch, starlette, transformers,
+python-multipart and onnx):
 
-- `transformers==4.57.6`
-- `gradio==4.44.1`
-- `Pillow==10.4.0`
-- `starlette==0.38.6`
+| Package | Before | After |
+|---|---|---|
+| gradio | 4.44.1 | 6.30.0 |
+| transformers | 4.57.6 | 5.19.0 |
+| torch / torchvision / torchaudio | 2.8.0 / 0.23.0 / 2.8.0 | 2.14.1 / 0.29.1 / 2.11.0 |
+| Pillow | 10.4.0 | 12.3.0 |
+| fastapi / starlette | 0.112.2 / 0.38.6 | 0.143.1 / 1.8.0 |
+| onnx | 1.21.0 | 1.23.2 |
+| python-multipart | 0.0.22 | 0.0.32 |
 
-## Important code-level findings surfaced by `bandit`
+Gradio 5.x could not be used: its last release has advisories fixed only in
+6.x and pins `Pillow<12`, which blocks the Pillow fixes.
 
-- unpinned `from_pretrained()` downloads in transformer and Whisper paths
-- `torch.load(..., weights_only=False)` in checkpoint restore paths
-- network/bootstrap download surfaces in packaging and tutorial setup
+Gradio usage analytics are disabled (`GRADIO_ANALYTICS_ENABLED=False` is set
+before Gradio is imported), so the app makes no calls to `api.gradio.app`.
 
-## Remediation status
+## Open medium-severity findings (`bandit`)
 
-- The macOS packager checksum verification was upgraded from MD5 to SHA-256.
-- The repository now exposes a live `Security Scan` badge in the README.
-- Remaining findings should be treated as follow-up hardening work rather than ignored.
+- Unpinned Hugging Face `from_pretrained()` downloads (no `revision=`) in the
+  text, SHAP, export and inference paths.
+- `torch.load(..., weights_only=False)` in `training/checkpointer.py`.
+- `urllib` URL open without a scheme allow-list in `data_pipeline/network_utils.py`.
+
+These should be treated as follow-up hardening work rather than ignored.

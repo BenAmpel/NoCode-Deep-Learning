@@ -64,6 +64,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a branded macOS .pkg installer for NoCode-DL.")
     parser.add_argument("--version", help="Installer/app version. Defaults to current timestamp.")
     parser.add_argument(
+        "--app-sign-identity",
+        default=os.environ.get("NOCODE_DL_MAC_APP_IDENTITY", ""),
+        help='Optional Developer ID Application identity. Use "-" for an ad-hoc signature '
+             "(local testing only). If omitted, the app bundle is left unsigned.",
+    )
+    parser.add_argument(
+        "--no-hardened-runtime",
+        action="store_true",
+        help="Skip the hardened runtime flag when signing the app bundle.",
+    )
+    parser.add_argument(
         "--installer-sign-identity",
         default=os.environ.get("NOCODE_DL_MAC_INSTALLER_IDENTITY", ""),
         help="Optional Developer ID Installer identity. If omitted, the pkg is left unsigned.",
@@ -392,12 +403,19 @@ RESOURCE_APP="$APP_DIR/Resources/app"
 LOG_DIR="$HOME/Library/Logs/NoCode-DL"
 LOG_FILE="$LOG_DIR/launcher.log"
 
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" != "1" ]; then
+  osascript -e 'display dialog "NoCode-DL requires a Mac with Apple Silicon (M1 or later). PyTorch no longer supports Intel Macs." buttons {"OK"} default button "OK" with icon stop' >/dev/null 2>&1 || true
+  exit 1
+fi
+
 PYTHON="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"
 if [ ! -x "$PYTHON" ]; then
   PYTHON=""
-  for cmd in python3.13 python3.12 python3.11 python3.10 python3; do
+  # 3.11-3.13 only: numpy 2.4 / scikit-learn 1.8 need >= 3.11, and the
+  # pinned compiled packages have not been verified on 3.14.
+  for cmd in python3.12 python3.13 python3.11 python3; do
     if command -v "$cmd" >/dev/null 2>&1; then
-      if "$cmd" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+      if "$cmd" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)' >/dev/null 2>&1; then
         PYTHON="$cmd"
         break
       fi
@@ -412,16 +430,11 @@ fi
 
 mkdir -p "$LOG_DIR"
 
-# On Apple Silicon, force native arm64 execution so pip installs arm64
-# packages instead of x86_64 ones (which would happen if the app was
-# launched via Rosetta). On Intel Macs, arch -arm64 would fail, so we
-# detect the CPU and only use it when needed.
-ARCH="$(uname -m)"
-if [ "$ARCH" = "arm64" ]; then
-  exec arch -arm64 "$PYTHON" "$RESOURCE_APP/runtime/bootstrap_macos.py" >>"$LOG_FILE" 2>&1
-else
-  exec "$PYTHON" "$RESOURCE_APP/runtime/bootstrap_macos.py" >>"$LOG_FILE" 2>&1
-fi
+# Force native arm64 execution so pip installs arm64 packages instead of
+# x86_64 ones, which would happen if the app were launched via Rosetta.
+# (`uname -m` reports x86_64 under Rosetta, so it can't be used to decide;
+# the Apple Silicon check above already guarantees arm64 hardware.)
+exec arch -arm64 "$PYTHON" "$RESOURCE_APP/runtime/bootstrap_macos.py" >>"$LOG_FILE" 2>&1
 """
     launcher_path = MACOS_DIR / APP_NAME
     launcher_path.write_text(launcher, encoding="utf-8")
@@ -515,7 +528,9 @@ def write_distribution(version: str) -> Path:
   <background file="background.png" alignment="center" scaling="proportional"/>
   <welcome file="welcome.html" mime-type="text/html"/>
   <conclusion file="conclusion.html" mime-type="text/html"/>
-  <options customize="never" require-scripts="false"/>
+  <!-- arm64 only: PyTorch publishes no Intel macOS wheels after 2.2, so the
+       first-launch dependency install cannot succeed on Intel Macs. -->
+  <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
   <choices-outline>
     <line choice="default">
       <line choice="app"/>
@@ -555,6 +570,25 @@ def build_product_pkg(version: str) -> Path:
     return pkg_path
 
 
+def sign_app_bundle(identity: str, hardened_runtime: bool) -> None:
+    """Sign the assembled .app before it is packaged.
+
+    This has to happen before build_component_pkg(): the component pkg is a
+    snapshot of COMPONENT_ROOT, so signing afterwards ships an unsigned app.
+    """
+    cmd = ["codesign", "--force", "--sign", identity]
+    if identity != "-":
+        cmd.append("--timestamp")  # secure timestamp is required for notarization
+    if hardened_runtime:
+        cmd.extend(["--options", "runtime"])
+    cmd.append(str(APP_BUNDLE))
+    subprocess.run(cmd, check=True)
+    subprocess.run(
+        ["codesign", "--verify", "--strict", "--verbose=2", str(APP_BUNDLE)],
+        check=True,
+    )
+
+
 def sign_pkg(pkg_path: Path, installer_identity: str) -> Path:
     signed_path = pkg_path.with_name(pkg_path.stem + "-signed.pkg")
     subprocess.run(
@@ -573,6 +607,9 @@ def notarize_and_staple(pkg_path: Path, notary_profile: str) -> None:
     )
     print("  Stapling notarization ticket...")
     subprocess.run(["xcrun", "stapler", "staple", str(pkg_path)], check=True)
+    subprocess.run(["xcrun", "stapler", "validate", str(pkg_path)], check=True)
+    # Gatekeeper's verdict on the finished installer, as an end user would get it.
+    subprocess.run(["spctl", "-a", "-t", "install", "-vv", str(pkg_path)], check=True)
 
 
 def main() -> int:
@@ -586,6 +623,9 @@ def main() -> int:
     shutil.copy2(icon_path, APP_RESOURCES_DIR / icon_path.name)
     write_launcher()
     write_info_plist(version)
+    if args.app_sign_identity:
+        print("Signing app bundle...")
+        sign_app_bundle(args.app_sign_identity, hardened_runtime=not args.no_hardened_runtime)
     prepare_scripts()
     build_component_pkg(version)
     pkg_path = build_product_pkg(version)
