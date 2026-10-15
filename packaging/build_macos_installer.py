@@ -87,6 +87,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional notarytool keychain profile. Used only when signing is enabled.",
     )
     parser.add_argument(
+        "--keychain",
+        default=os.environ.get("NOCODE_DL_MAC_KEYCHAIN", ""),
+        help="Optional keychain holding the signing identities (default: the keychain search list).",
+    )
+    parser.add_argument(
         "--keep-build-artifacts",
         action="store_true",
         help="Keep the intermediate build/macos-installer directory after the .pkg is created.",
@@ -572,13 +577,15 @@ def build_product_pkg(version: str) -> Path:
     return pkg_path
 
 
-def sign_app_bundle(identity: str, hardened_runtime: bool) -> None:
+def sign_app_bundle(identity: str, hardened_runtime: bool, keychain: str = "") -> None:
     """Sign the assembled .app before it is packaged.
 
     This has to happen before build_component_pkg(): the component pkg is a
     snapshot of COMPONENT_ROOT, so signing afterwards ships an unsigned app.
     """
     cmd = ["codesign", "--force", "--sign", identity]
+    if keychain:
+        cmd.extend(["--keychain", keychain])
     if identity != "-":
         cmd.append("--timestamp")  # secure timestamp is required for notarization
     if hardened_runtime:
@@ -591,12 +598,12 @@ def sign_app_bundle(identity: str, hardened_runtime: bool) -> None:
     )
 
 
-def sign_pkg(pkg_path: Path, installer_identity: str) -> Path:
+def sign_pkg(pkg_path: Path, installer_identity: str, keychain: str = "") -> Path:
     signed_path = pkg_path.with_name(pkg_path.stem + "-signed.pkg")
-    subprocess.run(
-        ["productsign", "--sign", installer_identity, str(pkg_path), str(signed_path)],
-        check=True,
-    )
+    cmd = ["productsign", "--sign", installer_identity]
+    if keychain:
+        cmd.extend(["--keychain", keychain])
+    subprocess.run([*cmd, str(pkg_path), str(signed_path)], check=True)
     return signed_path
 
 
@@ -627,7 +634,8 @@ def main() -> int:
     write_info_plist(version)
     if args.app_sign_identity:
         print("Signing app bundle...")
-        sign_app_bundle(args.app_sign_identity, hardened_runtime=not args.no_hardened_runtime)
+        sign_app_bundle(args.app_sign_identity, hardened_runtime=not args.no_hardened_runtime,
+                        keychain=args.keychain)
     prepare_scripts()
     build_component_pkg(version)
     pkg_path = build_product_pkg(version)
@@ -637,7 +645,17 @@ def main() -> int:
     final_path = pkg_path
     if args.installer_sign_identity:
         print("Signing...")
-        final_path = sign_pkg(pkg_path, args.installer_sign_identity)
+        final_path = sign_pkg(pkg_path, args.installer_sign_identity, keychain=args.keychain)
+        # Catch what the notary service would reject before uploading to it.
+        # Imported by module name: `packaging` is also the PyPI library, which
+        # shadows this folder; the script's own directory is on sys.path.
+        from verify_macos_signing import check_pkg
+        problems = check_pkg(final_path, developer_id=bool(args.notary_profile))
+        for problem in problems:
+            print(f"  FAIL {problem}")
+        if problems:
+            raise SystemExit("Signed installer failed its notarization checks; see above.")
+        print("  Signature checks passed.")
         if args.notary_profile:
             print("Notarizing and stapling...")
             notarize_and_staple(final_path, args.notary_profile)

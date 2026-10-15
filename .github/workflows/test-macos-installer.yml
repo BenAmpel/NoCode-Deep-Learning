@@ -22,21 +22,27 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build macOS installer (ad-hoc signed)
-        # Ad-hoc signature ("-"): needs no certificate, but proves the app is
-        # signed before it is packaged and that the signature survives install.
-        run: python packaging/build_macos_installer.py --version 1.0.0-ci --app-sign-identity -
+      - name: Create throwaway signing identities
+        # Self-signed stand-ins for the Developer ID certificates, so this job
+        # runs the release signing path: codesign --timestamp with the hardened
+        # runtime, then productsign. Only notarization (Apple account) is left.
+        run: bash packaging/ci_test_signing_identities.sh "$RUNNER_TEMP/signing" >> "$GITHUB_ENV"
+
+      - name: Build and sign macOS installer
+        run: >
+          python packaging/build_macos_installer.py --version 1.0.0-ci
+          --app-sign-identity "$APP_IDENTITY"
+          --installer-sign-identity "$INSTALLER_IDENTITY"
+          --keychain "$KEYCHAIN"
+
+      - name: Check the signed installer for notarization blockers
+        run: python packaging/verify_macos_signing.py dist/NoCode-DL-1.0.0-ci-signed.pkg
 
       - name: Show installer size
-        run: |
-          pkg=$(ls dist/NoCode-DL-*.pkg | head -1)
-          echo "Installer: $pkg"
-          du -sh "$pkg"
+        run: du -sh dist/NoCode-DL-1.0.0-ci-signed.pkg
 
       - name: Run installer silently
-        run: |
-          pkg=$(ls dist/NoCode-DL-*.pkg | head -1)
-          sudo installer -pkg "$pkg" -target /
+        run: sudo installer -pkg dist/NoCode-DL-1.0.0-ci-signed.pkg -target /
 
       - name: Verify installed app signature
         run: codesign --verify --strict --verbose=2 /Applications/NoCode-DL.app
