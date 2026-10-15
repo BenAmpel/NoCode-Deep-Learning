@@ -20,7 +20,23 @@ import pandas as pd
 
 # Column names that strongly hint at being the target variable
 _LABEL_HINTS = {"label", "target", "class", "y", "output", "response", "outcome"}
-_ID_HINTS = {"id", "idx", "index", "identifier", "record_id", "user_id", "sample_id"}
+_ID_HINTS = {"id", "idx", "index", "identifier", "uuid", "guid", "pk"}
+
+
+def name_tokens(col) -> set[str]:
+    """Lower-cased words in a column name: "userId" / "user_id" -> {"user", "id"}.
+
+    Matching hints against whole words avoids substring false positives:
+    "humidity", "width", "valid" and "paid" all contain "id".
+    """
+    import re
+
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(col))
+    return {t for t in re.split(r"[^0-9A-Za-z]+", spaced.lower()) if t}
+
+
+def is_id_name(col) -> bool:
+    return bool(name_tokens(col) & _ID_HINTS)
 
 # Thresholds
 _MAX_CATEGORICAL_UNIQUE = 20       # absolute unique-value count
@@ -70,7 +86,6 @@ def infer_column_types(df: pd.DataFrame) -> Dict[str, str]:
 
     for col in df.columns:
         series = df[col]
-        col_name = col.strip().lower()
         n_unique = series.nunique(dropna=True)
         n_non_null = series.count()
 
@@ -101,14 +116,16 @@ def infer_column_types(df: pd.DataFrame) -> Dict[str, str]:
         if pd.api.types.is_numeric_dtype(series):
             # Integer column: check for monotonically increasing ID pattern
             if pd.api.types.is_integer_dtype(series):
-                non_null = series.dropna().sort_values().reset_index(drop=True)
-                if (
-                    any(hint in col_name for hint in _ID_HINTS)
-                    and
-                    n_unique == n_non_null
-                    and n_non_null > 1
-                    and (non_null.diff().dropna() > 0).all()
-                ):
+                non_null = series.dropna()
+                all_unique = n_unique == n_non_null and n_non_null > 1
+                # A row counter: +1 every row in file order (sorting first, as
+                # before, made any unique integer column look "monotonic").
+                row_counter = (
+                    all_unique
+                    and int(non_null.iloc[0]) in (0, 1)
+                    and bool((non_null.diff().dropna() == 1).all())
+                )
+                if all_unique and (is_id_name(col) or row_counter):
                     col_types[col] = "id"
                     continue
 
@@ -208,7 +225,7 @@ def suggest_features_and_label(df: pd.DataFrame) -> Dict:
     ``feature_cols``
         Columns suitable as model inputs (excludes label and drop_cols).
     ``drop_cols``
-        Columns recommended for removal (id, constant, unknown).
+        Columns recommended for removal (id, constant).
     ``text_col``
         First detected text column, or ``None``.
     ``warnings``
@@ -229,7 +246,9 @@ def suggest_features_and_label(df: pd.DataFrame) -> Dict:
     # ------------------------------------------------------------------ #
     # Identify drop candidates
     # ------------------------------------------------------------------ #
-    drop_types = {"id", "constant", "unknown"}
+    # "unknown" columns (e.g. short codes of moderate cardinality) are kept:
+    # dropping them silently threw away usable features.
+    drop_types = {"id", "constant"}
     drop_cols = [c for c, t in col_types.items() if t in drop_types]
 
     # ------------------------------------------------------------------ #
@@ -250,7 +269,7 @@ def suggest_features_and_label(df: pd.DataFrame) -> Dict:
 
     # Priority 1: exact name match (case-insensitive)
     for col in df.columns:
-        if col.strip().lower() in _LABEL_HINTS:
+        if str(col).strip().lower() in _LABEL_HINTS:
             suggested_label = col
             break
 

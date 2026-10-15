@@ -5419,13 +5419,16 @@ with gr.Blocks(title="NoCode-DL") as demo:
             tmp_dir = tempfile.mkdtemp(prefix="nocode_dl_")
             # Register cleanup so the temp directory is removed on process exit
             atexit.register(shutil.rmtree, tmp_dir, True)
+            from data_pipeline.io_utils import safe_extract_zip
             try:
-                with zipfile.ZipFile(path, "r") as zf:
-                    zf.extractall(tmp_dir)
+                safe_extract_zip(path, tmp_dir)
             except zipfile.BadZipFile:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 updates = _column_choice_updates("", mod, current_label, current_text, current_features, current_time)
                 return "", *updates
+            except ValueError as exc:  # too large, zip bomb, or paths escaping the folder
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise gr.Error(f"Can't use this zip: {exc}")
             structured = []
             for root, _dirs, files in os.walk(tmp_dir):
                 for name in files:
