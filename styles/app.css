@@ -3,7 +3,7 @@
   /* Text */
   --color-text-primary: #1f3b35;
   --color-text-secondary: #47655d;
-  --color-text-muted: #6a857c;
+  --color-text-muted: #5a7069;  /* 4.7:1 on the darkest light surface (WCAG AA) */
   --color-text-on-primary: #f8fffd;
   --color-text-on-surface: #27554d;
 
@@ -545,10 +545,10 @@ button[role="tab"][aria-selected="true"] {
 }
 
 /* ── Dark mode ────────────────────────────────────────────────────────────── */
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-  }
+/* Dark mode follows Gradio's theme (html.dark, mirrored from body.dark by
+   ui/theme.py), not the OS setting, so ?__theme=light stays fully light. */
+html.dark {
+  color-scheme: dark;
 }
 
 :root.dark,
@@ -637,7 +637,8 @@ html.dark .gradio-container,
 }
 
 html.dark .studio-hero,
-[data-theme="dark"] .studio-hero {
+[data-theme="dark"] .studio-hero,
+.studio-dark .studio-hero {
   border-color: rgba(105, 140, 129, 0.42);
   background:
     radial-gradient(circle at 8% 0%, rgba(58, 170, 134, 0.18), transparent 28%),
@@ -647,12 +648,14 @@ html.dark .studio-hero,
 }
 
 html.dark .studio-hero__title,
-[data-theme="dark"] .studio-hero__title {
+[data-theme="dark"] .studio-hero__title,
+.studio-dark .studio-hero__title {
   color: #f4fcf8 !important;
 }
 
 html.dark .studio-hero__subtitle,
-[data-theme="dark"] .studio-hero__subtitle {
+[data-theme="dark"] .studio-hero__subtitle,
+.studio-dark .studio-hero__subtitle {
   color: #c6d7d1 !important;
 }
 
@@ -661,7 +664,10 @@ html.dark .studio-hero__pill,
 html.dark .studio-hero__meta-card,
 [data-theme="dark"] .studio-hero__eyebrow,
 [data-theme="dark"] .studio-hero__pill,
-[data-theme="dark"] .studio-hero__meta-card {
+[data-theme="dark"] .studio-hero__meta-card,
+.studio-dark .studio-hero__eyebrow,
+.studio-dark .studio-hero__pill,
+.studio-dark .studio-hero__meta-card {
   border-color: rgba(95, 128, 118, 0.58);
   background: rgba(20, 31, 35, 0.92) !important;
 }
@@ -669,7 +675,9 @@ html.dark .studio-hero__meta-card,
 html.dark .studio-hero__pill,
 html.dark .studio-hero__meta-value,
 [data-theme="dark"] .studio-hero__pill,
-[data-theme="dark"] .studio-hero__meta-value {
+[data-theme="dark"] .studio-hero__meta-value,
+.studio-dark .studio-hero__pill,
+.studio-dark .studio-hero__meta-value {
   color: #edf8f4 !important;
 }
 
@@ -684,565 +692,823 @@ html.dark .studio-report-table-wrap,
 [data-theme="dark"] .studio-card,
 [data-theme="dark"] .studio-kpi,
 [data-theme="dark"] .studio-report-chip,
-[data-theme="dark"] .studio-report-table-wrap {
+[data-theme="dark"] .studio-report-table-wrap,
+.studio-dark .studio-banner,
+.studio-dark .studio-panel,
+.studio-dark .studio-card,
+.studio-dark .studio-kpi,
+.studio-dark .studio-report-chip,
+.studio-dark .studio-report-table-wrap {
   border-color: var(--color-border) !important;
   background: linear-gradient(180deg, rgba(22, 33, 38, 0.96) 0%, rgba(17, 27, 31, 0.98) 100%) !important;
   box-shadow: var(--shadow-lg) !important;
 }
 
 html.dark button[role="tab"],
-[data-theme="dark"] button[role="tab"] {
+[data-theme="dark"] button[role="tab"],
+.studio-dark button[role="tab"] {
   border-color: rgba(82, 117, 108, 0.7) !important;
   background: rgba(17, 28, 32, 0.9) !important;
   color: #b9cec6 !important;
 }
 
 html.dark button[role="tab"][aria-selected="true"],
-[data-theme="dark"] button[role="tab"][aria-selected="true"] {
+[data-theme="dark"] button[role="tab"][aria-selected="true"],
+.studio-dark button[role="tab"][aria-selected="true"] {
   border-color: var(--color-tab-active-border) !important;
   background: linear-gradient(180deg, rgba(24, 70, 60, 0.98) 0%, rgba(21, 91, 73, 0.98) 100%) !important;
   color: #f2fffb !important;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-text-primary: #eff7f3;
-    --color-text-secondary: #b9cbc4;
-    --color-text-muted: #89a49b;
-    --color-text-on-primary: #f5fffb;
-    --color-text-on-surface: #d9ece5;
+html.dark {
+  --color-text-primary: #eff7f3;
+  --color-text-secondary: #b9cbc4;
+  --color-text-muted: #89a49b;
+  --color-text-on-primary: #f5fffb;
+  --color-text-on-surface: #d9ece5;
 
-    --color-accent: #52d6ac;
-    --color-accent-dark: #2aa17f;
-    --color-gold: #f0bc4f;
+  --color-accent: #52d6ac;
+  --color-accent-dark: #2aa17f;
+  --color-gold: #f0bc4f;
 
-    --color-surface: #162126;
-    --color-surface-soft: #1b282d;
-    --color-surface-tint: #213137;
-    --color-surface-strong: #27393f;
-    --color-surface-raised: rgba(22, 33, 38, 0.92);
-    --color-page-start: #091114;
-    --color-page-end: #0e181c;
+  --color-surface: #162126;
+  --color-surface-soft: #1b282d;
+  --color-surface-tint: #213137;
+  --color-surface-strong: #27393f;
+  --color-surface-raised: rgba(22, 33, 38, 0.92);
+  --color-page-start: #091114;
+  --color-page-end: #0e181c;
 
-    --color-border: rgba(78, 112, 104, 0.72);
-    --color-border-soft: rgba(98, 136, 126, 0.6);
-    --color-border-row: rgba(63, 91, 84, 0.72);
+  --color-border: rgba(78, 112, 104, 0.72);
+  --color-border-soft: rgba(98, 136, 126, 0.6);
+  --color-border-row: rgba(63, 91, 84, 0.72);
 
-    --color-tab-text: #b2c6be;
-    --color-tab-active: #f3fffb;
-    --color-tab-active-border: rgba(92, 177, 148, 0.95);
-    --color-label: #d8e8e2;
+  --color-tab-text: #b2c6be;
+  --color-tab-active: #f3fffb;
+  --color-tab-active-border: rgba(92, 177, 148, 0.95);
+  --color-label: #d8e8e2;
 
-    --color-input-bg: #0f181c;
-    --color-input-border: #3a5650;
-    --color-input-text: #edf8f4;
-    --color-placeholder: #7b958c;
-    --color-table-bg: #111a1e;
-    --color-table-text: #e7f3ef;
-    --color-table-border: #304742;
-    --color-code-bg: #0d1518;
-    --color-code-text: #ddf0ea;
-    --color-code-border: #2b423d;
-    --color-hr: rgba(76, 106, 98, 0.66);
+  --color-input-bg: #0f181c;
+  --color-input-border: #3a5650;
+  --color-input-text: #edf8f4;
+  --color-placeholder: #7b958c;
+  --color-table-bg: #111a1e;
+  --color-table-text: #e7f3ef;
+  --color-table-border: #304742;
+  --color-code-bg: #0d1518;
+  --color-code-text: #ddf0ea;
+  --color-code-border: #2b423d;
+  --color-hr: rgba(76, 106, 98, 0.66);
 
-    --shadow-xl: 0 28px 80px rgba(0, 0, 0, 0.48);
-    --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.28);
-    --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.26);
-    --shadow-sm: 0 8px 18px rgba(0, 0, 0, 0.2);
-  }
+  --shadow-xl: 0 28px 80px rgba(0, 0, 0, 0.48);
+  --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.26);
+  --shadow-sm: 0 8px 18px rgba(0, 0, 0, 0.2);
+}
 
-  gradio-app {
-    --block-background-fill: #162126 !important;
-    --background-fill-primary: #162126 !important;
-    --background-fill-secondary: #1b282d !important;
-    --body-background-fill: #091114 !important;
-    --block-border-color: rgba(78, 112, 104, 0.72) !important;
-    --block-label-background-fill: #162126 !important;
-    --block-title-text-color: #eff7f3 !important;
-    --body-text-color: #edf8f4 !important;
-    --input-background-fill: #0f181c !important;
-    --input-border-color: #3a5650 !important;
-    --color-accent: #52d6ac !important;
-    --color-accent-soft: #173c33 !important;
-  }
+html.dark gradio-app {
+  --block-background-fill: #162126 !important;
+  --background-fill-primary: #162126 !important;
+  --background-fill-secondary: #1b282d !important;
+  --body-background-fill: #091114 !important;
+  --block-border-color: rgba(78, 112, 104, 0.72) !important;
+  --block-label-background-fill: #162126 !important;
+  --block-title-text-color: #eff7f3 !important;
+  --body-text-color: #edf8f4 !important;
+  --input-background-fill: #0f181c !important;
+  --input-border-color: #3a5650 !important;
+  --color-accent: #52d6ac !important;
+  --color-accent-soft: #173c33 !important;
+}
 
-  body,
-  .gradio-container {
-    background:
-      radial-gradient(circle at 12% 0%, rgba(59, 154, 125, 0.22), transparent 34%),
-      radial-gradient(circle at 90% 10%, rgba(36, 86, 74, 0.18), transparent 28%),
-      linear-gradient(180deg, var(--color-page-start) 0%, var(--color-page-end) 100%) !important;
-    color: var(--color-text-primary) !important;
-  }
+html.dark body,
+html.dark .gradio-container {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(59, 154, 125, 0.22), transparent 34%),
+    radial-gradient(circle at 90% 10%, rgba(36, 86, 74, 0.18), transparent 28%),
+    linear-gradient(180deg, var(--color-page-start) 0%, var(--color-page-end) 100%) !important;
+  color: var(--color-text-primary) !important;
+}
 
-  .studio-shell .gradio-container,
-  .studio-shell .contain {
-    background: transparent !important;
-  }
+html.dark .studio-shell .gradio-container,
+html.dark .studio-shell .contain,
+.studio-shell.studio-dark .gradio-container,
+.studio-shell.studio-dark .contain {
+  background: transparent !important;
+}
 
-  .studio-hero {
-    border-color: rgba(105, 140, 129, 0.42);
-    background:
-      radial-gradient(circle at 8% 0%, rgba(58, 170, 134, 0.18), transparent 28%),
-      radial-gradient(circle at 88% 8%, rgba(33, 77, 67, 0.28), transparent 28%),
-      linear-gradient(135deg, #0f1a1d 0%, #132126 48%, #17292d 100%);
-    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.42);
-  }
+html.dark .studio-hero,
+.studio-dark .studio-hero {
+  border-color: rgba(105, 140, 129, 0.42);
+  background:
+    radial-gradient(circle at 8% 0%, rgba(58, 170, 134, 0.18), transparent 28%),
+    radial-gradient(circle at 88% 8%, rgba(33, 77, 67, 0.28), transparent 28%),
+    linear-gradient(135deg, #0f1a1d 0%, #132126 48%, #17292d 100%);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.42);
+}
 
-  .studio-hero__title {
-    color: #f4fcf8 !important;
-    text-shadow: 0 8px 30px rgba(0, 0, 0, 0.24);
-  }
+html.dark .studio-hero__title,
+.studio-dark .studio-hero__title {
+  color: #f4fcf8 !important;
+  text-shadow: 0 8px 30px rgba(0, 0, 0, 0.24);
+}
 
-  .studio-hero__subtitle {
-    color: #c6d7d1 !important;
-  }
+html.dark .studio-hero__subtitle,
+.studio-dark .studio-hero__subtitle {
+  color: #c6d7d1 !important;
+}
 
-  .studio-hero__eyebrow,
-  .studio-hero__pill,
-  .studio-hero__meta-card {
-    border-color: rgba(95, 128, 118, 0.58);
-    background: rgba(20, 31, 35, 0.92) !important;
-    backdrop-filter: blur(10px);
-  }
+html.dark .studio-hero__eyebrow,
+html.dark .studio-hero__pill,
+html.dark .studio-hero__meta-card,
+.studio-dark .studio-hero__eyebrow,
+.studio-dark .studio-hero__pill,
+.studio-dark .studio-hero__meta-card {
+  border-color: rgba(95, 128, 118, 0.58);
+  background: rgba(20, 31, 35, 0.92) !important;
+  backdrop-filter: blur(10px);
+}
 
-  .studio-hero__eyebrow,
-  .studio-hero__meta-label {
-    color: #98b5ab !important;
-  }
+html.dark .studio-hero__eyebrow,
+html.dark .studio-hero__meta-label,
+.studio-dark .studio-hero__eyebrow,
+.studio-dark .studio-hero__meta-label {
+  color: #98b5ab !important;
+}
 
-  .studio-hero__pill,
-  .studio-hero__meta-value {
-    color: #edf8f4 !important;
-  }
+html.dark .studio-hero__pill,
+html.dark .studio-hero__meta-value,
+.studio-dark .studio-hero__pill,
+.studio-dark .studio-hero__meta-value {
+  color: #edf8f4 !important;
+}
 
-  .studio-banner,
-  .studio-panel,
-  .studio-card,
-  .studio-kpi,
-  .studio-report-chip,
-  .studio-report-table-wrap,
-  .studio-showcase__card,
-  .studio-badge {
-    border-color: var(--color-border) !important;
-    background: linear-gradient(180deg, rgba(22, 33, 38, 0.96) 0%, rgba(17, 27, 31, 0.98) 100%) !important;
-    box-shadow: var(--shadow-lg) !important;
-  }
+html.dark .studio-banner,
+html.dark .studio-panel,
+html.dark .studio-card,
+html.dark .studio-kpi,
+html.dark .studio-report-chip,
+html.dark .studio-report-table-wrap,
+html.dark .studio-showcase__card,
+html.dark .studio-badge,
+.studio-dark .studio-banner,
+.studio-dark .studio-panel,
+.studio-dark .studio-card,
+.studio-dark .studio-kpi,
+.studio-dark .studio-report-chip,
+.studio-dark .studio-report-table-wrap,
+.studio-dark .studio-showcase__card,
+.studio-dark .studio-badge {
+  border-color: var(--color-border) !important;
+  background: linear-gradient(180deg, rgba(22, 33, 38, 0.96) 0%, rgba(17, 27, 31, 0.98) 100%) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
 
-  .studio-card--soft,
-  .studio-banner,
-  .studio-kpi {
-    background: linear-gradient(180deg, rgba(24, 37, 42, 0.98) 0%, rgba(18, 29, 33, 0.98) 100%) !important;
-  }
+html.dark .studio-card--soft,
+html.dark .studio-banner,
+html.dark .studio-kpi,
+.studio-dark .studio-card--soft,
+.studio-dark .studio-banner,
+.studio-dark .studio-kpi {
+  background: linear-gradient(180deg, rgba(24, 37, 42, 0.98) 0%, rgba(18, 29, 33, 0.98) 100%) !important;
+}
 
-  .studio-banner h2,
-  .studio-banner p,
-  .studio-showcase__card strong,
-  .studio-showcase__card span,
-  .studio-section-intro h3,
-  .studio-section-intro p,
-  .studio-card h1,
-  .studio-card h2,
-  .studio-card h3,
-  .studio-card h4,
-  .studio-card p,
-  .studio-card li,
-  .studio-card strong,
-  .studio-card span,
-  .studio-card .prose,
-  .studio-card .prose p,
-  .studio-card .prose li {
-    color: var(--color-text-primary) !important;
-  }
+html.dark .studio-banner h2,
+html.dark .studio-banner p,
+html.dark .studio-showcase__card strong,
+html.dark .studio-showcase__card span,
+html.dark .studio-section-intro h3,
+html.dark .studio-section-intro p,
+html.dark .studio-card h1,
+html.dark .studio-card h2,
+html.dark .studio-card h3,
+html.dark .studio-card h4,
+html.dark .studio-card p,
+html.dark .studio-card li,
+html.dark .studio-card strong,
+html.dark .studio-card span,
+html.dark .studio-card .prose,
+html.dark .studio-card .prose p,
+html.dark .studio-card .prose li,
+.studio-dark .studio-banner h2,
+.studio-dark .studio-banner p,
+.studio-dark .studio-showcase__card strong,
+.studio-dark .studio-showcase__card span,
+.studio-dark .studio-section-intro h3,
+.studio-dark .studio-section-intro p,
+.studio-dark .studio-card h1,
+.studio-dark .studio-card h2,
+.studio-dark .studio-card h3,
+.studio-dark .studio-card h4,
+.studio-dark .studio-card p,
+.studio-dark .studio-card li,
+.studio-dark .studio-card strong,
+.studio-dark .studio-card span,
+.studio-dark .studio-card .prose,
+.studio-dark .studio-card .prose p,
+.studio-dark .studio-card .prose li {
+  color: var(--color-text-primary) !important;
+}
 
-  .studio-card .studio-section-intro h3,
-  .studio-card .studio-section-intro h2,
-  .studio-card .studio-section-intro h1,
-  .studio-card .studio-section-intro p,
-  .studio-card .studio-section-intro span,
-  .studio-card .studio-section-intro strong,
-  .studio-card .studio-inline-note,
-  .studio-card .gr-markdown,
-  .studio-card .gradio-markdown,
-  .studio-card .gr-markdown p,
-  .studio-card .gradio-markdown p,
-  .studio-card .gr-markdown li,
-  .studio-card .gradio-markdown li,
-  .studio-card .gr-markdown strong,
-  .studio-card .gradio-markdown strong,
-  .studio-card .prose p,
-  .studio-card .prose li,
-  .studio-card .prose strong,
-  .studio-card .prose span {
-    opacity: 1 !important;
-  }
+html.dark .studio-card .studio-section-intro h3,
+html.dark .studio-card .studio-section-intro h2,
+html.dark .studio-card .studio-section-intro h1,
+html.dark .studio-card .studio-section-intro p,
+html.dark .studio-card .studio-section-intro span,
+html.dark .studio-card .studio-section-intro strong,
+html.dark .studio-card .studio-inline-note,
+html.dark .studio-card .gr-markdown,
+html.dark .studio-card .gradio-markdown,
+html.dark .studio-card .gr-markdown p,
+html.dark .studio-card .gradio-markdown p,
+html.dark .studio-card .gr-markdown li,
+html.dark .studio-card .gradio-markdown li,
+html.dark .studio-card .gr-markdown strong,
+html.dark .studio-card .gradio-markdown strong,
+html.dark .studio-card .prose p,
+html.dark .studio-card .prose li,
+html.dark .studio-card .prose strong,
+html.dark .studio-card .prose span,
+.studio-dark .studio-card .studio-section-intro h3,
+.studio-dark .studio-card .studio-section-intro h2,
+.studio-dark .studio-card .studio-section-intro h1,
+.studio-dark .studio-card .studio-section-intro p,
+.studio-dark .studio-card .studio-section-intro span,
+.studio-dark .studio-card .studio-section-intro strong,
+.studio-dark .studio-card .studio-inline-note,
+.studio-dark .studio-card .gr-markdown,
+.studio-dark .studio-card .gradio-markdown,
+.studio-dark .studio-card .gr-markdown p,
+.studio-dark .studio-card .gradio-markdown p,
+.studio-dark .studio-card .gr-markdown li,
+.studio-dark .studio-card .gradio-markdown li,
+.studio-dark .studio-card .gr-markdown strong,
+.studio-dark .studio-card .gradio-markdown strong,
+.studio-dark .studio-card .prose p,
+.studio-dark .studio-card .prose li,
+.studio-dark .studio-card .prose strong,
+.studio-dark .studio-card .prose span {
+  opacity: 1 !important;
+}
 
-  .studio-card .studio-section-intro h3,
-  .studio-card .studio-section-intro h2,
-  .studio-card .studio-section-intro h1,
-  .studio-card .gr-markdown strong,
-  .studio-card .gradio-markdown strong,
-  .studio-card .prose strong {
-    color: #eef8f4 !important;
-  }
+html.dark .studio-card .studio-section-intro h3,
+html.dark .studio-card .studio-section-intro h2,
+html.dark .studio-card .studio-section-intro h1,
+html.dark .studio-card .gr-markdown strong,
+html.dark .studio-card .gradio-markdown strong,
+html.dark .studio-card .prose strong,
+.studio-dark .studio-card .studio-section-intro h3,
+.studio-dark .studio-card .studio-section-intro h2,
+.studio-dark .studio-card .studio-section-intro h1,
+.studio-dark .studio-card .gr-markdown strong,
+.studio-dark .studio-card .gradio-markdown strong,
+.studio-dark .studio-card .prose strong {
+  color: #eef8f4 !important;
+}
 
-  .studio-card .studio-section-intro p,
-  .studio-card .studio-inline-note,
-  .studio-card .prose em,
-  .studio-card .prose small {
-    color: var(--color-text-secondary) !important;
-  }
+html.dark .studio-card .studio-section-intro p,
+html.dark .studio-card .studio-inline-note,
+html.dark .studio-card .prose em,
+html.dark .studio-card .prose small,
+.studio-dark .studio-card .studio-section-intro p,
+.studio-dark .studio-card .studio-inline-note,
+.studio-dark .studio-card .prose em,
+.studio-dark .studio-card .prose small {
+  color: var(--color-text-secondary) !important;
+}
 
-  button[role="tab"] {
-    border-color: rgba(82, 117, 108, 0.7) !important;
-    background: rgba(17, 28, 32, 0.9) !important;
-    color: #b9cec6 !important;
-  }
+html.dark button[role="tab"],
+.studio-dark button[role="tab"] {
+  border-color: rgba(82, 117, 108, 0.7) !important;
+  background: rgba(17, 28, 32, 0.9) !important;
+  color: #b9cec6 !important;
+}
 
-  button[role="tab"][aria-selected="true"] {
-    border-color: var(--color-tab-active-border) !important;
-    background: linear-gradient(180deg, rgba(24, 70, 60, 0.98) 0%, rgba(21, 91, 73, 0.98) 100%) !important;
-    color: #f2fffb !important;
-  }
+html.dark button[role="tab"][aria-selected="true"],
+.studio-dark button[role="tab"][aria-selected="true"] {
+  border-color: var(--color-tab-active-border) !important;
+  background: linear-gradient(180deg, rgba(24, 70, 60, 0.98) 0%, rgba(21, 91, 73, 0.98) 100%) !important;
+  color: #f2fffb !important;
+}
 
-  .studio-shell .gr-group,
-  .studio-shell .gr-box,
-  .studio-shell .gr-form,
-  .studio-shell .gr-accordion,
-  .studio-shell .form {
-    border-color: transparent !important;
-    background: transparent !important;
-  }
+html.dark .studio-shell .gr-group,
+html.dark .studio-shell .gr-box,
+html.dark .studio-shell .gr-form,
+html.dark .studio-shell .gr-accordion,
+html.dark .studio-shell .form,
+.studio-shell.studio-dark .gr-group,
+.studio-shell.studio-dark .gr-box,
+.studio-shell.studio-dark .gr-form,
+.studio-shell.studio-dark .gr-accordion,
+.studio-shell.studio-dark .form {
+  border-color: transparent !important;
+  background: transparent !important;
+}
 
-  .studio-shell .gr-group *,
-  .studio-shell .gr-box *,
-  .studio-shell .gr-form *,
-  .studio-shell .gr-accordion *,
-  .studio-shell .form * {
-    color: inherit;
-  }
+html.dark .studio-shell .gr-group *,
+html.dark .studio-shell .gr-box *,
+html.dark .studio-shell .gr-form *,
+html.dark .studio-shell .gr-accordion *,
+html.dark .studio-shell .form *,
+.studio-shell.studio-dark .gr-group *,
+.studio-shell.studio-dark .gr-box *,
+.studio-shell.studio-dark .gr-form *,
+.studio-shell.studio-dark .gr-accordion *,
+.studio-shell.studio-dark .form * {
+  color: inherit;
+}
 
-  .studio-shell input,
-  .studio-shell textarea,
-  .studio-shell select,
-  .studio-shell .gr-text-input,
-  .studio-shell .gr-textbox,
-  .studio-shell .gr-dropdown,
-  .studio-shell .gr-number,
-  .studio-shell .gr-dataframe,
-  .studio-shell .gradio-dataframe {
-    background: var(--color-input-bg) !important;
-    color: var(--color-input-text) !important;
-    border-color: var(--color-input-border) !important;
-  }
+html.dark .studio-shell input,
+html.dark .studio-shell textarea,
+html.dark .studio-shell select,
+html.dark .studio-shell .gr-text-input,
+html.dark .studio-shell .gr-textbox,
+html.dark .studio-shell .gr-dropdown,
+html.dark .studio-shell .gr-number,
+html.dark .studio-shell .gr-dataframe,
+html.dark .studio-shell .gradio-dataframe,
+.studio-shell.studio-dark input,
+.studio-shell.studio-dark textarea,
+.studio-shell.studio-dark select,
+.studio-shell.studio-dark .gr-text-input,
+.studio-shell.studio-dark .gr-textbox,
+.studio-shell.studio-dark .gr-dropdown,
+.studio-shell.studio-dark .gr-number,
+.studio-shell.studio-dark .gr-dataframe,
+.studio-shell.studio-dark .gradio-dataframe {
+  background: var(--color-input-bg) !important;
+  color: var(--color-input-text) !important;
+  border-color: var(--color-input-border) !important;
+}
 
-  .studio-shell .gr-textbox textarea,
-  .studio-shell .gr-textbox input,
-  .studio-shell .gr-text-input input,
-  .studio-shell .gr-text-input textarea,
-  .studio-shell .gr-dropdown select,
-  .studio-shell .gr-number input,
-  .studio-shell .gradio-textbox textarea,
-  .studio-shell .gradio-textbox input,
-  .studio-shell .wrap textarea,
-  .studio-shell .wrap input,
-  .studio-shell .scroll-hide,
-  .studio-shell .scroll-hide textarea,
-  .studio-shell .scroll-hide input {
-    background: var(--color-input-bg) !important;
-    color: var(--color-input-text) !important;
-    border-color: var(--color-input-border) !important;
-    -webkit-text-fill-color: var(--color-input-text) !important;
-    caret-color: var(--color-input-text) !important;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02) !important;
-  }
+html.dark .studio-shell .gr-textbox textarea,
+html.dark .studio-shell .gr-textbox input,
+html.dark .studio-shell .gr-text-input input,
+html.dark .studio-shell .gr-text-input textarea,
+html.dark .studio-shell .gr-dropdown select,
+html.dark .studio-shell .gr-number input,
+html.dark .studio-shell .gradio-textbox textarea,
+html.dark .studio-shell .gradio-textbox input,
+html.dark .studio-shell .wrap textarea,
+html.dark .studio-shell .wrap input,
+html.dark .studio-shell .scroll-hide,
+html.dark .studio-shell .scroll-hide textarea,
+html.dark .studio-shell .scroll-hide input,
+.studio-shell.studio-dark .gr-textbox textarea,
+.studio-shell.studio-dark .gr-textbox input,
+.studio-shell.studio-dark .gr-text-input input,
+.studio-shell.studio-dark .gr-text-input textarea,
+.studio-shell.studio-dark .gr-dropdown select,
+.studio-shell.studio-dark .gr-number input,
+.studio-shell.studio-dark .gradio-textbox textarea,
+.studio-shell.studio-dark .gradio-textbox input,
+.studio-shell.studio-dark .wrap textarea,
+.studio-shell.studio-dark .wrap input,
+.studio-shell.studio-dark .scroll-hide,
+.studio-shell.studio-dark .scroll-hide textarea,
+.studio-shell.studio-dark .scroll-hide input {
+  background: var(--color-input-bg) !important;
+  color: var(--color-input-text) !important;
+  border-color: var(--color-input-border) !important;
+  -webkit-text-fill-color: var(--color-input-text) !important;
+  caret-color: var(--color-input-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02) !important;
+}
 
-  .studio-shell .gr-textbox,
-  .studio-shell .gradio-textbox,
-  .studio-shell .gr-text-input,
-  .studio-shell .gr-dropdown,
-  .studio-shell .gr-number,
-  .studio-shell .gr-dataframe,
-  .studio-shell .gradio-dataframe {
-    background: transparent !important;
-  }
+html.dark .studio-shell .gr-textbox,
+html.dark .studio-shell .gradio-textbox,
+html.dark .studio-shell .gr-text-input,
+html.dark .studio-shell .gr-dropdown,
+html.dark .studio-shell .gr-number,
+html.dark .studio-shell .gr-dataframe,
+html.dark .studio-shell .gradio-dataframe,
+.studio-shell.studio-dark .gr-textbox,
+.studio-shell.studio-dark .gradio-textbox,
+.studio-shell.studio-dark .gr-text-input,
+.studio-shell.studio-dark .gr-dropdown,
+.studio-shell.studio-dark .gr-number,
+.studio-shell.studio-dark .gr-dataframe,
+.studio-shell.studio-dark .gradio-dataframe {
+  background: transparent !important;
+}
 
-  .studio-shell .gr-file,
-  .studio-shell .gr-upload-button,
-  .studio-shell .gr-file-wrapper,
-  .studio-shell .gr-file-preview,
-  .studio-shell .gr-box .gr-upload,
-  .studio-shell .gradio-file,
-  .studio-shell .gradio-image,
-  .studio-shell .gradio-audio,
-  .studio-shell .gradio-video {
-    background: rgba(16, 25, 29, 0.92) !important;
-    color: var(--color-input-text) !important;
-    border-color: var(--color-input-border) !important;
-  }
+html.dark .studio-shell .gr-file,
+html.dark .studio-shell .gr-upload-button,
+html.dark .studio-shell .gr-file-wrapper,
+html.dark .studio-shell .gr-file-preview,
+html.dark .studio-shell .gr-box .gr-upload,
+html.dark .studio-shell .gradio-file,
+html.dark .studio-shell .gradio-image,
+html.dark .studio-shell .gradio-audio,
+html.dark .studio-shell .gradio-video,
+.studio-shell.studio-dark .gr-file,
+.studio-shell.studio-dark .gr-upload-button,
+.studio-shell.studio-dark .gr-file-wrapper,
+.studio-shell.studio-dark .gr-file-preview,
+.studio-shell.studio-dark .gr-box .gr-upload,
+.studio-shell.studio-dark .gradio-file,
+.studio-shell.studio-dark .gradio-image,
+.studio-shell.studio-dark .gradio-audio,
+.studio-shell.studio-dark .gradio-video {
+  background: rgba(16, 25, 29, 0.92) !important;
+  color: var(--color-input-text) !important;
+  border-color: var(--color-input-border) !important;
+}
 
-  .studio-shell .gr-accordion summary,
-  .studio-shell .gr-accordion .label-wrap,
-  .studio-shell .gr-accordion .label-wrap span {
-    color: var(--color-text-primary) !important;
-    background: transparent !important;
-  }
+html.dark .studio-shell .gr-accordion summary,
+html.dark .studio-shell .gr-accordion .label-wrap,
+html.dark .studio-shell .gr-accordion .label-wrap span,
+.studio-shell.studio-dark .gr-accordion summary,
+.studio-shell.studio-dark .gr-accordion .label-wrap,
+.studio-shell.studio-dark .gr-accordion .label-wrap span {
+  color: var(--color-text-primary) !important;
+  background: transparent !important;
+}
 
-  .studio-shell .gr-markdown,
-  .studio-shell .gradio-markdown,
-  .studio-shell .prose,
-  .studio-shell .prose p,
-  .studio-shell .prose li,
-  .studio-shell .prose strong,
-  .studio-shell label,
-  .studio-shell .block-title,
-  .studio-shell .block-label {
-    color: var(--color-label) !important;
-  }
+html.dark .studio-shell .gr-markdown,
+html.dark .studio-shell .gradio-markdown,
+html.dark .studio-shell .prose,
+html.dark .studio-shell .prose p,
+html.dark .studio-shell .prose li,
+html.dark .studio-shell .prose strong,
+html.dark .studio-shell label,
+html.dark .studio-shell .block-title,
+html.dark .studio-shell .block-label,
+.studio-shell.studio-dark .gr-markdown,
+.studio-shell.studio-dark .gradio-markdown,
+.studio-shell.studio-dark .prose,
+.studio-shell.studio-dark .prose p,
+.studio-shell.studio-dark .prose li,
+.studio-shell.studio-dark .prose strong,
+.studio-shell.studio-dark label,
+.studio-shell.studio-dark .block-title,
+.studio-shell.studio-dark .block-label {
+  color: var(--color-label) !important;
+}
 
-  /* Markdown headings: brighter than body text for visual hierarchy */
-  .studio-shell .gr-markdown h1,
-  .studio-shell .gr-markdown h2,
-  .studio-shell .gr-markdown h3,
-  .studio-shell .gr-markdown h4,
-  .studio-shell .gradio-markdown h1,
-  .studio-shell .gradio-markdown h2,
-  .studio-shell .gradio-markdown h3,
-  .studio-shell .gradio-markdown h4,
-  .studio-shell .prose h1,
-  .studio-shell .prose h2,
-  .studio-shell .prose h3,
-  .studio-shell .prose h4 {
-    color: var(--color-text-primary) !important;
-  }
+html.dark /* Markdown headings: brighter than body text for visual hierarchy */
+.studio-shell .gr-markdown h1,
+html.dark .studio-shell .gr-markdown h2,
+html.dark .studio-shell .gr-markdown h3,
+html.dark .studio-shell .gr-markdown h4,
+html.dark .studio-shell .gradio-markdown h1,
+html.dark .studio-shell .gradio-markdown h2,
+html.dark .studio-shell .gradio-markdown h3,
+html.dark .studio-shell .gradio-markdown h4,
+html.dark .studio-shell .prose h1,
+html.dark .studio-shell .prose h2,
+html.dark .studio-shell .prose h3,
+html.dark .studio-shell .prose h4,
+.studio-dark /* Markdown headings: brighter than body text for visual hierarchy */
+.studio-shell .gr-markdown h1,
+.studio-shell.studio-dark .gr-markdown h2,
+.studio-shell.studio-dark .gr-markdown h3,
+.studio-shell.studio-dark .gr-markdown h4,
+.studio-shell.studio-dark .gradio-markdown h1,
+.studio-shell.studio-dark .gradio-markdown h2,
+.studio-shell.studio-dark .gradio-markdown h3,
+.studio-shell.studio-dark .gradio-markdown h4,
+.studio-shell.studio-dark .prose h1,
+.studio-shell.studio-dark .prose h2,
+.studio-shell.studio-dark .prose h3,
+.studio-shell.studio-dark .prose h4 {
+  color: var(--color-text-primary) !important;
+}
 
-  /* Markdown body text: secondary tone to distinguish from headings */
-  .studio-shell .gr-markdown p,
-  .studio-shell .gr-markdown li,
-  .studio-shell .gradio-markdown p,
-  .studio-shell .gradio-markdown li,
-  .studio-shell .prose p,
-  .studio-shell .prose li {
-    color: var(--color-text-secondary) !important;
-  }
+html.dark /* Markdown body text: secondary tone to distinguish from headings */
+.studio-shell .gr-markdown p,
+html.dark .studio-shell .gr-markdown li,
+html.dark .studio-shell .gradio-markdown p,
+html.dark .studio-shell .gradio-markdown li,
+html.dark .studio-shell .prose p,
+html.dark .studio-shell .prose li,
+.studio-dark /* Markdown body text: secondary tone to distinguish from headings */
+.studio-shell .gr-markdown p,
+.studio-shell.studio-dark .gr-markdown li,
+.studio-shell.studio-dark .gradio-markdown p,
+.studio-shell.studio-dark .gradio-markdown li,
+.studio-shell.studio-dark .prose p,
+.studio-shell.studio-dark .prose li {
+  color: var(--color-text-secondary) !important;
+}
 
-  .studio-shell .gradio-textbox label,
-  .studio-shell .gradio-dropdown label,
-  .studio-shell .gradio-number label,
-  .studio-shell .gradio-file label,
-  .studio-shell .gradio-plot label,
-  .studio-shell .gr-textbox label,
-  .studio-shell .gr-dropdown label,
-  .studio-shell .gr-number label,
-  .studio-shell .gr-file label,
-  .studio-shell .gradio-html h1,
-  .studio-shell .gradio-html h2,
-  .studio-shell .gradio-html h3,
-  .studio-shell .gradio-html p {
-    color: var(--color-text-primary) !important;
-  }
+html.dark .studio-shell .gradio-textbox label,
+html.dark .studio-shell .gradio-dropdown label,
+html.dark .studio-shell .gradio-number label,
+html.dark .studio-shell .gradio-file label,
+html.dark .studio-shell .gradio-plot label,
+html.dark .studio-shell .gr-textbox label,
+html.dark .studio-shell .gr-dropdown label,
+html.dark .studio-shell .gr-number label,
+html.dark .studio-shell .gr-file label,
+html.dark .studio-shell .gradio-html h1,
+html.dark .studio-shell .gradio-html h2,
+html.dark .studio-shell .gradio-html h3,
+html.dark .studio-shell .gradio-html p,
+.studio-shell.studio-dark .gradio-textbox label,
+.studio-shell.studio-dark .gradio-dropdown label,
+.studio-shell.studio-dark .gradio-number label,
+.studio-shell.studio-dark .gradio-file label,
+.studio-shell.studio-dark .gradio-plot label,
+.studio-shell.studio-dark .gr-textbox label,
+.studio-shell.studio-dark .gr-dropdown label,
+.studio-shell.studio-dark .gr-number label,
+.studio-shell.studio-dark .gr-file label,
+.studio-shell.studio-dark .gradio-html h1,
+.studio-shell.studio-dark .gradio-html h2,
+.studio-shell.studio-dark .gradio-html h3,
+.studio-shell.studio-dark .gradio-html p {
+  color: var(--color-text-primary) !important;
+}
 
-  .studio-shell .gr-accordion .prose,
-  .studio-shell .gr-accordion .prose p,
-  .studio-shell .gr-accordion .prose li,
-  .studio-shell .gr-accordion .prose strong,
-  .studio-shell .gr-accordion .gr-markdown,
-  .studio-shell .gr-accordion .gr-markdown p,
-  .studio-shell .gr-accordion .gr-markdown li {
-    color: var(--color-text-secondary) !important;
-    opacity: 1 !important;
-  }
+html.dark .studio-shell .gr-accordion .prose,
+html.dark .studio-shell .gr-accordion .prose p,
+html.dark .studio-shell .gr-accordion .prose li,
+html.dark .studio-shell .gr-accordion .prose strong,
+html.dark .studio-shell .gr-accordion .gr-markdown,
+html.dark .studio-shell .gr-accordion .gr-markdown p,
+html.dark .studio-shell .gr-accordion .gr-markdown li,
+.studio-shell.studio-dark .gr-accordion .prose,
+.studio-shell.studio-dark .gr-accordion .prose p,
+.studio-shell.studio-dark .gr-accordion .prose li,
+.studio-shell.studio-dark .gr-accordion .prose strong,
+.studio-shell.studio-dark .gr-accordion .gr-markdown,
+.studio-shell.studio-dark .gr-accordion .gr-markdown p,
+.studio-shell.studio-dark .gr-accordion .gr-markdown li {
+  color: var(--color-text-secondary) !important;
+  opacity: 1 !important;
+}
 
-  .studio-shell .gr-accordion p,
-  .studio-shell .gr-accordion span,
-  .studio-shell .gr-accordion div,
-  .studio-shell .gr-accordion label,
-  .studio-shell .gr-accordion .block-info,
-  .studio-shell .gr-accordion .gradio-markdown p,
-  .studio-shell .gr-accordion .gradio-markdown li {
-    color: var(--color-text-secondary) !important;
-    opacity: 1 !important;
-  }
+html.dark .studio-shell .gr-accordion p,
+html.dark .studio-shell .gr-accordion span,
+html.dark .studio-shell .gr-accordion div,
+html.dark .studio-shell .gr-accordion label,
+html.dark .studio-shell .gr-accordion .block-info,
+html.dark .studio-shell .gr-accordion .gradio-markdown p,
+html.dark .studio-shell .gr-accordion .gradio-markdown li,
+.studio-shell.studio-dark .gr-accordion p,
+.studio-shell.studio-dark .gr-accordion span,
+.studio-shell.studio-dark .gr-accordion div,
+.studio-shell.studio-dark .gr-accordion label,
+.studio-shell.studio-dark .gr-accordion .block-info,
+.studio-shell.studio-dark .gr-accordion .gradio-markdown p,
+.studio-shell.studio-dark .gr-accordion .gradio-markdown li {
+  color: var(--color-text-secondary) !important;
+  opacity: 1 !important;
+}
 
-  .studio-shell .gr-accordion summary,
-  .studio-shell .gr-accordion summary *,
-  .studio-shell .gr-accordion .label-wrap,
-  .studio-shell .gr-accordion .label-wrap *,
-  .studio-shell .gradio-accordion summary,
-  .studio-shell .gradio-accordion summary * {
-    color: #eaf7f2 !important;
-    opacity: 1 !important;
-  }
+html.dark .studio-shell .gr-accordion summary,
+html.dark .studio-shell .gr-accordion summary *,
+html.dark .studio-shell .gr-accordion .label-wrap,
+html.dark .studio-shell .gr-accordion .label-wrap *,
+html.dark .studio-shell .gradio-accordion summary,
+html.dark .studio-shell .gradio-accordion summary *,
+.studio-shell.studio-dark .gr-accordion summary,
+.studio-shell.studio-dark .gr-accordion summary *,
+.studio-shell.studio-dark .gr-accordion .label-wrap,
+.studio-shell.studio-dark .gr-accordion .label-wrap *,
+.studio-shell.studio-dark .gradio-accordion summary,
+.studio-shell.studio-dark .gradio-accordion summary * {
+  color: #eaf7f2 !important;
+  opacity: 1 !important;
+}
 
-  .studio-shell .gr-accordion h1,
-  .studio-shell .gr-accordion h2,
-  .studio-shell .gr-accordion h3,
-  .studio-shell .gr-accordion h4,
-  .studio-shell .gr-accordion .block-title,
-  .studio-shell .gr-accordion .block-label,
-  .studio-shell .gr-accordion .label-wrap span {
-    color: #eef8f4 !important;
-  }
+html.dark .studio-shell .gr-accordion h1,
+html.dark .studio-shell .gr-accordion h2,
+html.dark .studio-shell .gr-accordion h3,
+html.dark .studio-shell .gr-accordion h4,
+html.dark .studio-shell .gr-accordion .block-title,
+html.dark .studio-shell .gr-accordion .block-label,
+html.dark .studio-shell .gr-accordion .label-wrap span,
+.studio-shell.studio-dark .gr-accordion h1,
+.studio-shell.studio-dark .gr-accordion h2,
+.studio-shell.studio-dark .gr-accordion h3,
+.studio-shell.studio-dark .gr-accordion h4,
+.studio-shell.studio-dark .gr-accordion .block-title,
+.studio-shell.studio-dark .gr-accordion .block-label,
+.studio-shell.studio-dark .gr-accordion .label-wrap span {
+  color: #eef8f4 !important;
+}
 
-  .studio-shell .gr-checkbox,
-  .studio-shell .gr-checkbox label,
-  .studio-shell .gr-checkbox span,
-  .studio-shell .gradio-checkbox,
-  .studio-shell .gradio-checkbox label,
-  .studio-shell .gradio-checkbox span {
-    color: #e5f3ee !important;
-    opacity: 1 !important;
-  }
+html.dark .studio-shell .gr-checkbox,
+html.dark .studio-shell .gr-checkbox label,
+html.dark .studio-shell .gr-checkbox span,
+html.dark .studio-shell .gradio-checkbox,
+html.dark .studio-shell .gradio-checkbox label,
+html.dark .studio-shell .gradio-checkbox span,
+.studio-shell.studio-dark .gr-checkbox,
+.studio-shell.studio-dark .gr-checkbox label,
+.studio-shell.studio-dark .gr-checkbox span,
+.studio-shell.studio-dark .gradio-checkbox,
+.studio-shell.studio-dark .gradio-checkbox label,
+.studio-shell.studio-dark .gradio-checkbox span {
+  color: #e5f3ee !important;
+  opacity: 1 !important;
+}
 
-  .studio-shell input[type="checkbox"] {
-    accent-color: #52d6ac !important;
-    background: #10181c !important;
-    border-color: #4a6a62 !important;
-  }
+html.dark .studio-shell input[type="checkbox"],
+.studio-shell.studio-dark input[type="checkbox"] {
+  accent-color: #52d6ac !important;
+  background: #10181c !important;
+  border-color: #4a6a62 !important;
+}
 
-  .studio-shell .gr-slider,
-  .studio-shell .gr-slider label,
-  .studio-shell .gr-slider .wrap,
-  .studio-shell .gr-slider .wrap span,
-  .studio-shell .gradio-slider,
-  .studio-shell .gradio-slider label,
-  .studio-shell .gradio-slider .wrap,
-  .studio-shell .gradio-slider .wrap span {
-    color: #e7f4ef !important;
-    opacity: 1 !important;
-  }
+html.dark .studio-shell .gr-slider,
+html.dark .studio-shell .gr-slider label,
+html.dark .studio-shell .gr-slider .wrap,
+html.dark .studio-shell .gr-slider .wrap span,
+html.dark .studio-shell .gradio-slider,
+html.dark .studio-shell .gradio-slider label,
+html.dark .studio-shell .gradio-slider .wrap,
+html.dark .studio-shell .gradio-slider .wrap span,
+.studio-shell.studio-dark .gr-slider,
+.studio-shell.studio-dark .gr-slider label,
+.studio-shell.studio-dark .gr-slider .wrap,
+.studio-shell.studio-dark .gr-slider .wrap span,
+.studio-shell.studio-dark .gradio-slider,
+.studio-shell.studio-dark .gradio-slider label,
+.studio-shell.studio-dark .gradio-slider .wrap,
+.studio-shell.studio-dark .gradio-slider .wrap span {
+  color: #e7f4ef !important;
+  opacity: 1 !important;
+}
 
-  .studio-shell input[type="range"] {
-    accent-color: #52d6ac !important;
-  }
+html.dark .studio-shell input[type="range"],
+.studio-shell.studio-dark input[type="range"] {
+  accent-color: #52d6ac !important;
+}
 
-  .studio-shell .gr-slider input[type="number"],
-  .studio-shell .gradio-slider input[type="number"],
-  .studio-shell .gr-slider .number-wrap input,
-  .studio-shell .gradio-slider .number-wrap input {
-    background: #10181c !important;
-    color: #eef8f4 !important;
-    border: 1px solid #426059 !important;
-    -webkit-text-fill-color: #eef8f4 !important;
-  }
+html.dark .studio-shell .gr-slider input[type="number"],
+html.dark .studio-shell .gradio-slider input[type="number"],
+html.dark .studio-shell .gr-slider .number-wrap input,
+html.dark .studio-shell .gradio-slider .number-wrap input,
+.studio-shell.studio-dark .gr-slider input[type="number"],
+.studio-shell.studio-dark .gradio-slider input[type="number"],
+.studio-shell.studio-dark .gr-slider .number-wrap input,
+.studio-shell.studio-dark .gradio-slider .number-wrap input {
+  background: #10181c !important;
+  color: #eef8f4 !important;
+  border: 1px solid #426059 !important;
+  -webkit-text-fill-color: #eef8f4 !important;
+}
 
-  .studio-shell .gr-slider .noUi-target,
-  .studio-shell .gradio-slider .noUi-target {
-    background: #304640 !important;
-    border-color: #3e5d56 !important;
-    box-shadow: none !important;
-  }
+html.dark .studio-shell .gr-slider .noUi-target,
+html.dark .studio-shell .gradio-slider .noUi-target,
+.studio-shell.studio-dark .gr-slider .noUi-target,
+.studio-shell.studio-dark .gradio-slider .noUi-target {
+  background: #304640 !important;
+  border-color: #3e5d56 !important;
+  box-shadow: none !important;
+}
 
-  .studio-shell .gr-slider .noUi-connect,
-  .studio-shell .gradio-slider .noUi-connect {
-    background: linear-gradient(90deg, #2aa17f 0%, #52d6ac 100%) !important;
-  }
+html.dark .studio-shell .gr-slider .noUi-connect,
+html.dark .studio-shell .gradio-slider .noUi-connect,
+.studio-shell.studio-dark .gr-slider .noUi-connect,
+.studio-shell.studio-dark .gradio-slider .noUi-connect {
+  background: linear-gradient(90deg, #2aa17f 0%, #52d6ac 100%) !important;
+}
 
-  .studio-shell .gr-slider .noUi-handle,
-  .studio-shell .gradio-slider .noUi-handle {
-    background: #eff8f4 !important;
-    border: 2px solid #52d6ac !important;
-    box-shadow: 0 0 0 4px rgba(82, 214, 172, 0.15) !important;
-  }
+html.dark .studio-shell .gr-slider .noUi-handle,
+html.dark .studio-shell .gradio-slider .noUi-handle,
+.studio-shell.studio-dark .gr-slider .noUi-handle,
+.studio-shell.studio-dark .gradio-slider .noUi-handle {
+  background: #eff8f4 !important;
+  border: 2px solid #52d6ac !important;
+  box-shadow: 0 0 0 4px rgba(82, 214, 172, 0.15) !important;
+}
 
-  .studio-shell .gr-markdown a,
-  .studio-shell .prose a {
-    color: #7ceac9 !important;
-  }
+html.dark .studio-shell .gr-markdown a,
+html.dark .studio-shell .prose a,
+.studio-shell.studio-dark .gr-markdown a,
+.studio-shell.studio-dark .prose a {
+  color: #7ceac9 !important;
+}
 
-  .studio-shell [role="tablist"] {
-    background: transparent !important;
-  }
+html.dark .studio-shell [role="tablist"],
+.studio-shell.studio-dark [role="tablist"] {
+  background: transparent !important;
+}
 
-  .studio-shell .gr-dataframe input,
-  .studio-shell .gr-dataframe textarea,
-  .studio-shell .gr-dataframe select {
-    background: transparent !important;
-    color: var(--color-table-text) !important;
-    border-color: var(--color-table-border) !important;
-  }
+html.dark .studio-shell .gr-dataframe input,
+html.dark .studio-shell .gr-dataframe textarea,
+html.dark .studio-shell .gr-dataframe select,
+.studio-shell.studio-dark .gr-dataframe input,
+.studio-shell.studio-dark .gr-dataframe textarea,
+.studio-shell.studio-dark .gr-dataframe select {
+  background: transparent !important;
+  color: var(--color-table-text) !important;
+  border-color: var(--color-table-border) !important;
+}
 
-  .studio-shell .gr-dataframe thead th {
-    background: var(--color-surface-strong) !important;
-    color: #f0fbf7 !important;
-  }
+html.dark .studio-shell .gr-dataframe thead th,
+.studio-shell.studio-dark .gr-dataframe thead th {
+  background: var(--color-surface-strong) !important;
+  color: #f0fbf7 !important;
+}
 
-  .studio-shell .gr-dataframe tbody td {
-    background: var(--color-table-bg) !important;
-    color: var(--color-table-text) !important;
-  }
+html.dark .studio-shell .gr-dataframe tbody td,
+.studio-shell.studio-dark .gr-dataframe tbody td {
+  background: var(--color-table-bg) !important;
+  color: var(--color-table-text) !important;
+}
 
-  .studio-shell .gr-dataframe tbody tr:nth-child(even) td {
-    background: #152126 !important;
-  }
+html.dark .studio-shell .gr-dataframe tbody tr:nth-child(even) td,
+.studio-shell.studio-dark .gr-dataframe tbody tr:nth-child(even) td {
+  background: #152126 !important;
+}
 
-  .studio-shell .gradio-plot,
-  .studio-shell .plot-container,
-  .studio-shell .gr-plot {
-    background: transparent !important;
-  }
+html.dark .studio-shell .gradio-plot,
+html.dark .studio-shell .plot-container,
+html.dark .studio-shell .gr-plot,
+.studio-shell.studio-dark .gradio-plot,
+.studio-shell.studio-dark .plot-container,
+.studio-shell.studio-dark .gr-plot {
+  background: transparent !important;
+}
 
-  .studio-shell .gradio-html,
-  .studio-shell .gr-html {
-    color: var(--color-text-primary) !important;
-  }
+html.dark .studio-shell .gradio-html,
+html.dark .studio-shell .gr-html,
+.studio-shell.studio-dark .gradio-html,
+.studio-shell.studio-dark .gr-html {
+  color: var(--color-text-primary) !important;
+}
 
-  .studio-shell .gradio-html textarea,
-  .studio-shell .gr-html textarea,
-  .studio-shell .gradio-html pre,
-  .studio-shell .gr-html pre {
-    background: var(--color-input-bg) !important;
-    color: var(--color-input-text) !important;
-    border-color: var(--color-input-border) !important;
-  }
+html.dark .studio-shell .gradio-html textarea,
+html.dark .studio-shell .gr-html textarea,
+html.dark .studio-shell .gradio-html pre,
+html.dark .studio-shell .gr-html pre,
+.studio-shell.studio-dark .gradio-html textarea,
+.studio-shell.studio-dark .gr-html textarea,
+.studio-shell.studio-dark .gradio-html pre,
+.studio-shell.studio-dark .gr-html pre {
+  background: var(--color-input-bg) !important;
+  color: var(--color-input-text) !important;
+  border-color: var(--color-input-border) !important;
+}
 
-  .studio-shell .gradio-textbox textarea[disabled],
-  .studio-shell .gradio-textbox textarea[readonly],
-  .studio-shell textarea[disabled],
-  .studio-shell textarea[readonly] {
-    background: #121b20 !important;
-    color: #e6f2ee !important;
-    opacity: 1 !important;
-  }
+html.dark .studio-shell .gradio-textbox textarea[disabled],
+html.dark .studio-shell .gradio-textbox textarea[readonly],
+html.dark .studio-shell textarea[disabled],
+html.dark .studio-shell textarea[readonly],
+.studio-shell.studio-dark .gradio-textbox textarea[disabled],
+.studio-shell.studio-dark .gradio-textbox textarea[readonly],
+.studio-shell.studio-dark textarea[disabled],
+.studio-shell.studio-dark textarea[readonly] {
+  background: #121b20 !important;
+  color: #e6f2ee !important;
+  opacity: 1 !important;
+}
 
-  .studio-shell input::placeholder,
-  .studio-shell textarea::placeholder {
-    color: var(--color-placeholder) !important;
-  }
+html.dark .studio-shell input::placeholder,
+html.dark .studio-shell textarea::placeholder,
+.studio-shell.studio-dark input::placeholder,
+.studio-shell.studio-dark textarea::placeholder {
+  color: var(--color-placeholder) !important;
+}
 
-  .studio-shell .gr-button-primary {
-    background: linear-gradient(180deg, #2aa17f 0%, #1f8b6c 100%) !important;
-    color: var(--color-text-on-primary) !important;
-    border-color: rgba(91, 177, 147, 0.85) !important;
-  }
+html.dark .studio-shell .gr-button-primary,
+.studio-shell.studio-dark .gr-button-primary {
+  background: linear-gradient(180deg, #2aa17f 0%, #1f8b6c 100%) !important;
+  color: var(--color-text-on-primary) !important;
+  border-color: rgba(91, 177, 147, 0.85) !important;
+}
 
-  .studio-shell .gr-button-secondary {
-    background: #172328 !important;
-    color: #e0f1eb !important;
-    border-color: #426059 !important;
-  }
+html.dark .studio-shell .gr-button-secondary,
+.studio-shell.studio-dark .gr-button-secondary {
+  background: #172328 !important;
+  color: #e0f1eb !important;
+  border-color: #426059 !important;
+}
 
-  .studio-shell table,
-  .studio-shell thead,
-  .studio-shell tbody,
-  .studio-shell tr,
-  .studio-shell th,
-  .studio-shell td {
-    background: var(--color-table-bg) !important;
-    color: var(--color-table-text) !important;
-    border-color: var(--color-table-border) !important;
-  }
+html.dark .studio-shell table,
+html.dark .studio-shell thead,
+html.dark .studio-shell tbody,
+html.dark .studio-shell tr,
+html.dark .studio-shell th,
+html.dark .studio-shell td,
+.studio-shell.studio-dark table,
+.studio-shell.studio-dark thead,
+.studio-shell.studio-dark tbody,
+.studio-shell.studio-dark tr,
+.studio-shell.studio-dark th,
+.studio-shell.studio-dark td {
+  background: var(--color-table-bg) !important;
+  color: var(--color-table-text) !important;
+  border-color: var(--color-table-border) !important;
+}
 
-  .studio-shell code,
-  .studio-shell pre {
-    background: var(--color-code-bg) !important;
-    color: var(--color-code-text) !important;
-    border-color: var(--color-code-border) !important;
-  }
+html.dark .studio-shell code,
+html.dark .studio-shell pre,
+.studio-shell.studio-dark code,
+.studio-shell.studio-dark pre {
+  background: var(--color-code-bg) !important;
+  color: var(--color-code-text) !important;
+  border-color: var(--color-code-border) !important;
+}
 
-  .studio-shell hr {
-    border-color: var(--color-hr) !important;
-  }
+html.dark .studio-shell hr,
+.studio-shell.studio-dark hr {
+  border-color: var(--color-hr) !important;
 }
 
 /* ── Responsive ───────────────────────────────────────────────────────────── */
@@ -1302,10 +1568,9 @@ button[role="tab"]:focus-visible {
   outline-offset: 2px;
 }
 
-@media (prefers-color-scheme: dark) {
-  button[role="tab"]:focus-visible {
-    box-shadow: 0 0 0 4px rgba(61, 212, 168, 0.2) !important;
-  }
+html.dark button[role="tab"]:focus-visible,
+.studio-dark button[role="tab"]:focus-visible {
+  box-shadow: 0 0 0 4px rgba(61, 212, 168, 0.2) !important;
 }
 
 /* ── Accessibility: skip-to-content link ──────────────────────────────────── */
