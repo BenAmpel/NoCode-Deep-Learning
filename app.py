@@ -7097,15 +7097,20 @@ with gr.Blocks(title="NoCode-DL") as demo:
         if not data_path_val or row_index_val in (None, ""):
             return gr.update(), gr.update(), "*Choose a text row first.*", "*Choose a text row first.*"
         try:
-            from ui.annotation_tools import format_text_annotation_preview, list_text_annotation_rows, preview_text_row, save_text_relabel
+            from ui.annotation_tools import (
+                backup_path_for, format_text_annotation_preview, list_text_annotation_rows,
+                preview_text_row, save_text_relabel,
+            )
 
             saved_label = save_text_relabel(data_path_val, int(row_index_val), label_col_val, new_label_val)
+            backup_name = backup_path_for(Path(data_path_val).expanduser()).name
             choices, labels = list_text_annotation_rows(data_path_val, text_col_val, label_col_val)
             text, current_label = preview_text_row(data_path_val, int(row_index_val), text_col_val, label_col_val)
             return (
                 gr.update(choices=choices, value=int(row_index_val)),
                 gr.update(choices=labels, value=saved_label),
-                f"✅ Updated row `{int(row_index_val)}` to label `{saved_label}`.",
+                f"✅ Updated row `{int(row_index_val)}` to label `{saved_label}`. "
+                f"The file as it was before your first edit is kept as `{backup_name}`.",
                 format_text_annotation_preview(text, current_label, int(row_index_val)),
             )
         except Exception as exc:
