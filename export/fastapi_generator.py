@@ -88,7 +88,7 @@ sys.path.insert(0, str(HERE))
 from bundle_runtime import Bundle, BundleInputError  # noqa: E402
 
 log = logging.getLogger("nocode_dl.server")
-BUNDLE = Bundle(HERE)
+BUNDLE = Bundle(HERE, trust_pickle=True)  # this folder is your own export
 API_KEY = os.environ.get("NOCODE_DL_API_KEY", "")
 MAX_UPLOAD_BYTES = int(float(os.environ.get("NOCODE_DL_MAX_UPLOAD_MB", "25")) * 1024 * 1024)
 

@@ -152,7 +152,10 @@ def _runtime_bundle(bundle_path: str):
     if key not in _runtime_cache:
         if len(_runtime_cache) >= _MAX_CACHE:
             _runtime_cache.pop(next(iter(_runtime_cache)))
-        _runtime_cache[key] = Bundle(key)
+        outputs_root = (Path(__file__).resolve().parent.parent / "outputs").resolve()
+        # Bundles this app exported live under outputs/; a bundle from anywhere
+        # else may be someone else's, so its pickle (model.joblib) isn't loaded.
+        _runtime_cache[key] = Bundle(key, trust_pickle=Path(key).resolve().is_relative_to(outputs_root))
     return _runtime_cache[key]
 
 

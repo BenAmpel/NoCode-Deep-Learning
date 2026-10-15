@@ -353,7 +353,7 @@ def main() -> int:
         path = Path(raw)
         raw = json.loads(path.read_text(encoding="utf-8") if path.is_file() else raw)
     try:
-        result = Bundle(HERE).predict(raw, top_k=args.top_k)
+        result = Bundle(HERE, trust_pickle=True).predict(raw, top_k=args.top_k)  # your own export
     except BundleInputError as exc:
         print(f"Invalid input: {{exc}}", file=sys.stderr)
         return 2

@@ -139,7 +139,7 @@ def load_checkpoint(
     payload: dict[str, Any] = torch.load(
         checkpoint_path,
         map_location=map_location,
-        weights_only=False,
+        weights_only=True,  # plain tensors/dicts/numbers only; never runs pickled code
     )
 
     model.load_state_dict(
@@ -195,7 +195,7 @@ def list_checkpoints(checkpoint_dir: str) -> list[dict[str, Any]]:
             payload = torch.load(
                 entry,
                 map_location=torch.device("cpu"),
-                weights_only=False,
+                weights_only=True,  # plain tensors/dicts/numbers only; never runs pickled code
             )
             val_loss = float(payload.get("val_loss", float("inf")))
         except Exception:

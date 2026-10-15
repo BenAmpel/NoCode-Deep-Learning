@@ -39,6 +39,10 @@ class BundleInputError(ValueError):
     """The input could not be turned into a model input (bad shape, file, JSON...)."""
 
 
+class UntrustedModelError(PermissionError):
+    """The bundle's model is a pickle (model.joblib) and the bundle isn't trusted."""
+
+
 # ---------------------------------------------------------------------------
 # Text cleaning (also used by data_pipeline.cleaning during training)
 # ---------------------------------------------------------------------------
@@ -484,8 +488,12 @@ def _softmax(x: np.ndarray) -> np.ndarray:
 class Bundle:
     """A model bundle folder: labels.json, preprocessing.json and model.onnx/.joblib."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, trust_pickle: bool = False):
+        """``trust_pickle``: allow loading ``model.joblib`` (a pickle, which can
+        run arbitrary code when loaded). Only set it for bundles you created;
+        ONNX models never need it."""
         self.path = Path(path)
+        self.trust_pickle = bool(trust_pickle)
         with open(self.path / "labels.json", encoding="utf-8") as fh:
             self.labels: dict[str, str] = {str(k): str(v) for k, v in json.load(fh).items()}
         with open(self.path / "preprocessing.json", encoding="utf-8") as fh:
@@ -546,6 +554,12 @@ class Bundle:
             return np.asarray(outputs[0], dtype=np.float32).reshape(-1)
 
         if self._sk_model is None:
+            if not self.trust_pickle:
+                raise UntrustedModelError(
+                    f"{self.joblib_path.name} is a pickle file, and loading a pickle can run any "
+                    "code it contains. Only open bundles you created yourself; this one is not "
+                    "marked as trusted."
+                )
             import joblib
             self._sk_model = joblib.load(self.joblib_path)
         x = inputs if not isinstance(inputs, dict) else next(iter(inputs.values()))
