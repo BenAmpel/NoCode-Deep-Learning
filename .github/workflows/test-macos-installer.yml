@@ -3,8 +3,8 @@ name: macOS Installer
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  pull_request:  # every base branch, so stacked PRs get CI too
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

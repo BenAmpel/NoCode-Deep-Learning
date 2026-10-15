@@ -3,8 +3,7 @@ name: Security Scan
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  pull_request:  # every base branch, so stacked PRs get CI too
   workflow_dispatch:
 
 env:
