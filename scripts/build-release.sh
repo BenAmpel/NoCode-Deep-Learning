@@ -1,7 +1,7 @@
 #!/bin/bash
 # BUILD a NoCode-DL macOS release into releases/staging/<version>/ and nothing else.
 #
-#   NCDL_VERSION=0.1.0 scripts/build-release.sh
+#   NCDL_VERSION=2.0.0 scripts/build-release.sh
 #
 # Same release path as the other Purplelink apps: the .app is signed with the Developer ID identity and the hardened
 # runtime, notarized with the keychain profile "moderntex", stapled, and packed into a DMG that is signed, notarized and
