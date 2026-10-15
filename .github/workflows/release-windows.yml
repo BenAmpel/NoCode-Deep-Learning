@@ -1,0 +1,81 @@
+name: Release Windows installer
+
+# Build the Windows installer from a release tag and attach it to that tag's
+# GitHub release, so the .exe comes from the same commit as the macOS DMG.
+# Inno Setup only runs on Windows, which is why this is a workflow and not
+# part of scripts/build-release.sh. Start it by hand: Actions > Release Windows
+# installer > Run workflow, with the tag (for example v2.0.0).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, for example v2.0.0"
+        required: true
+
+permissions:
+  contents: write  # gh release upload
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-test-upload:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Check the tag and its release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+$') { throw "Tag must look like v1.2.3, got $env:TAG" }
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json tagName | Out-Null
+          "VERSION=$($env:TAG.Substring(1))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --no-progress -y
+          foreach ($path in @("C:\Program Files (x86)\Inno Setup 6", "C:\Program Files\Inno Setup 6")) {
+            if (Test-Path $path) { $path | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8 }
+          }
+
+      - name: Build the installer
+        run: python packaging/build_windows_installer.py --version $env:VERSION
+
+      - name: Install it silently and check the installed files
+        run: |
+          $installer = "dist/Output/NoCode-DL-Setup-$env:VERSION.exe"
+          if (-not (Test-Path $installer)) { throw "Installer not built: $installer" }
+          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -NoNewWindow
+          $installDir = Join-Path $env:LOCALAPPDATA "NoCode-DL"
+          foreach ($file in @("NoCode-DL.bat", "NoCode-DL.ps1", "runtime\bootstrap_windows.py", "install.py",
+                              "run_local.py", "runtime\runtime_setup.py", "requirements.txt", ".bundle_version")) {
+            if (-not (Test-Path (Join-Path $installDir $file))) { throw "Missing installed file: $file" }
+          }
+          $installed = (Get-Content (Join-Path $installDir ".bundle_version")).Trim()
+          if ($installed -ne $env:VERSION) { throw "Installed version is $installed, expected $env:VERSION" }
+          Write-Host "Installed $installed into $installDir"
+
+      - name: Attach the installer to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          $installer = "dist/Output/NoCode-DL-Setup-$env:VERSION.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLower()
+          Write-Host "SHA-256 $hash"
+          gh release upload $env:TAG $installer --repo $env:GITHUB_REPOSITORY --clobber
