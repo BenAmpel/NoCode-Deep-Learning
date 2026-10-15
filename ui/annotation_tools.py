@@ -294,7 +294,7 @@ def save_object_box_review(image_path: str, rows: Any, output_dir: str | Path | 
         width, height = img.size
 
     # Same-named images from different folders get different files.
-    name = f"{path.stem}-{hashlib.sha1(str(path).encode('utf-8')).hexdigest()[:8]}"
+    name = f"{path.stem}-{hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:8]}"
     txt_path = output_root / f"{name}.txt"
     json_path = output_root / f"{name}.review.json"
 

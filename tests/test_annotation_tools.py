@@ -41,7 +41,7 @@ def test_backup_is_taken_only_once(tmp_path):
 
 def test_tsv_relabel(tmp_path):
     path = tmp_path / "data.tsv"
-    path.write_text("text\tlabel\r\nok\ta\r\nfine\tb\r\n", encoding="utf-8")
+    path.write_bytes(b"text\tlabel\r\nok\ta\r\nfine\tb\r\n")  # bytes: text mode would add \r on Windows
     at.save_text_relabel(path, 0, "label", "z")
     assert path.read_bytes() == b"text\tlabel\r\nok\tz\r\nfine\tb\r\n"  # CRLF kept
 

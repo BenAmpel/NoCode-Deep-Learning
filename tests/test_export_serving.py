@@ -100,7 +100,13 @@ def test_audio_bundle_serves_like_app_and_model(tmp_path):
     from modalities.audio import load_audio_data
     from ui.inference_helpers import predict_audio
 
-    _, val_loader, classes, prep = load_audio_data(str(AUDIO), sample_rate=16000, image_size=64, augmentation="none")
+    # WAV only: the fixture also has .mp3 files, which need ffmpeg to decode
+    # and the Windows CI runner doesn't have it. Codecs aren't what this tests.
+    wav_only = tmp_path / "wav_audio"
+    for wav in AUDIO.rglob("*.wav"):
+        (wav_only / wav.parent.name).mkdir(parents=True, exist_ok=True)
+        shutil.copy(wav, wav_only / wav.parent.name / wav.name)
+    _, val_loader, classes, prep = load_audio_data(str(wav_only), sample_rate=16000, image_size=64, augmentation="none")
     model = get_image_model("TinyCNN", num_classes=len(classes), mode="from_scratch").eval()
     bundle, _ = export_bundle(model, prep, classes, "aud", output_dir=str(tmp_path),
                               sample_batch=next(iter(val_loader))[0])
