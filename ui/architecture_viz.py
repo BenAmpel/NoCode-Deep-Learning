@@ -75,23 +75,3 @@ def _param_chart(model: nn.Module) -> plt.Figure:
     plt.close(fig)  # rendered by Gradio after return; frees pyplot's reference
     return fig
 
-
-def estimate_training_time(
-    model: nn.Module,
-    n_train_samples: int,
-    batch_size: int,
-    epochs: int,
-    device: str,
-) -> str:
-    """Returns a human-readable estimate string."""
-    n_params  = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    steps     = (n_train_samples / max(batch_size, 1)) * epochs
-    # Rough heuristic: ~1ms per 1M trainable params per step on CPU
-    speed_map = {"cpu": 1.0, "mps": 0.25, "cuda": 0.05}
-    ms_per_step = (n_params / 1e6) * speed_map.get(device, 1.0)
-    total_sec = ms_per_step * steps / 1000
-    if total_sec < 60:
-        return f"~{int(total_sec)}s"
-    if total_sec < 3600:
-        return f"~{int(total_sec / 60)}m"
-    return f"~{total_sec / 3600:.1f}h"

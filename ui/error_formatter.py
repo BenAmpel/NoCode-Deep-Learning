@@ -3,24 +3,14 @@ Maps common Python/ML exceptions to friendly, student-facing markdown messages.
 
 Usage
 -----
-    from ui.error_formatter import format_error, wrap_pipeline_error
+    from ui.error_formatter import format_error
 
     try:
         load_dataset(path)
     except Exception as exc:
         print(format_error(exc, context="data_loading"))
-
-    @wrap_pipeline_error
-    def run_training(...):
-        ...
 """
 from __future__ import annotations
-
-import functools
-import traceback
-from typing import Callable, TypeVar
-
-F = TypeVar("F", bound=Callable)
 
 # ---------------------------------------------------------------------------
 # Common fix suggestions keyed by error-message substrings.
@@ -190,66 +180,3 @@ def _build_message(headline: str, detail: str, preamble: str = "") -> str:
         parts.append("")
     parts.append(f"❌ **{headline}** — {detail}")
     return "\n".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# Decorator
-# ---------------------------------------------------------------------------
-
-def wrap_pipeline_error(func: F) -> F:
-    """
-    Decorator that wraps a pipeline stage function.
-
-    Catches all exceptions, formats them with :func:`format_error`, logs the
-    original traceback to stderr, and re-raises a :class:`RuntimeError` whose
-    message is the friendly markdown string.
-
-    Parameters
-    ----------
-    func:
-        The function to wrap.  The ``context`` hint is inferred from the
-        function name if it contains one of the recognised keywords.
-
-    Returns
-    -------
-    Callable
-        The wrapped function with identical signature.
-
-    Example
-    -------
-    ::
-
-        @wrap_pipeline_error
-        def run_training(cfg):
-            ...
-    """
-    _CONTEXT_KEYWORDS = {
-        "data":     "data_loading",
-        "load":     "data_loading",
-        "train":    "training",
-        "fit":      "training",
-        "eval":     "evaluation",
-        "metric":   "evaluation",
-        "export":   "export",
-        "save":     "export",
-    }
-
-    # Infer context from function name
-    fn_name_lower = func.__name__.lower()
-    inferred_context = ""
-    for keyword, ctx in _CONTEXT_KEYWORDS.items():
-        if keyword in fn_name_lower:
-            inferred_context = ctx
-            break
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as exc:
-            # Print full traceback to console for debugging
-            traceback.print_exc()
-            friendly = format_error(exc, context=inferred_context)
-            raise RuntimeError(friendly) from exc
-
-    return wrapper  # type: ignore[return-value]

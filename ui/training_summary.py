@@ -3,17 +3,14 @@ Generates plain-English summaries and diagnostics for completed training runs.
 
 Usage
 -----
-    from ui.training_summary import summarise_run, diagnose_loss_curve, format_hyperparams
+    from ui.training_summary import summarise_run, diagnose_loss_curve
 
     summary_md  = summarise_run(history, task="classification",
                                 model_name="EfficientNet-B0", modality="image",
                                 stopped_early=False)
     diagnostics = diagnose_loss_curve(history)
-    table_md    = format_hyperparams({"lr": 1e-3, "batch_size": 16, "epochs": 10})
 """
 from __future__ import annotations
-
-from typing import Any
 
 
 # ---------------------------------------------------------------------------
@@ -199,56 +196,6 @@ def summarise_run(
     sentences.append(_recommend(diag, task, modality, n_epochs, stopped_early, os_))
 
     return "\n\n".join(sentences)
-
-
-# ---------------------------------------------------------------------------
-# format_hyperparams
-# ---------------------------------------------------------------------------
-
-def format_hyperparams(params: dict[str, Any]) -> str:
-    """
-    Render a hyperparameter dictionary as a clean, two-column markdown table.
-
-    Parameters
-    ----------
-    params:
-        Flat dict of hyperparameter names to values.
-
-    Returns
-    -------
-    str
-        A markdown table string.
-
-    Example
-    -------
-    ::
-
-        | Hyperparameter | Value |
-        |----------------|-------|
-        | learning_rate  | 0.001 |
-        | batch_size     | 16    |
-    """
-    if not params:
-        return "_No hyperparameters recorded._"
-
-    rows = ["| Hyperparameter | Value |", "|:---------------|------:|"]
-    for key, value in params.items():
-        # Pretty-print floats in scientific notation if very small
-        if isinstance(value, float) and (abs(value) < 0.001 or abs(value) >= 10_000):
-            display_value = f"`{value:.2e}`"
-        elif isinstance(value, float):
-            display_value = f"`{value:.4f}`"
-        elif isinstance(value, bool):
-            display_value = "✅ Yes" if value else "❌ No"
-        elif value is None:
-            display_value = "_none_"
-        else:
-            display_value = f"`{value}`"
-
-        label = key.replace("_", " ").title()
-        rows.append(f"| {label} | {display_value} |")
-
-    return "\n".join(rows)
 
 
 # ---------------------------------------------------------------------------
