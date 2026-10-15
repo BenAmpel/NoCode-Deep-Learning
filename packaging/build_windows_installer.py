@@ -54,6 +54,7 @@ RUNTIME_ITEMS = [
     "requirements.txt",
     "run_local.py",
     "runtime",
+    "styles",
     "training",
     "ui",
 ]
