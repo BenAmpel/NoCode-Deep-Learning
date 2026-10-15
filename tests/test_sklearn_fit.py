@@ -101,7 +101,9 @@ def test_stop_ends_an_xgboost_fit_between_rounds(data):
     model = xgboost.XGBClassifier(n_estimators=200, callbacks=[_PressStop()])
     with pytest.raises(cancel.TrainingStopped):
         fit_with_stop(model, *data)
-    assert model.get_booster().num_boosted_rounds() == 3
+    # Stop pressed during round 3 ends training by the next round, not after
+    # all 200. (The exact round varied between CI runs on Windows: 3 or 4.)
+    assert model.get_booster().num_boosted_rounds() in (3, 4)
     assert len(model.get_params()["callbacks"]) == 1  # our callback removed again
 
 
