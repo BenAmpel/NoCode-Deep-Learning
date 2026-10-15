@@ -50,6 +50,7 @@ RUNTIME_ITEMS = [
     "export",
     "install.py",
     "modalities",
+    "pipeline",
     "models",
     "requirements.txt",
     "run_local.py",

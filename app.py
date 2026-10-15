@@ -30,6 +30,7 @@ from models.registry import (
 )
 from ui.project_state import load_project_state, save_project_state
 from ui.tooltips import TOOLTIPS
+from pipeline import RUN_CONFIG_FIELDS, RunConfig
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -1050,29 +1051,19 @@ def _format_live_training_metrics_card(metrics: dict | None = None) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_pipeline(
-    # Data
-    modality, data_path, text_col, label_col, feature_cols, time_col,
-    window_size, n_frames, image_size, sample_rate, audio_image_size, audio_n_mels, augmentation,
-    val_split, use_random_subset, subset_percent, subset_seed, use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers, tabular_scaling,
-    text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
-    text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-    timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
-    image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
-    image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
-    audio_verify_files, audio_normalize_waveform, audio_aug_noise, audio_aug_shift,
-    audio_aug_gain, audio_aug_time_mask, audio_aug_freq_mask, video_verify_files,
-    # Model
-    training_mode, model_name, task,
-    # Hyperparams
-    epochs, lr, batch_size, dropout, optimizer, scheduler_name, use_amp,
-    hidden_size, num_layers,
-    n_estimators, max_depth, C_param, max_iter, lr_xgb,
-    n_clusters,
-    use_class_weights, checkpoint_every,
-    # Export
-    bundle_name,
+    config: RunConfig | None = None,
+    /,
     progress=gr.Progress(track_tqdm=False),
+    **fields,
 ):
+    """Train, evaluate and export one model, yielding UI updates as it goes.
+
+    Pass a ``RunConfig``, or its fields as keyword arguments.
+    """
+    cfg = config if config is not None else RunConfig(**fields)
+    # Replaced by a cleaned temporary copy when a cleaning step runs.
+    data_path = cfg.data_path
+
     _NONE     = gr.update(value=None)
     _DEFAULT_TELEMETRY_CARD = _format_live_training_metrics_card()
 
@@ -1139,12 +1130,12 @@ def run_pipeline(
     preflight_errors: list[str] = []
     if not data_path or not str(data_path).strip():
         preflight_errors.append("❌ **No data path provided.** Upload a dataset or enter a path.")
-    if not model_name:
+    if not cfg.model_name:
         preflight_errors.append("❌ **No model selected.** Choose an architecture in the Model tab.")
-    if task == "anomaly" and model_name != "Autoencoder":
+    if cfg.task == "anomaly" and cfg.model_name != "Autoencoder":
         preflight_errors.append(
             "❌ **Anomaly detection requires the Autoencoder model.** "
-            f"Selected model '{model_name}' does not support anomaly detection. "
+            f"Selected model '{cfg.model_name}' does not support anomaly detection. "
             "Switch to Autoencoder or change the task."
         )
     if preflight_errors:
@@ -1152,7 +1143,7 @@ def run_pipeline(
         return
 
     # Sanitize bundle name — allow only letters, digits, underscores, hyphens
-    safe_bundle_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(bundle_name).strip()) or "my_model"
+    safe_bundle_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(cfg.bundle_name).strip()) or "my_model"
 
     log_lines: list[str] = []
     _LOG_CHAR_BUDGET = 40_000  # ~40 KB of visible text; enough for 200+ epochs
@@ -1178,22 +1169,22 @@ def run_pipeline(
     save_project_state({
         **load_project_state(),
         "preprocessing": {
-            "augmentation": augmentation,
-            "val_split": val_split,
-            "tabular_missing_strategy": tabular_missing_strategy,
-            "tabular_clip_outliers": bool(tabular_clip_outliers),
-            "tabular_scaling": tabular_scaling,
-            "text_lowercase": bool(text_lowercase),
-            "text_strip_urls": bool(text_strip_urls),
-            "text_strip_punctuation": bool(text_strip_punctuation),
-            "text_remove_stopwords": bool(text_remove_stopwords),
-            "text_deduplicate": bool(text_deduplicate),
-            "text_apply_stemming": bool(text_apply_stemming),
-            "text_apply_lemmatization": bool(text_apply_lemmatization),
-            "text_use_ngrams": bool(text_use_ngrams),
-            "image_size": int(image_size),
-            "image_normalization": image_normalization,
-            "image_force_grayscale": bool(image_force_grayscale),
+            "augmentation": cfg.augmentation,
+            "val_split": cfg.val_split,
+            "tabular_missing_strategy": cfg.tabular_missing_strategy,
+            "tabular_clip_outliers": bool(cfg.tabular_clip_outliers),
+            "tabular_scaling": cfg.tabular_scaling,
+            "text_lowercase": bool(cfg.text_lowercase),
+            "text_strip_urls": bool(cfg.text_strip_urls),
+            "text_strip_punctuation": bool(cfg.text_strip_punctuation),
+            "text_remove_stopwords": bool(cfg.text_remove_stopwords),
+            "text_deduplicate": bool(cfg.text_deduplicate),
+            "text_apply_stemming": bool(cfg.text_apply_stemming),
+            "text_apply_lemmatization": bool(cfg.text_apply_lemmatization),
+            "text_use_ngrams": bool(cfg.text_use_ngrams),
+            "image_size": int(cfg.image_size),
+            "image_normalization": cfg.image_normalization,
+            "image_force_grayscale": bool(cfg.image_force_grayscale),
         },
     })
 
@@ -1209,7 +1200,7 @@ def run_pipeline(
     metrics_payload: dict = {}
     evaluation_artifacts: dict = {}
     stopped_early_flag = False
-    runtime_device = "cpu" if (modality == "video" and DEVICE == "mps") else DEVICE
+    runtime_device = "cpu" if (cfg.modality == "video" and DEVICE == "mps") else DEVICE
     set_seed(DEFAULTS["seed"])
     _cancel.reset()
     _get_pyplot().close("all")  # figures from the previous run are already rendered
@@ -1219,92 +1210,92 @@ def run_pipeline(
         # ── 1. Load data ──────────────────────────────────────────────────────
         _set_phase("loading data", eta_text="ETA: loading data")
         progress(0.05, desc="Loading data…")
-        status = log(f"Loading {modality} data…")
-        if modality in {"graph", "tabular", "text", "timeseries"} and bool(use_random_subset) and float(subset_percent) < 100:
+        status = log(f"Loading {cfg.modality} data…")
+        if cfg.modality in {"graph", "tabular", "text", "timeseries"} and bool(cfg.use_random_subset) and float(cfg.subset_percent) < 100:
             status = log(
-                f"Using a random subset of {float(subset_percent):.2f}% of the dataset "
-                f"(seed {int(subset_seed)})."
+                f"Using a random subset of {float(cfg.subset_percent):.2f}% of the dataset "
+                f"(seed {int(cfg.subset_seed)})."
             )
         yield _emit(status)
 
-        bs = int(batch_size)
+        bs = int(cfg.batch_size)
 
-        _val_split = float(val_split)
+        _val_split = float(cfg.val_split)
 
-        if modality == "graph":
+        if cfg.modality == "graph":
             from modalities.graph import load_graph_data
             classes, prep, graph_data = load_graph_data(
                 data_path,
-                label_col=label_col,
-                feature_cols=feature_cols,
+                label_col=cfg.label_col,
+                feature_cols=cfg.feature_cols,
                 val_split=_val_split,
-                subset_percent=float(subset_percent) if bool(use_random_subset) else 100.0,
-                subset_seed=int(subset_seed),
+                subset_percent=float(cfg.subset_percent) if bool(cfg.use_random_subset) else 100.0,
+                subset_seed=int(cfg.subset_seed),
             )
             extra_data.update(graph_data)
 
-        elif modality == "image":
+        elif cfg.modality == "image":
             from modalities.image import load_image_data
             image_aug_options = {
-                "horizontal_flip": bool(image_aug_flip),
-                "vertical_flip": bool(image_aug_vertical),
-                "rotation": bool(image_aug_rotation),
-                "color_jitter": bool(image_aug_color),
-                "grayscale": bool(image_aug_gray),
-                "perspective": bool(image_aug_perspective),
+                "horizontal_flip": bool(cfg.image_aug_flip),
+                "vertical_flip": bool(cfg.image_aug_vertical),
+                "rotation": bool(cfg.image_aug_rotation),
+                "color_jitter": bool(cfg.image_aug_color),
+                "grayscale": bool(cfg.image_aug_gray),
+                "perspective": bool(cfg.image_aug_perspective),
             }
             train_loader, val_loader, classes, prep, val_samples = load_image_data(
-                data_path, mode=training_mode, batch_size=bs,
-                val_split=_val_split, augmentation=augmentation,
-                verify_files=bool(image_verify_files),
-                image_size=int(image_size),
+                data_path, mode=cfg.training_mode, batch_size=bs,
+                val_split=_val_split, augmentation=cfg.augmentation,
+                verify_files=bool(cfg.image_verify_files),
+                image_size=int(cfg.image_size),
                 augmentation_options=image_aug_options,
-                normalization_preset=str(image_normalization),
-                force_grayscale=bool(image_force_grayscale),
+                normalization_preset=str(cfg.image_normalization),
+                force_grayscale=bool(cfg.image_force_grayscale),
             )
             extra_data["val_samples"] = val_samples
 
-        elif modality == "text":
+        elif cfg.modality == "text":
             from modalities.text import load_text_data
             text_cleaning = {
-                "lowercase": bool(text_lowercase),
-                "strip_urls": bool(text_strip_urls),
-                "strip_punctuation": bool(text_strip_punctuation),
-                "remove_stopwords": bool(text_remove_stopwords),
-                "deduplicate": bool(text_deduplicate),
-                "apply_stemming": bool(text_apply_stemming),
-                "apply_lemmatization": bool(text_apply_lemmatization),
-                "use_ngrams": bool(text_use_ngrams),
+                "lowercase": bool(cfg.text_lowercase),
+                "strip_urls": bool(cfg.text_strip_urls),
+                "strip_punctuation": bool(cfg.text_strip_punctuation),
+                "remove_stopwords": bool(cfg.text_remove_stopwords),
+                "deduplicate": bool(cfg.text_deduplicate),
+                "apply_stemming": bool(cfg.text_apply_stemming),
+                "apply_lemmatization": bool(cfg.text_apply_lemmatization),
+                "use_ngrams": bool(cfg.text_use_ngrams),
             }
             # The loader samples the subset itself unless cleaning already did;
             # sampling twice turned a 50% subset into 25%.
-            loader_subset_percent = float(subset_percent) if bool(use_random_subset) else 100.0
+            loader_subset_percent = float(cfg.subset_percent) if bool(cfg.use_random_subset) else 100.0
             if any(text_cleaning.values()):
                 from data_pipeline.cleaning import clean_text_dataframe
                 from data_pipeline.io_utils import read_structured_file
 
                 raw_df = read_structured_file(data_path)
-                if bool(use_random_subset) and float(subset_percent) < 100:
+                if bool(cfg.use_random_subset) and float(cfg.subset_percent) < 100:
                     from data_pipeline.io_utils import apply_random_subset
                     raw_df, sampled_rows = apply_random_subset(
                         raw_df,
                         enabled=True,
-                        subset_percent=float(subset_percent),
-                        subset_seed=int(subset_seed),
+                        subset_percent=float(cfg.subset_percent),
+                        subset_seed=int(cfg.subset_seed),
                     )
                     loader_subset_percent = 100.0
                     status = log(f"  ✓ Sampled {sampled_rows} text rows before cleaning")
                     yield _emit(status)
                 cleaned_df, clean_report = clean_text_dataframe(
                     raw_df,
-                    text_col=text_col,
-                    lowercase=bool(text_lowercase),
-                    strip_urls=bool(text_strip_urls),
-                    strip_punctuation=bool(text_strip_punctuation),
-                    remove_stopwords=bool(text_remove_stopwords),
-                    deduplicate=bool(text_deduplicate),
-                    apply_stemming=bool(text_apply_stemming),
-                    apply_lemmatization=bool(text_apply_lemmatization),
+                    text_col=cfg.text_col,
+                    lowercase=bool(cfg.text_lowercase),
+                    strip_urls=bool(cfg.text_strip_urls),
+                    strip_punctuation=bool(cfg.text_strip_punctuation),
+                    remove_stopwords=bool(cfg.text_remove_stopwords),
+                    deduplicate=bool(cfg.text_deduplicate),
+                    apply_stemming=bool(cfg.text_apply_stemming),
+                    apply_lemmatization=bool(cfg.text_apply_lemmatization),
                 )
                 status = log("  ✓ Text cleaning:\n" + clean_report["summary"])
                 yield _emit(status)
@@ -1315,41 +1306,41 @@ def run_pipeline(
                 data_path = _cleaning_tmp.name
 
             train_loader, val_loader, classes, prep, vocab_size, val_texts = load_text_data(
-                data_path, text_col=text_col, label_col=label_col,
-                model_name=model_name, batch_size=bs,
+                data_path, text_col=cfg.text_col, label_col=cfg.label_col,
+                model_name=cfg.model_name, batch_size=bs,
                 max_length=TEXT_DEFAULTS["max_length"],
                 val_split=_val_split,
                 cleaning_options=text_cleaning,
                 subset_percent=loader_subset_percent,
-                subset_seed=int(subset_seed))
+                subset_seed=int(cfg.subset_seed))
             extra_data.update({"vocab_size": vocab_size, "val_texts": val_texts})
 
-        elif modality == "tabular":
+        elif cfg.modality == "tabular":
             from modalities.tabular import load_tabular_data
             # Optional data cleaning
             _cleaning_tmp = None
             # See the text branch: don't let the loader sample a second time.
-            loader_subset_percent = float(subset_percent) if bool(use_random_subset) else 100.0
-            if use_data_cleaning:
+            loader_subset_percent = float(cfg.subset_percent) if bool(cfg.use_random_subset) else 100.0
+            if cfg.use_data_cleaning:
                 from data_pipeline.cleaning import clean_dataframe, cleaning_report_markdown
                 from data_pipeline.io_utils import read_structured_file
                 raw_df = read_structured_file(data_path)
-                if bool(use_random_subset) and float(subset_percent) < 100:
+                if bool(cfg.use_random_subset) and float(cfg.subset_percent) < 100:
                     from data_pipeline.io_utils import apply_random_subset
                     raw_df, sampled_rows = apply_random_subset(
                         raw_df,
                         enabled=True,
-                        subset_percent=float(subset_percent),
-                        subset_seed=int(subset_seed),
+                        subset_percent=float(cfg.subset_percent),
+                        subset_seed=int(cfg.subset_seed),
                     )
                     loader_subset_percent = 100.0
                     status = log(f"  ✓ Sampled {sampled_rows} tabular rows before cleaning")
                     yield _emit(status)
                 cleaned_df, clean_report = clean_dataframe(
                     raw_df,
-                    label_col,
-                    strategy=str(tabular_missing_strategy),
-                    clip_outliers=bool(tabular_clip_outliers),
+                    cfg.label_col,
+                    strategy=str(cfg.tabular_missing_strategy),
+                    clip_outliers=bool(cfg.tabular_clip_outliers),
                 )
                 status = log("  ✓ Data cleaning:\n" + cleaning_report_markdown(clean_report))
                 yield _emit(status)
@@ -1361,12 +1352,12 @@ def run_pipeline(
 
             train_loader, val_loader, classes, prep, input_size, \
                 X_train, y_train, X_val, y_val = load_tabular_data(
-                    data_path, label_col=label_col, feature_cols=feature_cols, batch_size=bs,
-                    val_split=_val_split, augmentation=augmentation,
-                    scaling_strategy=str(tabular_scaling),
+                    data_path, label_col=cfg.label_col, feature_cols=cfg.feature_cols, batch_size=bs,
+                    val_split=_val_split, augmentation=cfg.augmentation,
+                    scaling_strategy=str(cfg.tabular_scaling),
                     subset_percent=loader_subset_percent,
-                    subset_seed=int(subset_seed),
-                    task=task)
+                    subset_seed=int(cfg.subset_seed),
+                    task=cfg.task)
             extra_data.update({"input_size": input_size,
                                 "X_train": X_train, "y_train": y_train,
                                 "X_val":   X_val,   "y_val":   y_val})
@@ -1384,19 +1375,19 @@ def run_pipeline(
             except Exception:
                 pass
 
-        elif modality == "timeseries":
+        elif cfg.modality == "timeseries":
             from modalities.timeseries import load_timeseries_data
-            if bool(timeseries_sort_by_time) or str(timeseries_fill_strategy) != "none":
+            if bool(cfg.timeseries_sort_by_time) or str(cfg.timeseries_fill_strategy) != "none":
                 from data_pipeline.cleaning import clean_timeseries_dataframe
                 from data_pipeline.io_utils import read_structured_file
 
                 raw_df = read_structured_file(data_path)
                 cleaned_df, clean_report = clean_timeseries_dataframe(
                     raw_df,
-                    label_col=label_col,
-                    time_col=time_col if time_col else None,
-                    sort_by_time=bool(timeseries_sort_by_time),
-                    fill_strategy=str(timeseries_fill_strategy),
+                    label_col=cfg.label_col,
+                    time_col=cfg.time_col if cfg.time_col else None,
+                    sort_by_time=bool(cfg.timeseries_sort_by_time),
+                    fill_strategy=str(cfg.timeseries_fill_strategy),
                 )
                 status = log("  ✓ Time-series cleaning:\n" + clean_report["summary"])
                 yield _emit(status)
@@ -1408,17 +1399,17 @@ def run_pipeline(
 
             train_loader, val_loader, classes, prep, input_size, \
                 X_train, y_train, X_val, y_val = load_timeseries_data(
-                data_path, label_col=label_col,
-                feature_cols=feature_cols,
-                time_col=time_col if time_col else None,
-                window_size=int(window_size), batch_size=bs,
-                val_split=_val_split, augmentation=augmentation, task=task,
-                subset_percent=float(subset_percent) if bool(use_random_subset) else 100.0,
-                subset_seed=int(subset_seed),
-                forecast_mode=bool(timeseries_forecast_mode),
-                forecast_horizon=int(timeseries_forecast_horizon),
-                lag_steps=int(timeseries_lag_steps),
-                rolling_window=int(timeseries_rolling_window))
+                data_path, label_col=cfg.label_col,
+                feature_cols=cfg.feature_cols,
+                time_col=cfg.time_col if cfg.time_col else None,
+                window_size=int(cfg.window_size), batch_size=bs,
+                val_split=_val_split, augmentation=cfg.augmentation, task=cfg.task,
+                subset_percent=float(cfg.subset_percent) if bool(cfg.use_random_subset) else 100.0,
+                subset_seed=int(cfg.subset_seed),
+                forecast_mode=bool(cfg.timeseries_forecast_mode),
+                forecast_horizon=int(cfg.timeseries_forecast_horizon),
+                lag_steps=int(cfg.timeseries_lag_steps),
+                rolling_window=int(cfg.timeseries_rolling_window))
             extra_data.update({
                 "input_size": input_size,
                 "sklearn_input_size": prep.get("sklearn_input_size", X_train.shape[1] if len(X_train.shape) > 1 else input_size),
@@ -1428,32 +1419,32 @@ def run_pipeline(
                 "y_val": y_val,
             })
 
-        elif modality == "audio":
+        elif cfg.modality == "audio":
             from modalities.audio import load_audio_data
             audio_aug_options = {
-                "noise": bool(audio_aug_noise),
-                "time_shift": bool(audio_aug_shift),
-                "gain_jitter": bool(audio_aug_gain),
-                "time_mask": bool(audio_aug_time_mask),
-                "freq_mask": bool(audio_aug_freq_mask),
+                "noise": bool(cfg.audio_aug_noise),
+                "time_shift": bool(cfg.audio_aug_shift),
+                "gain_jitter": bool(cfg.audio_aug_gain),
+                "time_mask": bool(cfg.audio_aug_time_mask),
+                "freq_mask": bool(cfg.audio_aug_freq_mask),
             }
             train_loader, val_loader, classes, prep = load_audio_data(
-                data_path, batch_size=bs, sample_rate=int(sample_rate),
-                val_split=_val_split, augmentation=augmentation,
-                verify_files=bool(audio_verify_files),
-                normalize_waveform=bool(audio_normalize_waveform),
-                image_size=int(audio_image_size),
-                n_mels=int(audio_n_mels),
+                data_path, batch_size=bs, sample_rate=int(cfg.sample_rate),
+                val_split=_val_split, augmentation=cfg.augmentation,
+                verify_files=bool(cfg.audio_verify_files),
+                normalize_waveform=bool(cfg.audio_normalize_waveform),
+                image_size=int(cfg.audio_image_size),
+                n_mels=int(cfg.audio_n_mels),
                 augmentation_options=audio_aug_options,
             )
 
-        elif modality == "video":
+        elif cfg.modality == "video":
             from modalities.video import load_video_data
             train_loader, val_loader, classes, prep = load_video_data(
-                data_path, n_frames=int(n_frames),
+                data_path, n_frames=int(cfg.n_frames),
                 batch_size=VIDEO_DEFAULTS["batch_size"],
                 val_split=_val_split,
-                verify_files=bool(video_verify_files))
+                verify_files=bool(cfg.video_verify_files))
 
         num_classes = len(classes)
         status = log(f"  ✓ {num_classes} classes: {', '.join(classes)}")
@@ -1462,20 +1453,20 @@ def run_pipeline(
         # ── 2. Build model ────────────────────────────────────────────────────
         _set_phase("building model", eta_text="ETA: building model")
         progress(0.12, desc="Building model…")
-        status = log(f"Building {model_name} ({training_mode})…")
+        status = log(f"Building {cfg.model_name} ({cfg.training_mode})…")
         yield _emit(status)
 
-        graph_node2vec = modality == "graph" and model_name == "Node2Vec"
-        sklearn_model = is_sklearn(model_name)
+        graph_node2vec = cfg.modality == "graph" and cfg.model_name == "Node2Vec"
+        sklearn_model = is_sklearn(cfg.model_name)
 
-        if model_name == "Autoencoder":
+        if cfg.model_name == "Autoencoder":
             from models.autoencoder import get_autoencoder
-            ae_modality = modality if modality in ("image", "audio", "tabular") else (
-                "tabular" if modality == "timeseries" else None
+            ae_modality = cfg.modality if cfg.modality in ("image", "audio", "tabular") else (
+                "tabular" if cfg.modality == "timeseries" else None
             )
             if ae_modality is None:
                 raise ValueError(
-                    f"Autoencoder is not supported for the '{modality}' modality. "
+                    f"Autoencoder is not supported for the '{cfg.modality}' modality. "
                     "Supported: image, audio, tabular, timeseries."
                 )
             model = get_autoencoder(
@@ -1490,73 +1481,73 @@ def run_pipeline(
         elif sklearn_model:
             from models.tabular_models import get_tabular_model
             model = get_tabular_model(
-                model_name, num_classes=num_classes,
+                cfg.model_name, num_classes=num_classes,
                 input_size=extra_data.get("sklearn_input_size", extra_data.get("input_size", 10)),
-                task=task,
-                n_estimators=int(n_estimators),
-                max_depth=int(max_depth),
-                C=float(C_param), max_iter=int(max_iter),
-                learning_rate=float(lr_xgb),
+                task=cfg.task,
+                n_estimators=int(cfg.n_estimators),
+                max_depth=int(cfg.max_depth),
+                C=float(cfg.C_param), max_iter=int(cfg.max_iter),
+                learning_rate=float(cfg.lr_xgb),
             )
 
-        elif is_vit(model_name):
+        elif is_vit(cfg.model_name):
             from models.vit_models import get_vit_model
-            model = get_vit_model(model_name, num_classes=num_classes,
-                                   pretrained=(training_mode == "fine-tune"))
+            model = get_vit_model(cfg.model_name, num_classes=num_classes,
+                                   pretrained=(cfg.training_mode == "fine-tune"))
 
-        elif is_whisper(model_name):
+        elif is_whisper(cfg.model_name):
             from models.whisper_model import get_whisper_model
-            size = "tiny" if "Tiny" in model_name else "base"
+            size = "tiny" if "Tiny" in cfg.model_name else "base"
             model = get_whisper_model(num_classes=num_classes, model_size=size,
-                                       freeze_encoder=(training_mode == "fine-tune"))
+                                       freeze_encoder=(cfg.training_mode == "fine-tune"))
 
-        elif modality in ("image", "audio"):
+        elif cfg.modality in ("image", "audio"):
             from models.image_models import get_image_model
-            model = get_image_model(model_name, num_classes=num_classes,
-                                    mode=training_mode, dropout=float(dropout))
+            model = get_image_model(cfg.model_name, num_classes=num_classes,
+                                    mode=cfg.training_mode, dropout=float(cfg.dropout))
 
-        elif modality == "text":
+        elif cfg.modality == "text":
             from models.text_models import get_text_model
             model = get_text_model(
-                model_name, num_classes=num_classes, mode=training_mode,
+                cfg.model_name, num_classes=num_classes, mode=cfg.training_mode,
                 vocab_size=extra_data.get("vocab_size", 30522),
-                hidden_size=int(hidden_size), num_layers=int(num_layers),
-                dropout=float(dropout))
+                hidden_size=int(cfg.hidden_size), num_layers=int(cfg.num_layers),
+                dropout=float(cfg.dropout))
 
-        elif modality == "tabular":
+        elif cfg.modality == "tabular":
             from models.tabular_models import get_tabular_model
             model = get_tabular_model(
-                model_name, num_classes=num_classes,
-                input_size=extra_data["input_size"], dropout=float(dropout))
+                cfg.model_name, num_classes=num_classes,
+                input_size=extra_data["input_size"], dropout=float(cfg.dropout))
 
-        elif modality == "timeseries":
+        elif cfg.modality == "timeseries":
             from models.timeseries_models import get_timeseries_model
             model = get_timeseries_model(
-                model_name, num_classes=num_classes,
+                cfg.model_name, num_classes=num_classes,
                 input_size=extra_data["input_size"],
-                hidden_size=int(hidden_size), num_layers=int(num_layers),
-                dropout=float(dropout))
+                hidden_size=int(cfg.hidden_size), num_layers=int(cfg.num_layers),
+                dropout=float(cfg.dropout))
 
-        elif modality == "graph":
+        elif cfg.modality == "graph":
             from models.graph_models import get_graph_model
             model = get_graph_model(
-                model_name,
+                cfg.model_name,
                 num_classes=num_classes,
                 input_size=extra_data["input_size"],
-                hidden_size=int(hidden_size),
-                num_layers=int(num_layers),
-                dropout=float(dropout),
+                hidden_size=int(cfg.hidden_size),
+                num_layers=int(cfg.num_layers),
+                dropout=float(cfg.dropout),
             )
 
-        elif modality == "video":
+        elif cfg.modality == "video":
             from models.video_models import get_video_model
-            model = get_video_model(model_name, num_classes=num_classes, mode=training_mode)
+            model = get_video_model(cfg.model_name, num_classes=num_classes, mode=cfg.training_mode)
 
         # Neural regression: train on standardized targets so the network
         # doesn't spend its epochs learning the target's scale. The wrapper
         # un-scales its output, so metrics, export and inference are unchanged.
-        if (task == "regression" and model is not None and not sklearn_model
-                and model_name != "Autoencoder" and extra_data.get("y_train") is not None):
+        if (cfg.task == "regression" and model is not None and not sklearn_model
+                and cfg.model_name != "Autoencoder" and extra_data.get("y_train") is not None):
             from models.target_scaling import wrap_for_regression
             model, (t_mean, t_std) = wrap_for_regression(model, extra_data["y_train"])
             status = log(f"  ✓ Regression targets standardized (training mean {t_mean:.4g}, std {t_std:.4g})")
@@ -1573,22 +1564,22 @@ def run_pipeline(
         # ── 3. Train ──────────────────────────────────────────────────────────
         _set_phase("training", eta_text="ETA: estimating…")
         ckpt_dir = None
-        if int(checkpoint_every) > 0:
+        if int(cfg.checkpoint_every) > 0:
             ckpt_dir = os.path.join("outputs", "checkpoints", safe_bundle_name)
             os.makedirs(ckpt_dir, exist_ok=True)
             status = log(f"  Checkpoints → {ckpt_dir}")
             yield _emit(status)
 
-        if model_name == "Autoencoder":
+        if cfg.model_name == "Autoencoder":
             import torch, torch.nn as nn
             model = model.to(runtime_device)
-            ae_optim      = torch.optim.Adam(model.parameters(), lr=float(lr))
+            ae_optim      = torch.optim.Adam(model.parameters(), lr=float(cfg.lr))
             ae_criterion  = nn.MSELoss()
             ae_history    = []
             ae_epoch_times = []
             status = log("Training — autoencoder optimisation started")
             yield _emit(status)
-            for epoch in range(1, int(epochs) + 1):
+            for epoch in range(1, int(cfg.epochs) + 1):
                 epoch_t0 = time.time()
                 # ── Train pass ──────────────────────────────────────
                 model.train()
@@ -1617,29 +1608,29 @@ def run_pipeline(
 
                 rec = {"epoch": epoch, "train_loss": round(train_loss, 4),
                        "val_loss": round(val_loss, 4), "val_acc": 0.0,
-                       "eta_seconds": 0, "lr": float(lr)}
+                       "eta_seconds": 0, "lr": float(cfg.lr)}
                 epoch_elapsed = time.time() - epoch_t0
                 ae_epoch_times.append(epoch_elapsed)
                 avg_epoch_time = sum(ae_epoch_times) / len(ae_epoch_times)
-                eta_seconds = avg_epoch_time * (int(epochs) - epoch)
+                eta_seconds = avg_epoch_time * (int(cfg.epochs) - epoch)
                 rec["eta_seconds"] = round(eta_seconds, 1)
                 ae_history.append(rec)
-                pct = 0.15 + 0.65 * epoch / int(epochs)
-                progress(pct, desc=f"Autoencoder epoch {epoch}/{int(epochs)}")
-                eta_str = _fmt_eta(eta_seconds) if epoch < int(epochs) else "ETA: completing training"
+                pct = 0.15 + 0.65 * epoch / int(cfg.epochs)
+                progress(pct, desc=f"Autoencoder epoch {epoch}/{int(cfg.epochs)}")
+                eta_str = _fmt_eta(eta_seconds) if epoch < int(cfg.epochs) else "ETA: completing training"
                 telemetry["eta_text"] = eta_str
                 _update_epoch_metrics(
-                    epoch_text=f"{epoch}/{int(epochs)}",
+                    epoch_text=f"{epoch}/{int(cfg.epochs)}",
                     train_loss=f"{train_loss:.4f}",
                     val_loss=f"{val_loss:.4f}",
                     metric="reconstruction",
-                    lr_value=f"{float(lr):.6f}",
+                    lr_value=f"{float(cfg.lr):.6f}",
                 )
-                line = (f"Epoch {epoch}/{int(epochs)} — "
+                line = (f"Epoch {epoch}/{int(cfg.epochs)} — "
                         f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  {eta_str}")
                 status = log(line)
                 live_plot = _loss_plot(ae_history) if (
-                    epoch == int(epochs) or epoch % _LIVE_PLOT_UPDATE_EVERY == 0
+                    epoch == int(cfg.epochs) or epoch % _LIVE_PLOT_UPDATE_EVERY == 0
                 ) else _NONE
                 yield _emit(status, loss_fig=live_plot, eta=eta_str)
             final_model = model
@@ -1660,8 +1651,8 @@ def run_pipeline(
             yield _emit(status)
             node2vec_result = train_node2vec_classifier(
                 extra_data,
-                embedding_dim=int(hidden_size),
-                max_iter=int(max_iter),
+                embedding_dim=int(cfg.hidden_size),
+                max_iter=int(cfg.max_iter),
             )
             final_model = node2vec_result["model"]
             history = node2vec_result["history"]
@@ -1717,10 +1708,10 @@ def run_pipeline(
                     status = log(prog.get("status", "Fitting model…"))
                     yield _emit(status, eta=telemetry["eta_text"])
 
-        elif modality == "graph":
+        elif cfg.modality == "graph":
             from training.graph_trainer import train_graph_pytorch
             cw = None
-            if use_class_weights and task == "classification":
+            if cfg.use_class_weights and cfg.task == "classification":
                 try:
                     train_labels = extra_data["y"][extra_data["train_idx"]].cpu().tolist()
                     from training.trainer import compute_class_weights
@@ -1737,9 +1728,9 @@ def run_pipeline(
             for prog in train_graph_pytorch(
                 model,
                 extra_data,
-                epochs=int(epochs),
-                lr=float(lr),
-                optimizer_name=optimizer,
+                epochs=int(cfg.epochs),
+                lr=float(cfg.lr),
+                optimizer_name=cfg.optimizer,
                 patience=DEFAULTS["early_stopping_patience"],
                 class_weights=cw,
             ):
@@ -1777,7 +1768,7 @@ def run_pipeline(
             from training.trainer import train_pytorch, compute_class_weights
             # Optional class weighting for imbalanced datasets
             cw = None
-            if use_class_weights and task in ("classification",):
+            if cfg.use_class_weights and cfg.task in ("classification",):
                 try:
                     # Fast path: pull labels directly from the dataset without
                     # iterating the full DataLoader (avoids an extra O(n) pass).
@@ -1807,15 +1798,15 @@ def run_pipeline(
 
             for prog in train_pytorch(
                 model, train_loader, val_loader,
-                epochs=int(epochs), lr=float(lr),
-                optimizer_name=optimizer,
+                epochs=int(cfg.epochs), lr=float(cfg.lr),
+                optimizer_name=cfg.optimizer,
                 patience=DEFAULTS["early_stopping_patience"],
-                scheduler_name=scheduler_name,
-                use_amp=bool(use_amp),
-                task=task,
+                scheduler_name=cfg.scheduler_name,
+                use_amp=bool(cfg.use_amp),
+                task=cfg.task,
                 class_weights=cw,
                 checkpoint_dir=ckpt_dir,
-                checkpoint_every=int(checkpoint_every),
+                checkpoint_every=int(cfg.checkpoint_every),
                 device=runtime_device,
             ):
                 if prog["done"]:
@@ -1827,8 +1818,8 @@ def run_pipeline(
                     progress(pct, desc=f"Epoch {prog['epoch']}/{prog['epochs']}")
                     eta_str = _fmt_eta(prog.get("eta_seconds", 0))
                     telemetry["eta_text"] = eta_str
-                    metric_label = "acc" if task == "classification" else (
-                        "exact-match" if task == "multi-label" else "MAE")
+                    metric_label = "acc" if cfg.task == "classification" else (
+                        "exact-match" if cfg.task == "multi-label" else "MAE")
                     _update_epoch_metrics(
                         epoch_text=f"{prog['epoch']}/{prog['epochs']}",
                         train_loss=prog["train_loss"],
@@ -1865,11 +1856,11 @@ def run_pipeline(
 
         # ── 3b. Plain-English training summary ───────────────────────────────
         training_summary_text = ""
-        if history and not sklearn_model and model_name != "Autoencoder":
+        if history and not sklearn_model and cfg.model_name != "Autoencoder":
             try:
                 from ui.training_summary import summarise_run
                 training_summary_text = summarise_run(
-                    history, task, model_name, modality,
+                    history, cfg.task, cfg.model_name, cfg.modality,
                     stopped_early=stopped_early_flag)
                 yield _emit(status, loss_fig=loss_fig_final, eta="ETA: Done",
                             train_summary=training_summary_text)
@@ -1881,7 +1872,7 @@ def run_pipeline(
         if (
             final_model is not None
             and not sklearn_model
-            and model_name != "Autoencoder"
+            and cfg.model_name != "Autoencoder"
             and hasattr(final_model, "named_modules")
         ):
             try:
@@ -1892,7 +1883,7 @@ def run_pipeline(
 
         # ── 5. Clustering ─────────────────────────────────────────────────────
         tsne_fig = None
-        if task in ("clustering",) or model_name == "Autoencoder":
+        if cfg.task in ("clustering",) or cfg.model_name == "Autoencoder":
             _set_phase("clustering", eta_text="ETA: clustering")
             progress(0.84, desc="Clustering embeddings…")
             if sklearn_model:
@@ -1904,7 +1895,7 @@ def run_pipeline(
                 yield _emit(status)
                 try:
                     from training.clustering import run_clustering, tsne_plot
-                    k = int(n_clusters) if int(n_clusters) > 1 else num_classes
+                    k = int(cfg.n_clusters) if int(cfg.n_clusters) > 1 else num_classes
                     clustering_result = run_clustering(final_model, train_loader, n_clusters=k)
                     tsne_fig = tsne_plot(clustering_result["features"],
                                         clustering_result["cluster_labels"])
@@ -1923,7 +1914,7 @@ def run_pipeline(
         text_shap_html = None
 
         # Standard classification / multi-label evaluation
-        if task in ("classification", "multi-label") and model_name != "Autoencoder":
+        if cfg.task in ("classification", "multi-label") and cfg.model_name != "Autoencoder":
             _set_phase("evaluating", eta_text="ETA: evaluating")
             progress(0.88, desc="Evaluating…")
             status = log("Running evaluation…")
@@ -1931,7 +1922,7 @@ def run_pipeline(
 
             try:
                 from eval.metrics import classification_metric_summary
-                if modality == "graph":
+                if cfg.modality == "graph":
                     from eval.metrics import compute_confusion_matrix_from_arrays, compute_roc_curves_from_arrays
                     from training.graph_trainer import predict_graph_classification
                     import torch as _torch
@@ -1972,7 +1963,7 @@ def run_pipeline(
                                 "is_error": bool(y_true[row_position] != y_pred[row_position]),
                             })
                     evaluation_artifacts = {
-                        "task": task,
+                        "task": cfg.task,
                         "report_text": eval_summary_text,
                         "y_true": y_true.tolist(),
                         "y_pred": y_pred.tolist(),
@@ -1986,17 +1977,17 @@ def run_pipeline(
                         _get_preds_and_probs,
                     )
                     cm_fig, eval_summary_text = compute_confusion_matrix(
-                        final_model, val_loader, classes, modality, task,
+                        final_model, val_loader, classes, cfg.modality, cfg.task,
                         is_sklearn=sklearn_model,
                         X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
                         device=runtime_device)
-                    if task in ("classification", "multi-label"):
+                    if cfg.task in ("classification", "multi-label"):
                         roc_fig = compute_roc_curves(
-                            final_model, val_loader, classes, modality, task,
+                            final_model, val_loader, classes, cfg.modality, cfg.task,
                             is_sklearn=sklearn_model,
                             X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
                             device=runtime_device)
-                    if task == "classification":
+                    if cfg.task == "classification":
                         y_true, y_pred, y_prob = _get_preds_and_probs(
                             final_model, val_loader, classes, sklearn_model,
                             extra_data.get("X_val"), extra_data.get("y_val"), runtime_device
@@ -2005,13 +1996,13 @@ def run_pipeline(
                             y_true, y_pred, y_prob, n_classes=len(classes)
                         )
                         evaluation_artifacts = {
-                            "task": task,
+                            "task": cfg.task,
                             "report_text": eval_summary_text,
                             "y_true": y_true.tolist(),
                             "y_pred": y_pred.tolist(),
                             "y_prob": y_prob.tolist() if y_prob is not None else None,
                         }
-                        if modality == "tabular":
+                        if cfg.modality == "tabular":
                             feature_order = prep.get("feature_order") or prep.get("feature_columns") or []
                             X_val_export = extra_data.get("X_val")
                             if X_val_export is not None and feature_order:
@@ -2033,28 +2024,28 @@ def run_pipeline(
                 status = log(f"  Metrics error: {e}")
             yield _emit(status)
 
-            if modality in ("image", "audio", "video") and not sklearn_model:
+            if cfg.modality in ("image", "audio", "video") and not sklearn_model:
                 try:
                     from eval.gradcam import compute_gradcam
-                    gcam_fig = compute_gradcam(final_model, val_loader, modality,
-                                               model_name, prep, n_samples=4)
+                    gcam_fig = compute_gradcam(final_model, val_loader, cfg.modality,
+                                               cfg.model_name, prep, n_samples=4)
                     if gcam_fig:
                         status = log("  ✓ Grad-CAM generated")
                 except Exception as e:
                     status = log(f"  Grad-CAM skipped: {e}")
                 yield _emit(status)
 
-            if modality == "tabular":
+            if cfg.modality == "tabular":
                 try:
                     from eval.shap_explain import compute_shap
-                    shap_fig = compute_shap(final_model, extra_data, modality, prep)
+                    shap_fig = compute_shap(final_model, extra_data, cfg.modality, prep)
                     if shap_fig:
                         status = log("  ✓ SHAP computed")
                 except Exception as e:
                     status = log(f"  SHAP skipped: {e}")
                 yield _emit(status)
 
-            if modality == "text" and not sklearn_model:
+            if cfg.modality == "text" and not sklearn_model:
                 try:
                     from eval.shap_explain import compute_text_shap
                     text_shap_html = compute_text_shap(
@@ -2066,12 +2057,12 @@ def run_pipeline(
                 yield _emit(status)
 
             try:
-                if modality == "graph":
+                if cfg.modality == "graph":
                     raise ValueError("Graph misclassification review is not yet available in the generic sample-review panel.")
                 from eval.misclassified import find_misclassified
                 mis_img_fig, mis_df_val = find_misclassified(
-                    final_model, val_loader, classes, modality, prep,
-                    task=task,
+                    final_model, val_loader, classes, cfg.modality, prep,
+                    task=cfg.task,
                     val_samples=extra_data.get("val_samples"),
                     val_texts=extra_data.get("val_texts"),
                     X_val=extra_data.get("X_val"), y_val=extra_data.get("y_val"),
@@ -2083,7 +2074,7 @@ def run_pipeline(
             yield _emit(status)
 
         # Regression evaluation
-        if task == "regression" and model_name != "Autoencoder":
+        if cfg.task == "regression" and cfg.model_name != "Autoencoder":
             _set_phase("evaluating", eta_text="ETA: evaluating")
             progress(0.88, desc="Evaluating…")
             status = log("Running regression evaluation…")
@@ -2120,15 +2111,15 @@ def run_pipeline(
                 eval_summary_text = format_regression_report(reg_metrics)
                 reg_fig = residual_plot(all_true, all_pred)
                 evaluation_artifacts = {
-                    "task": task,
+                    "task": cfg.task,
                     "report_text": eval_summary_text,
                     "y_true": all_true,
                     "y_pred": all_pred,
                 }
-                if modality in ("tabular", "timeseries"):
+                if cfg.modality in ("tabular", "timeseries"):
                     feature_rows = []
                     feature_names = prep.get("feature_order") or prep.get("feature_columns") or []
-                    if modality == "tabular":
+                    if cfg.modality == "tabular":
                         X_val_export = extra_data.get("X_val")
                         if X_val_export is not None and feature_names:
                             row_limit = min(len(X_val_export), 2000)
@@ -2142,7 +2133,7 @@ def run_pipeline(
                                     "y_pred": float(all_pred[idx]),
                                     "abs_error": float(abs(all_pred[idx] - all_true[idx])),
                                 })
-                    elif modality == "timeseries":
+                    elif cfg.modality == "timeseries":
                         X_val_export = extra_data.get("X_val")
                         if X_val_export is not None:
                             row_limit = min(len(X_val_export), 1000)
@@ -2166,7 +2157,7 @@ def run_pipeline(
             yield _emit(status)
 
         # Anomaly detection evaluation (Autoencoder)
-        if model_name == "Autoencoder" or task == "anomaly":
+        if cfg.model_name == "Autoencoder" or cfg.task == "anomaly":
             _set_phase("computing anomaly scores", eta_text="ETA: computing anomaly scores")
             progress(0.88, desc="Computing anomaly scores…")
             try:
@@ -2212,7 +2203,7 @@ def run_pipeline(
                 break
 
         from export.exporter import export_bundle
-        prep["model_name"] = model_name
+        prep["model_name"] = cfg.model_name
         bundle_path, export_warnings = export_bundle(
             model=final_model,
             preprocessing_config=prep,
@@ -2230,9 +2221,9 @@ def run_pipeline(
 
         class_note_text, explanation_note_text, diagnostics_note_text, sample_review_note_text = (
             _build_evaluation_notes(
-                task=task,
-                modality=modality,
-                model_name=model_name,
+                task=cfg.task,
+                modality=cfg.modality,
+                model_name=cfg.model_name,
                 sklearn_model=sklearn_model,
                 cm_fig=cm_fig,
                 roc_fig=roc_fig,
@@ -2245,16 +2236,16 @@ def run_pipeline(
                 tsne_fig=tsne_fig,
             )
         )
-        eval_kpi_html = _format_eval_kpis(eval_summary_text, history, task)
+        eval_kpi_html = _format_eval_kpis(eval_summary_text, history, cfg.task)
 
         # ── 8. Save run history ───────────────────────────────────────────────
         try:
             from training.run_comparison import save_run
             save_run(
-                model_name=model_name, modality=modality,
-                task=task, training_mode=training_mode,
-                hyperparams={"lr": lr, "batch_size": batch_size, "epochs": epochs,
-                             "optimizer": optimizer, "scheduler": scheduler_name},
+                model_name=cfg.model_name, modality=cfg.modality,
+                task=cfg.task, training_mode=cfg.training_mode,
+                hyperparams={"lr": cfg.lr, "batch_size": cfg.batch_size, "epochs": cfg.epochs,
+                             "optimizer": cfg.optimizer, "scheduler": cfg.scheduler_name},
                 history=history, bundle_path=bundle_path,
                 metrics=metrics_payload,
             )
@@ -2287,14 +2278,14 @@ def run_pipeline(
             diagnostics_note_val=diagnostics_note_text,
             sample_review_note_val=sample_review_note_text,
             text_shap=gr.update(value=text_shap_html or ""),
-            dash_kpi=_build_dashboard_kpi(task, modality, history, metrics_payload,
-                                          model_name, training_mode),
+            dash_kpi=_build_dashboard_kpi(cfg.task, cfg.modality, history, metrics_payload,
+                                          cfg.model_name, cfg.training_mode),
             dash_primary=gr.update(value=_pick_primary_chart(
-                task, cm_fig, reg_fig, tsne_fig, anomaly_fig)),
+                cfg.task, cm_fig, reg_fig, tsne_fig, anomaly_fig)),
             dash_explain_plot=gr.update(value=shap_fig or gcam_fig),
             dash_explain_html=gr.update(value=text_shap_html or ""),
             dash_loss=gr.update(value=_loss_plot(history) if history else None),
-            dash_actions=_build_action_items(task, history, metrics_payload, model_name),
+            dash_actions=_build_action_items(cfg.task, history, metrics_payload, cfg.model_name),
         )
 
     except _cancel.TrainingStopped:
@@ -4551,27 +4542,19 @@ with gr.Blocks(title="NoCode-DL") as demo:
 
     # ── Train button ──────────────────────────────────────────────────────────
 
+    # Every RunConfig field is fed by the component of the same name.
+    run_config_components = {name: globals()[name] for name in RUN_CONFIG_FIELDS}
+
+    def train_from_ui(values, progress=gr.Progress(track_tqdm=False)):
+        yield from run_pipeline(
+            RunConfig.from_component_values(run_config_components, values),
+            progress=progress,
+        )
+
     train_event = train_btn.click(
-        run_pipeline,
-        inputs=[
-            modality, data_path, text_col, label_col, feature_cols, time_col,
-            window_size, n_frames, image_size, sample_rate, audio_image_size, audio_n_mels, augmentation,
-            val_split, use_random_subset, subset_percent, subset_seed, use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers, tabular_scaling,
-            text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
-            text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-            timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
-            image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
-            image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
-            audio_verify_files, audio_normalize_waveform, audio_aug_noise, audio_aug_shift,
-            audio_aug_gain, audio_aug_time_mask, audio_aug_freq_mask, video_verify_files,
-            training_mode, model_name, task,
-            epochs, lr, batch_size, dropout, optimizer, scheduler_name, use_amp,
-            hidden_size, num_layers,
-            n_estimators, max_depth, C_param, max_iter, lr_xgb,
-            n_clusters,
-            use_class_weights, checkpoint_every,
-            bundle_name,
-        ],
+        train_from_ui,
+        # A set of inputs makes Gradio pass one {component: value} dict.
+        inputs=set(run_config_components.values()),
         outputs=[
             status_box, loss_plot, eta_box, live_metrics_card,
             eval_summary_box, cm_plot, roc_plot, tsne_plot_out,
@@ -5152,24 +5135,9 @@ with gr.Blocks(title="NoCode-DL") as demo:
         concurrency_limit=1,
     )
 
-    def run_model_sweep(
-        modality_val, data_path_val, text_col_val, label_col_val, feature_cols_val, time_col_val,
-        window_size_val, n_frames_val, image_size_val, sample_rate_val, audio_image_size_val, audio_n_mels_val, augmentation_val,
-        val_split_val, subset_enabled_val, subset_percent_val, subset_seed_val, use_data_cleaning_val, tabular_missing_strategy_val, tabular_clip_outliers_val, tabular_scaling_val,
-        text_lowercase_val, text_strip_urls_val, text_strip_punctuation_val, text_remove_stopwords_val,
-        text_deduplicate_val, text_apply_stemming_val, text_apply_lemmatization_val, text_use_ngrams_val,
-        timeseries_sort_by_time_val, timeseries_fill_strategy_val, timeseries_forecast_mode_val, timeseries_forecast_horizon_val, timeseries_lag_steps_val, timeseries_rolling_window_val,
-        image_verify_files_val, image_aug_flip_val, image_aug_vertical_val, image_aug_rotation_val,
-        image_aug_color_val, image_aug_gray_val, image_aug_perspective_val, image_normalization_val, image_force_grayscale_val,
-        audio_verify_files_val, audio_normalize_waveform_val, audio_aug_noise_val, audio_aug_shift_val,
-        audio_aug_gain_val, audio_aug_time_mask_val, audio_aug_freq_mask_val, video_verify_files_val,
-        training_mode_val, task_val,
-        epochs_val, lr_val, batch_size_val, dropout_val, optimizer_val, scheduler_val, use_amp_val,
-        hidden_size_val, num_layers_val,
-        n_estimators_val, max_depth_val, c_param_val, max_iter_val, lr_xgb_val,
-        n_clusters_val, use_class_weights_val, checkpoint_every_val,
-        bundle_name_val, sweep_models_val, sweep_metrics_val, sweep_sort_metric_val, sweep_sort_order_val,
-    ):
+    def run_model_sweep(config, sweep_models_val, sweep_metrics_val, sweep_sort_metric_val, sweep_sort_order_val):
+        """Train ``config`` once per model in ``sweep_models_val`` and tabulate the metrics."""
+        modality_val, task_val, bundle_name_val = config.modality, config.task, config.bundle_name
         import pandas as pd
         from training.run_comparison import load_history
 
@@ -5223,22 +5191,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
             local_bundle = f"{bundle_name_val}_{_slug_part(model_choice)}"
             try:
                 updates = list(run_pipeline(
-                    modality_val, data_path_val, text_col_val, label_col_val, feature_cols_val, time_col_val,
-                    window_size_val, n_frames_val, image_size_val, sample_rate_val, audio_image_size_val, audio_n_mels_val, augmentation_val,
-                    val_split_val, subset_enabled_val, subset_percent_val, subset_seed_val, use_data_cleaning_val, tabular_missing_strategy_val, tabular_clip_outliers_val, tabular_scaling_val,
-                    text_lowercase_val, text_strip_urls_val, text_strip_punctuation_val, text_remove_stopwords_val,
-                    text_deduplicate_val, text_apply_stemming_val, text_apply_lemmatization_val, text_use_ngrams_val,
-                    timeseries_sort_by_time_val, timeseries_fill_strategy_val, timeseries_forecast_mode_val, timeseries_forecast_horizon_val, timeseries_lag_steps_val, timeseries_rolling_window_val,
-                    image_verify_files_val, image_aug_flip_val, image_aug_vertical_val, image_aug_rotation_val,
-                    image_aug_color_val, image_aug_gray_val, image_aug_perspective_val, image_normalization_val, image_force_grayscale_val,
-                    audio_verify_files_val, audio_normalize_waveform_val, audio_aug_noise_val, audio_aug_shift_val,
-                    audio_aug_gain_val, audio_aug_time_mask_val, audio_aug_freq_mask_val, video_verify_files_val,
-                    training_mode_val, model_choice, task_val,
-                    epochs_val, lr_val, batch_size_val, dropout_val, optimizer_val, scheduler_val, use_amp_val,
-                    hidden_size_val, num_layers_val,
-                    n_estimators_val, max_depth_val, c_param_val, max_iter_val, lr_xgb_val,
-                    n_clusters_val, use_class_weights_val, checkpoint_every_val,
-                    local_bundle,
+                    config.replace(model_name=model_choice, bundle_name=local_bundle),
                 ))
                 last = updates[-1]
                 bundle_path_val = last[12]
@@ -5282,26 +5235,22 @@ with gr.Blocks(title="NoCode-DL") as demo:
         ])
         yield "\n".join(status_lines), _sorted_frame(rows)
 
+    # The sweep picks the model itself, so it takes every RunConfig input but model_name.
+    sweep_config_components = {
+        name: comp for name, comp in run_config_components.items() if name != "model_name"
+    }
+
+    def sweep_from_ui(values):
+        yield from run_model_sweep(
+            RunConfig.from_component_values(sweep_config_components, values, model_name=""),
+            values[sweep_models], values[sweep_metrics],
+            values[sweep_sort_metric], values[sweep_sort_order],
+        )
+
     sweep_event = sweep_run_btn.click(
-        run_model_sweep,
-        inputs=[
-            modality, data_path, text_col, label_col, feature_cols, time_col,
-            window_size, n_frames, image_size, sample_rate, audio_image_size, audio_n_mels, augmentation,
-            val_split, use_random_subset, subset_percent, subset_seed, use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers, tabular_scaling,
-            text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
-            text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-            timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
-            image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
-            image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
-            audio_verify_files, audio_normalize_waveform, audio_aug_noise, audio_aug_shift,
-            audio_aug_gain, audio_aug_time_mask, audio_aug_freq_mask, video_verify_files,
-            training_mode, task,
-            epochs, lr, batch_size, dropout, optimizer, scheduler_name, use_amp,
-            hidden_size, num_layers,
-            n_estimators, max_depth, C_param, max_iter, lr_xgb,
-            n_clusters, use_class_weights, checkpoint_every,
-            bundle_name, sweep_models, sweep_metrics, sweep_sort_metric, sweep_sort_order,
-        ],
+        sweep_from_ui,
+        inputs={*sweep_config_components.values(),
+                sweep_models, sweep_metrics, sweep_sort_metric, sweep_sort_order},
         outputs=[sweep_status_box, sweep_table],
         concurrency_id="heavy_jobs",
         concurrency_limit=1,

@@ -96,7 +96,8 @@ def test_referenced_components_exist(bf):
 @pytest.mark.parametrize("bf", EVENTS, ids=IDS)
 def test_input_count_matches_handler(bf):
     lo, hi = _param_bounds(bf.fn)
-    n = len(bf.inputs)
+    # With a set of inputs Gradio passes one {component: value} dict.
+    n = 1 if bf.inputs_as_dict else len(bf.inputs)
     assert lo <= n <= hi, f"{n} inputs for a handler taking {lo}..{hi} positional parameters"
 
 
@@ -131,6 +132,9 @@ class _ReturnCollector(ast.NodeVisitor):
     def visit_Yield(self, node):
         if node.value is not None:
             self.values.append(node.value)
+
+    def visit_YieldFrom(self, node):
+        self.values.append(node.value)  # a call: its yields are followed
 
 
 def _function_node(fn):
@@ -219,3 +223,34 @@ def test_return_arity_matches_outputs(bf):
             if n_out != 1 and count != n_out:
                 problems.append(f"line {line}: {count} values for {n_out} outputs")
     assert not problems, "; ".join(problems)
+
+
+# ── handlers driven through their early-exit paths ───────────────────────────
+
+def _event_for(fn_name: str):
+    matches = [bf for bf in EVENTS if _unwrap(bf.fn).__name__ == fn_name]
+    assert len(matches) == 1, f"expected one {fn_name} event, found {len(matches)}"
+    return matches[0]
+
+
+def _default_values(bf) -> dict:
+    return {comp: getattr(comp, "value", None) for comp in bf.inputs}
+
+
+def test_train_button_yields_one_value_per_output():
+    bf = _event_for("train_from_ui")
+    values = _default_values(bf)
+    values[app.data_path] = ""  # fails pre-flight before any work starts
+    updates = list(bf.fn(values))
+    assert len(updates) == 1
+    assert len(updates[0]) == len(bf.outputs)
+    assert "No data path provided" in updates[0][0]
+
+
+def test_sweep_button_yields_one_value_per_output():
+    bf = _event_for("sweep_from_ui")
+    values = _default_values(bf)
+    values[app.sweep_models] = ["MLP"]  # fewer than two models: stops early
+    updates = list(bf.fn(values))
+    assert updates and all(len(u) == len(bf.outputs) for u in updates)
+    assert "at least two models" in updates[0][0]
