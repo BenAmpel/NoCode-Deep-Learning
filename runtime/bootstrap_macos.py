@@ -85,7 +85,7 @@ def main() -> int:
     result = {"code": 0}
 
     def bootstrap() -> None:
-        progress.phase("Syncing app files\u2026")
+        progress.phase("Preparing NoCode-DL\u2026", detail="Copying app files", span=(0.0, 0.03), fun=True)
         _sync_bundle_to_runtime(source_root, RUNTIME_APP_ROOT)
 
         if str(RUNTIME_APP_ROOT) not in sys.path:
@@ -102,7 +102,8 @@ def main() -> int:
         is_current, _reason = install_is_current(VENV_DIR)
         if not is_current:
             progress.phase("Installing dependencies\u2026", typical_secs=300.0,
-                           detail="First launch \u2014 this may take a few minutes")
+                           detail="First launch \u2014 this downloads about 2 GB and takes a few minutes",
+                           span=(0.03, 0.85))
             proc = subprocess.Popen(
                 [sys.executable, str(install_script), "--venv-dir", str(VENV_DIR)],
                 cwd=RUNTIME_APP_ROOT,
@@ -118,9 +119,7 @@ def main() -> int:
                 print(line, flush=True)
                 if line:
                     recent.append(line)
-                detail = ui.pip_detail(line)
-                if detail:
-                    progress.detail = detail
+                progress.pip_line(line)
             proc.wait()
             if proc.returncode != 0:
                 reason = next((l for l in reversed(recent) if "error" in l.lower()),
@@ -136,8 +135,9 @@ def main() -> int:
         from runtime.runtime_setup import find_free_port
 
         port = find_free_port()
-        progress.phase("Starting server\u2026", typical_secs=SERVER_TYPICAL_SECS,
-                       detail="Loading models and initialising Gradio\u2026")
+        progress.phase("Starting NoCode-DL\u2026", typical_secs=SERVER_TYPICAL_SECS,
+                       detail="Loading PyTorch and the app; waiting for it to answer",
+                       span=(progress.span[1], 1.0), fun=True)
         cmd = [
             str(venv_python),
             str(run_script),
@@ -188,7 +188,7 @@ def main() -> int:
                     if line and not skip.search(line):
                         clean = re.sub(r"^\S+\s+\S+\s+\S+\s+", "", line).strip()
                         if clean:
-                            progress.detail = clean[:80]
+                            progress.set_detail(clean[:80])
 
         threading.Thread(target=_follow_server_log, daemon=True).start()
 
@@ -197,6 +197,7 @@ def main() -> int:
 
         if not ready:
             raise RuntimeError(f"The server did not start in time. Check {SERVER_LOG} for details.")
+        progress.finish_phase()
         progress.phase("Opening browser\u2026")
         import webbrowser
         webbrowser.open(f"http://127.0.0.1:{port}")

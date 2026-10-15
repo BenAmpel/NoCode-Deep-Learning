@@ -139,9 +139,7 @@ class _Bootstrap:
             print(line, flush=True)
             if line:
                 recent = (recent + [line])[-20:]
-            detail = ui.pip_detail(line)
-            if detail:
-                self.progress.detail = detail
+            self.progress.pip_line(line)
         code = proc.wait()
         self.procs.remove(proc)
         return code, recent
@@ -176,7 +174,7 @@ class _Bootstrap:
     def run(self) -> None:
         progress = self.progress
         source_root = _bundled_root()
-        progress.phase("Preparing NoCode-DL…")
+        progress.phase("Preparing NoCode-DL…", detail="Copying app files", span=(0.0, 0.03), fun=True)
         print(f"[bootstrap] syncing bundled app from {source_root}", flush=True)
         _sync_bundle_to_runtime(source_root, RUNTIME_APP_ROOT)
 
@@ -199,7 +197,8 @@ class _Bootstrap:
         if not is_current:
             print(f"[bootstrap] {reason} Installing dependencies into {VENV_DIR}", flush=True)
             progress.phase("Installing dependencies…", INSTALL_TYPICAL_SECS,
-                           "First launch — this downloads about 2 GB and takes a few minutes")
+                           "First launch — this downloads about 2 GB and takes a few minutes",
+                           span=(0.03, 0.85))
             code, recent = self._stream(
                 [sys.executable, str(install_script), "--venv-dir", str(VENV_DIR)], cwd=RUNTIME_APP_ROOT,
             )
@@ -223,7 +222,8 @@ class _Bootstrap:
         if self.smoke:
             cmd.append("--smoke-test")
 
-        progress.phase("Starting NoCode-DL…", SERVER_TYPICAL_SECS)
+        progress.phase("Starting NoCode-DL…", SERVER_TYPICAL_SECS, "Starting the app's server",
+                       span=(progress.span[1], 1.0), fun=True)
         print(f"[bootstrap] launching app with {python} on port {port}; output in {SERVER_LOG}", flush=True)
         # The server's output goes to a file, not a pipe: nobody reads a pipe
         # once the app runs, and a full pipe blocks the server.
@@ -232,6 +232,7 @@ class _Bootstrap:
                                     stdout=server_log, stderr=subprocess.STDOUT,
                                     creationflags=_NO_WINDOW)
         self.procs.append(proc)
+        progress.set_detail("Loading PyTorch and the app; waiting for it to answer")
 
         if self.smoke:
             # run_local --smoke-test starts the server, checks it answers
@@ -252,6 +253,7 @@ class _Bootstrap:
                 f"NoCode-DL did not start (exit code {self.exit_code}). The server's messages are in {SERVER_LOG}."
             )
 
+        progress.finish_phase()
         print(f"[bootstrap] app is up at {url}", flush=True)
         import webbrowser
 

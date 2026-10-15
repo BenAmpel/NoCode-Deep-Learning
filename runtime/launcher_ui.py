@@ -28,9 +28,85 @@ POLL_INTERVAL = 0.5
 # person (no browser, no dialogs left open).
 SMOKE_ENV = "NOCODE_DL_SMOKE_TEST"
 
-_PIP_LINE = re.compile(
-    r"(?:Collecting|Downloading|Installing collected packages:|Successfully installed)\s+(.+)"
+# While nothing is installing (sync, server start), the details line rotates
+# through these every FUN_INTERVAL seconds. Real news always wins: a fresh
+# detail from the bootstrap shows instead, and errors replace the line.
+FUN_INTERVAL = 5.0
+FUN_MESSAGES = (
+    "Warming up the tensors…",
+    "Teaching tensors to behave…",
+    "Counting neurons (all of them)…",
+    "Polishing the gradients…",
+    "Convincing the GPU to join in…",
+    "Stacking layers neatly…",
+    "Brewing a fresh batch of weights…",
+    "Lining up the learning rates…",
+    "Untangling the attention heads…",
+    "Almost there, stretching the epochs…",
 )
+
+# A first install pulls in about 110 distributions; pip only says how many
+# once it has downloaded them all, so progress before that is measured
+# against this estimate.
+EXPECTED_PACKAGES = 100
+
+_WHEEL = re.compile(r"(?P<name>[A-Za-z0-9_.]+?)-(?P<version>\d[^-]*)-.*\.whl")
+_SDIST = re.compile(r"(?P<name>[A-Za-z0-9_.-]+?)-(?P<version>\d[\w.]*)\.(?:tar\.gz|zip)")
+_SIZE = re.compile(r"\(([\d.]+\s*[kMG]B)\)")
+
+
+def _pretty_name(raw: str) -> str:
+    """'torch==2.9.0' or 'numpy>=2' -> 'torch 2.9.0' / 'numpy'."""
+    raw = raw.strip()
+    match = re.match(r"([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?\s*(==\s*([^\s;,]+))?", raw)
+    if not match:
+        return raw.split()[0] if raw else raw
+    return f"{match.group(1)} {match.group(3)}" if match.group(3) else match.group(1)
+
+
+def parse_pip_line(line: str) -> tuple[str, str] | None:
+    """Classify one line of install.py / pip output.
+
+    Returns (kind, detail) where kind is one of venv, pip, collect, download,
+    install, done; or None for lines that say nothing new.
+    """
+    line = line.strip()
+    if line.startswith("Creating virtual environment"):
+        return "venv", "Creating the Python environment"
+    if line.startswith("Updating existing environment"):
+        return "venv", "Checking the existing Python environment"
+    if line.startswith("$") and "--upgrade pip" in line:
+        return "pip", "Updating the package installer"
+    if line.startswith("Collecting "):
+        return "collect", f"Looking up {_pretty_name(line[len('Collecting '):])}"
+    if line.startswith("Requirement already satisfied: "):
+        return "collect", f"Already installed: {_pretty_name(line.split(': ', 1)[1])}"
+    if line.startswith("Downloading "):
+        rest = line[len("Downloading "):]
+        target = rest.split()[0].rsplit("/", 1)[-1]
+        match = _WHEEL.match(target) or _SDIST.match(target)
+        name = f"{match.group('name')} {match.group('version')}" if match else target
+        size = _SIZE.search(rest)
+        return "download", f"Downloading {name}" + (f" ({size.group(1)})" if size else "")
+    if line.startswith("Installing collected packages:"):
+        pkgs = [p.strip() for p in line.split(":", 1)[1].split(",") if p.strip()]
+        shown = ", ".join(pkgs[:3]) + (f" +{len(pkgs) - 3} more" if len(pkgs) > 3 else "")
+        return "install", f"Installing {len(pkgs)} packages: {shown}"
+    if line.startswith("Successfully installed"):
+        count = len(line.split()[2:])
+        return "done", f"Installed {count} packages"
+    return None
+
+
+def pip_detail(line: str) -> str | None:
+    """The details-line text for one line of pip output, if it has any."""
+    parsed = parse_pip_line(line)
+    return parsed[1] if parsed else None
+
+
+def fun_message(elapsed: float) -> str:
+    """The light message to show ``elapsed`` seconds into a quiet phase."""
+    return FUN_MESSAGES[int(max(elapsed, 0) // FUN_INTERVAL) % len(FUN_MESSAGES)]
 
 
 def smoke_mode() -> bool:
@@ -51,23 +127,6 @@ def fmt_eta(elapsed: float, typical: float) -> str:
     if remaining > -10:
         return "almost ready…"
     return "taking longer than usual…"
-
-
-def pip_detail(line: str) -> str | None:
-    """A short "Installing: torch" style summary of one line of pip output."""
-    match = _PIP_LINE.match(line)
-    if not match:
-        return None
-    raw = match.group(1).strip()
-    if line.startswith("Installing collected") or line.startswith("Successfully"):
-        pkgs = [pkg.strip() for pkg in (raw.split(",") if "," in raw else raw.split())]
-        summary = ", ".join(pkgs[:3])
-        if len(pkgs) > 3:
-            summary += f" +{len(pkgs) - 3} more"
-        verb = "Installed" if line.startswith("Successfully") else "Finalizing"
-        return f"{verb}: {summary}"
-    pkg_name = re.split(r"[=<>~!\[;\s]", raw, maxsplit=1)[0].strip()
-    return f"Installing: {pkg_name}"
 
 
 def wait_for_server(port: int, timeout: float, proc: subprocess.Popen | None = None) -> bool:
@@ -142,25 +201,95 @@ def show_error_box(title: str, message: str) -> None:
 
 
 class Progress:
-    """State the worker thread writes and the window polls."""
+    """State the worker thread writes and the window polls.
+
+    The bar covers the whole launch: each phase owns a ``span`` of it
+    (for example 0.03-0.85 for the install) and reports its own 0-1
+    ``fraction``, from pip's output where there is one, otherwise from the
+    time elapsed against the phase's typical duration.
+    """
 
     def __init__(self) -> None:
         self.status = "Preparing…"
         self.detail = ""
+        self.detail_time = 0.0
         self.phase_start = time.time()
         self.typical = -1.0
+        self.span = (0.0, 0.0)
+        self.fraction = 0.0
+        self.fun = False
+        self.packages_seen = 0
+        self._shown = 0.0
         self.error: str | None = None
         self.url: str | None = None  # set while the app runs and the window stays up
         self.done = threading.Event()
         self.cancelled = threading.Event()
         self.window_shown = False
 
-    def phase(self, status: str, typical_secs: float = -1.0, detail: str = "") -> None:
+    def phase(self, status: str, typical_secs: float = -1.0, detail: str = "", *,
+              span: tuple[float, float] | None = None, fun: bool = False) -> None:
+        """Start a phase. ``fun`` rotates friendly messages while it has no news."""
         self.status = status
-        self.detail = detail
         self.phase_start = time.time()
         self.typical = typical_secs
-        print(f"[bootstrap] {status}", flush=True)
+        self.span = span if span is not None else (self.span[1], self.span[1])
+        self.fraction = 0.0
+        self.fun = fun
+        self.set_detail(detail)
+        print(f"[bootstrap] {status}" + (f" ({detail})" if detail else ""), flush=True)
+
+    def set_detail(self, detail: str, now: float | None = None) -> None:
+        self.detail = detail
+        self.detail_time = (time.time() if now is None else now) if detail else 0.0
+
+    def finish_phase(self) -> None:
+        self.fraction = 1.0
+
+    def pip_line(self, line: str, now: float | None = None) -> None:
+        """Update the details line and the install fraction from pip's output."""
+        parsed = parse_pip_line(line)
+        if not parsed:
+            return
+        kind, detail = parsed
+        self.set_detail(detail, now)
+        if kind == "venv":
+            self.fraction = max(self.fraction, 0.02)
+        elif kind in ("collect", "download"):
+            if kind == "collect":
+                self.packages_seen += 1
+            # Downloading is most of the time; leave the rest for installing.
+            self.fraction = max(self.fraction, 0.85 * min(self.packages_seen / EXPECTED_PACKAGES, 1.0))
+        elif kind == "install":
+            self.fraction = max(self.fraction, 0.88)
+        elif kind == "done":
+            self.fraction = 1.0
+
+    def overall(self, now: float | None = None) -> float:
+        """The bar's position, 0-1. Never moves backwards."""
+        now = time.time() if now is None else now
+        fraction = self.fraction
+        if self.typical > 0:
+            # Keep moving during long steps (one big download) but never claim done.
+            fraction = max(fraction, min(0.95, (now - self.phase_start) / self.typical))
+        start, end = self.span
+        self._shown = max(self._shown, start + (end - start) * min(fraction, 1.0))
+        return self._shown
+
+    def detail_text(self, now: float | None = None) -> str:
+        """What the details line says: real news, else a rotating fun message."""
+        now = time.time() if now is None else now
+        if self.detail and not (self.fun and now - self.detail_time >= FUN_INTERVAL):
+            return self.detail
+        if self.fun:
+            return fun_message(now - self.phase_start)
+        return self.detail
+
+    def eta_text(self, now: float | None = None) -> str:
+        now = time.time() if now is None else now
+        percent = f"{int(self.overall(now) * 100)}%"
+        if self.typical > 0:
+            return f"{percent} · {fmt_eta(now - self.phase_start, self.typical)}"
+        return percent
 
     def fail(self, message: str) -> None:
         self.error = message
@@ -222,7 +351,7 @@ def run_window(
     root.title("NoCode-DL")
     root.resizable(False, False)
     root.configure(bg=bg)
-    width, height = 480, 230
+    width, height = 480, 250
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     root.geometry(f"{width}x{height}+{(sw - width) // 2}+{(sh - height) // 2}")
 
@@ -244,9 +373,11 @@ def run_window(
     status_label.pack(pady=(8, 2))
     tk.Label(root, textvariable=detail_var, font=(font, 10), fg=sub, bg=bg,
              wraplength=440, justify="center").pack(pady=(0, 10))
-    bar = ttk.Progressbar(root, orient="horizontal", mode="indeterminate", length=380)
-    bar.pack(pady=(0, 12))
-    bar.start(10)
+    bar = ttk.Progressbar(root, orient="horizontal", mode="determinate", length=380, maximum=1000)
+    bar.pack(pady=(0, 4))
+    eta_var = tk.StringVar(value="")
+    eta_label = tk.Label(root, textvariable=eta_var, font=(font, 9), fg=sub, bg=bg)
+    eta_label.pack(pady=(0, 8))
     buttons = tk.Frame(root, bg=bg)
     buttons.pack(pady=(0, 12))
     mode = {"value": "working"}
@@ -261,8 +392,8 @@ def run_window(
 
     def _show_running() -> None:
         mode["value"] = "running"
-        bar.stop()
         bar.pack_forget()
+        eta_label.pack_forget()
         import webbrowser
 
         tk.Button(buttons, text="Open in browser", width=16,
@@ -273,8 +404,8 @@ def run_window(
         mode["value"] = "error"
         for child in buttons.winfo_children():
             child.destroy()
-        bar.stop()
         bar.pack_forget()
+        eta_label.pack_forget()
         status_var.set(progress.status)
         status_label.configure(fg="#ff9b9b")
         detail_var.set(f"{progress.error}\n\nDetails are in {log_path}")
@@ -292,6 +423,9 @@ def run_window(
                     _show_error()
             else:
                 status_var.set(progress.status)
+                if not progress.error:
+                    bar["value"] = 1000
+                    eta_var.set("100%")
                 root.after(800, root.destroy)
             return
         if progress.url and mode["value"] == "working":
@@ -299,10 +433,10 @@ def run_window(
         status_var.set(progress.status)
         if mode["value"] == "running":
             detail_var.set(f"Running at {progress.url}\nClosing this window stops NoCode-DL.")
-        elif progress.typical > 0 and not progress.detail:
-            detail_var.set(fmt_eta(time.time() - progress.phase_start, progress.typical))
         else:
-            detail_var.set(progress.detail)
+            detail_var.set(progress.detail_text())
+            bar["value"] = int(progress.overall() * 1000)
+            eta_var.set(progress.eta_text())
         root.after(200, _poll)
 
     root.after(50, _poll)
