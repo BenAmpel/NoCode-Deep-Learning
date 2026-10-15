@@ -52,7 +52,7 @@ def get_tabular_model(
 
     if model_name == "LogisticRegression":
         if task == "regression":
-            raise ValueError("LogisticRegression is classification-only. Choose RandomForest, XGBoost, or a neural time-series model for regression.")
+            raise ValueError("LogisticRegression is classification-only. Choose RandomForest, HistGradientBoosting, or a neural time-series model for regression.")
         from sklearn.linear_model import LogisticRegression
         return LogisticRegression(C=C, max_iter=max_iter, random_state=42)
 
@@ -75,7 +75,24 @@ def get_tabular_model(
         from sklearn.linear_model import Ridge
         return Ridge(alpha=max(float(C), 1e-6))
 
+    if model_name == "HistGradientBoosting":
+        hgb_kwargs = dict(
+            max_iter=int(n_estimators),
+            max_depth=int(max_depth) if (max_depth is not None and max_depth > 0) else None,
+            learning_rate=float(learning_rate) if learning_rate else 0.1,
+            random_state=42,
+        )
+        if task == "regression":
+            from sklearn.ensemble import HistGradientBoostingRegressor
+            return HistGradientBoostingRegressor(**hgb_kwargs)
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        return HistGradientBoostingClassifier(**hgb_kwargs)
+
     if model_name == "XGBoost":
+        from models.registry import XGBOOST_UNAVAILABLE_NOTE, xgboost_status
+        available, reason = xgboost_status()
+        if not available:
+            raise ValueError(f"{reason} {XGBOOST_UNAVAILABLE_NOTE}")
         try:
             if task == "regression":
                 from xgboost import XGBRegressor

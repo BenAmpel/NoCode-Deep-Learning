@@ -18,7 +18,16 @@ import numpy as np
 
 from config import DEVICE, DEFAULTS, VIDEO_DEFAULTS, TEXT_DEFAULTS, set_seed
 from training import cancel as _cancel
-from models.registry import get_models, get_compatible_tasks, get_modes, is_sklearn, is_vit, is_whisper
+from models.registry import (
+    XGBOOST_UNAVAILABLE_NOTE,
+    get_compatible_tasks,
+    get_models,
+    get_modes,
+    is_sklearn,
+    is_vit,
+    is_whisper,
+    xgboost_available,
+)
 from ui.project_state import load_project_state, save_project_state
 from ui.tooltips import TOOLTIPS
 
@@ -4169,7 +4178,8 @@ with gr.Blocks(title="NoCode-DL") as demo:
                                                         label="Num layers",
                                                         info=tip("num_layers"))
 
-                            with gr.Accordion("sklearn / XGBoost options", open=False) as sklearn_options_group:
+                            with gr.Accordion("Tree & gradient boosting options", open=False) as sklearn_options_group:
+                                gr.Markdown(XGBOOST_UNAVAILABLE_NOTE, visible=not xgboost_available())
                                 n_estimators = gr.Slider(10,  500, value=100, step=10,
                                                           label="n_estimators",
                                                           info=tip("n_estimators"))
@@ -4183,7 +4193,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
                                                           label="Max iter (LogReg)",
                                                           info=tip("max_iter"))
                                 lr_xgb       = gr.Slider(0.01, 0.5, value=0.1, step=0.01,
-                                                          label="Learning rate (XGBoost)",
+                                                          label="Learning rate (gradient boosting)",
                                                           info=tip("lr_xgb"))
 
             # ── Tab 3: Train ──────────────────────────────────────────────────────

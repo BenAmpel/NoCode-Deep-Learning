@@ -85,7 +85,7 @@ Inspect metrics and visual diagnostics, then export the trained model as ONNX or
 | Modality | Example Tasks | Example Models | Built-in Tutorial |
 |---|---|---|---|
 | Image | Classification, object detection | ResNet, ViT, MobileNetV3, YOLOv8 | MNIST digits |
-| Tabular | Classification, regression | XGBoost, RandomForest, MLP | Iris species |
+| Tabular | Classification, regression | HistGradientBoosting, XGBoost (Windows only), RandomForest, MLP | Iris species |
 | Text | Classification, sentiment | BERT, DistilBERT, TF-IDF + LR | 20 Newsgroups subset |
 | Audio | Classification | CNN-spectrogram, Whisper features | Spoken digits |
 | Time Series | Classification, forecasting | LSTM, GRU, CNN1D, TCN | Synthetic signals |

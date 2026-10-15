@@ -14,7 +14,7 @@ skl2onnx==1.20.0
 joblib==1.5.3
 matplotlib==3.10.8
 shap==0.51.0
-xgboost==2.1.4
+xgboost==2.1.4; sys_platform != "darwin"
 timm==1.0.26
 ultralytics==8.4.33
 fastapi==0.143.1

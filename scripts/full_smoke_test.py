@@ -15,7 +15,7 @@ import config
 
 import app
 from detection.yolo_detector import YOLO_MODELS
-from models.registry import REGISTRY
+from models.registry import REGISTRY, get_models
 from ui import annotation_tools
 
 
@@ -294,8 +294,10 @@ def _test_detection_and_annotation(tmpdir: Path, text_fixture: Path) -> dict[str
 def _test_model_constructors() -> dict[str, Any]:
     results: dict[str, Any] = {}
     for modality, mode_map in REGISTRY.items():
-        for mode, models in mode_map.items():
-            for model_name in models:
+        for mode in mode_map:
+            # get_models() is what the UI offers; it drops models that cannot
+            # run on this machine (e.g. XGBoost on macOS).
+            for model_name in get_models(modality, mode):
                 key = f"{modality}:{mode}:{model_name}"
                 try:
                     if modality in {"image", "audio"}:
@@ -329,7 +331,7 @@ def _test_model_constructors() -> dict[str, Any]:
                         else:
                             task = "classification"
                         from models.timeseries_models import get_timeseries_model
-                        if model_name in {"RandomForest", "ExtraTrees", "LogisticRegression", "KNeighbors", "LinearRegression", "Ridge", "XGBoost"}:
+                        if model_name in {"RandomForest", "ExtraTrees", "LogisticRegression", "KNeighbors", "LinearRegression", "Ridge", "XGBoost", "HistGradientBoosting"}:
                             from models.tabular_models import get_tabular_model
                             model = get_tabular_model(model_name, num_classes=3, input_size=16, task=task, n_estimators=5, max_depth=3, C=1.0, max_iter=50, learning_rate=0.1)
                         else:
@@ -632,21 +634,6 @@ def _test_exports_and_inference(training_runs: dict[str, Any], text_fixture: Pat
 _FAILURE_MARKERS = ("Traceback (most recent call last)", "Evaluation error", "❌")
 
 
-def _is_known_environment_issue(error: str) -> bool:
-    # XGBoost's macOS wheels link against an external libomp.dylib (Homebrew's
-    # `brew install libomp`) and do not bundle it. That is a real end-user
-    # problem, tracked separately, not a regression this smoke test can fix.
-    return sys.platform == "darwin" and "libomp" in error
-
-
-def _collect_known_issues(report: dict[str, Any]) -> list[str]:
-    issues = []
-    for name, result in (report.get("constructors") or {}).items():
-        if isinstance(result, dict) and result.get("ok") is False and _is_known_environment_issue(str(result.get("error", ""))):
-            issues.append(f"/constructors/{name}: XGBoost cannot load libomp.dylib (brew install libomp)")
-    return issues
-
-
 def _collect_failures(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
 
@@ -670,8 +657,6 @@ def _collect_failures(report: dict[str, Any]) -> list[str]:
     for name, result in (report.get("constructors") or {}).items():
         if isinstance(result, dict) and result.get("ok") is False:
             error = str(result.get("error", ""))
-            if _is_known_environment_issue(error):
-                continue
             failures.append(f"/constructors/{name}: {error.strip()[:160]}")
 
     for name, run in (report.get("training_runs") or {}).items():
@@ -712,8 +697,6 @@ def main() -> int:
 
     failures = _collect_failures(report)
     print(f"\nnum_workers={config.DEFAULTS['num_workers']}")
-    for issue in _collect_known_issues(report):
-        print(f"KNOWN ISSUE (not failing the run): {issue}")
     if failures:
         print(f"SMOKE TEST FAILED: {len(failures)} problem(s)")
         for failure in failures:

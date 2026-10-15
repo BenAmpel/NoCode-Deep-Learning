@@ -47,7 +47,7 @@ def compute_shap(model, extra_data: dict, modality: str, prep: dict) -> plt.Figu
     X_bg = X_val[:n_bg]
 
     try:
-        if model_name == "RandomForestClassifier":
+        if model_name in {"RandomForestClassifier", "HistGradientBoostingClassifier"}:
             explainer  = shap.TreeExplainer(model)
             shap_vals  = _abs_per_feature(explainer.shap_values(X_val[:100]))
         elif model_name == "LogisticRegression":

@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
+## [Unreleased]
+
+### Added
+- HistGradientBoosting (scikit-learn's gradient-boosted trees) for tabular and time-series data, on every platform
+
+### Changed
+- XGBoost is no longer offered or installed on macOS. Its wheels need Homebrew's `libomp`, and with PyTorch loaded a second OpenMP runtime crashes the app. Guided mode recommends HistGradientBoosting instead.
+
+---
+
 ## [1.0.11] — 2025-04-08
 
 ### Added
