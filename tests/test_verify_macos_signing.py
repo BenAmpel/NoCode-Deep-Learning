@@ -42,6 +42,18 @@ def test_adhoc_unsigned_installer_lists_every_notarization_blocker(tmp_path):
         assert expected in text, text
 
 
+def test_launcher_is_valid_bash_with_the_pinned_python(tmp_path, monkeypatch):
+    build = _load("build_macos_installer")
+    monkeypatch.setattr(build, "MACOS_DIR", tmp_path)
+    build.write_launcher()
+    launcher = tmp_path / build.APP_NAME
+    subprocess.run(["bash", "-n", str(launcher)], check=True)
+    text = launcher.read_text()
+    assert "__PYTHON_PKG" not in text  # every placeholder filled in
+    assert build.PYTHON_PKG_URL in text and build.PYTHON_PKG_SHA256 in text
+    assert "with administrator privileges" in text  # DMG installs: Python is installed on first launch
+
+
 def test_build_script_can_import_the_checker():
     # build_macos_installer.py imports it as a top-level module (its folder is
     # sys.path[0] when run as a script); `packaging.` would hit the PyPI library.
