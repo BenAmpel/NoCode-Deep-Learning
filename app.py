@@ -1085,7 +1085,6 @@ def run_pipeline(
         "progress_label": "Preparing run",
     }
 
-    # 22-tuple: original training outputs + live telemetry card + evaluation KPI + guidance notes
     def _emit(status=None, loss_fig=_NONE, eta=None, telemetry_card=None, eval_sum="", cm=_NONE, roc=_NONE,
               tsne=_NONE, gcam=_NONE, shap=_NONE, mis_img=_NONE, mis_df=_NONE,
               bundle="", arch=_NONE,
@@ -1374,10 +1373,9 @@ def run_pipeline(
 
             # Column type inference summary
             try:
-                from data_pipeline.type_inference import infer_column_types, suggest_features_and_label
+                from data_pipeline.type_inference import suggest_features_and_label
                 from data_pipeline.io_utils import read_structured_file
                 df_peek = read_structured_file(data_path, nrows=500)
-                col_types    = infer_column_types(df_peek)
                 suggestions  = suggest_features_and_label(df_peek)
                 if suggestions.get("warnings"):
                     for w in suggestions["warnings"]:
@@ -5868,7 +5866,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
         try:
             from ui.annotation_tools import review_object_boxes
 
-            annotated_rgb, rows, markdown, _state = review_object_boxes(image_path_val, model_key_val, conf_val, iou_val)
+            annotated_rgb, rows, markdown, _ = review_object_boxes(image_path_val, model_key_val, conf_val, iou_val)
             return annotated_rgb, rows, markdown
         except Exception as exc:
             return None, gr.update(value=[]), f"❌ {exc}"
