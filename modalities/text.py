@@ -6,7 +6,6 @@ Expected data format:
         <text_col>   — the raw text
         <label_col>  — the class label
 """
-import random
 from collections import Counter
 
 import torch
@@ -65,12 +64,8 @@ def load_text_data(
     class_to_idx = {c: i for i, c in enumerate(classes)}
     labels       = [class_to_idx[str(l)] for l in labels_raw]
 
-    indices = list(range(len(texts)))
-    random.seed(42)
-    random.shuffle(indices)
-    n_val       = max(1, int(len(texts) * val_split))
-    val_idx     = indices[:n_val]
-    train_idx   = indices[n_val:]
+    from data_pipeline.splits import stratified_split
+    train_idx, val_idx = stratified_split(labels, val_split)
 
     if model_name in _TOKENIZER_NAME_MAP:
         from transformers import AutoTokenizer

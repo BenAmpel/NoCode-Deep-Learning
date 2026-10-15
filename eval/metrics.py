@@ -15,6 +15,8 @@ from sklearn.metrics import (
 from sklearn.exceptions import UndefinedMetricWarning
 from sklearn.preprocessing import label_binarize
 
+from eval.regression_metrics import VALIDATION_NOTE
+
 
 def compute_confusion_matrix_from_arrays(y_true, y_pred, classes) -> tuple[plt.Figure | None, str]:
     """Build a confusion matrix figure and report text from arrays."""
@@ -31,7 +33,7 @@ def compute_confusion_matrix_from_arrays(y_true, y_pred, classes) -> tuple[plt.F
         target_names=classes,
         zero_division=0,
     )
-    summary = f"Validation Accuracy: {acc:.2f}%\n\n{report}"
+    summary = f"Validation Accuracy: {acc:.2f}%\n{VALIDATION_NOTE}\n\n{report}"
 
     cm = confusion_matrix(y_true, y_pred, labels=label_space)
     n = len(classes)
@@ -168,7 +170,7 @@ def compute_confusion_matrix(model, val_loader, classes, modality, task, is_skle
         target_names=classes,
         zero_division=0,
     )
-    summary = f"Validation Accuracy: {acc:.2f}%\n\n{report}"
+    summary = f"Validation Accuracy: {acc:.2f}%\n{VALIDATION_NOTE}\n\n{report}"
 
     cm = confusion_matrix(y_true, y_pred, labels=label_space)
     n = len(classes)

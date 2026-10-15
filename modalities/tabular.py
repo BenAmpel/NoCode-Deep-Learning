@@ -6,7 +6,6 @@ Expected data format:
     Numeric columns are standardized; categorical columns are one-hot encoded.
 """
 import logging
-import random
 
 import numpy as np
 import pandas as pd
@@ -70,11 +69,11 @@ def load_tabular_data(
 
     # Train/val split comes first so scaling statistics are fit on training
     # rows only. Fitting on all rows leaked validation data into the inputs.
-    indices = list(range(len(features_df)))
-    random.Random(42).shuffle(indices)
-    n_val      = max(1, int(len(indices) * val_split))
-    val_idx    = indices[:n_val]
-    train_idx  = indices[n_val:]
+    from data_pipeline.splits import random_split, stratified_split
+    if task == "regression":
+        train_idx, val_idx = random_split(len(features_df), val_split)
+    else:
+        train_idx, val_idx = stratified_split(labels.tolist(), val_split)
 
     # Scale numeric features
     num_array = features_df[num_cols].fillna(0).values.astype(np.float32)

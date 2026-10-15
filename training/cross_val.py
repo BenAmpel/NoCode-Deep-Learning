@@ -264,6 +264,12 @@ def cross_validate(
         )
 
         model = model_factory()
+        if task == "regression" and isinstance(model, torch.nn.Module):
+            # Standardize targets with this fold's training labels only.
+            from models.target_scaling import wrap_for_regression
+            fold_labels = _extract_labels(dataset)
+            if fold_labels is not None:
+                model, _ = wrap_for_regression(model, np.asarray(fold_labels)[train_idx])
         fold_history: list[dict] = []
 
         for update in _train_one_fold(

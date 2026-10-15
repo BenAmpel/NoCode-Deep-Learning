@@ -12,7 +12,6 @@ Expected data format:
         class_b/
             ...
 """
-import random
 from pathlib import Path
 
 import cv2
@@ -108,11 +107,10 @@ def load_video_data(
     if not samples:
         raise ValueError(f"No video files found in {data_path}")
 
-    random.seed(42)
-    random.shuffle(samples)
-    n_val         = max(1, int(len(samples) * val_split))
-    train_samples = samples[n_val:]
-    val_samples   = samples[:n_val]
+    from data_pipeline.splits import stratified_split
+    train_idx, val_idx = stratified_split([label for _, label in samples], val_split)
+    train_samples = [samples[i] for i in train_idx]
+    val_samples   = [samples[i] for i in val_idx]
 
     # Video is I/O heavy (multiple frames per sample) — use workers but cap at 2
     # to avoid excessive memory use from large frame buffers per worker.

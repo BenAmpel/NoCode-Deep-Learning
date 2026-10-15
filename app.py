@@ -2005,10 +2005,10 @@ def _build_dashboard_kpi(
         else:
             metric_val = f"{history[-1]['val_acc']:.1f}%" if history else "—"
             color = "var(--color-text-primary)"
-        metric_label = "Accuracy"
+        metric_label = "Validation accuracy"
     elif task == "regression":
         metric_val = metrics_payload.get("mae")
-        metric_label = "MAE"
+        metric_label = "Validation MAE"
         metric_val = f"{float(metric_val):.4f}" if metric_val else "—"
         color = "var(--color-text-primary)"
     elif task == "clustering":
@@ -2869,6 +2869,16 @@ def run_pipeline(
             from models.video_models import get_video_model
             model = get_video_model(model_name, num_classes=num_classes, mode=training_mode)
 
+        # Neural regression: train on standardized targets so the network
+        # doesn't spend its epochs learning the target's scale. The wrapper
+        # un-scales its output, so metrics, export and inference are unchanged.
+        if (task == "regression" and model is not None and not sklearn_model
+                and model_name != "Autoencoder" and extra_data.get("y_train") is not None):
+            from models.target_scaling import wrap_for_regression
+            model, (t_mean, t_std) = wrap_for_regression(model, extra_data["y_train"])
+            status = log(f"  ✓ Regression targets standardized (training mean {t_mean:.4g}, std {t_std:.4g})")
+            yield _emit(status)
+
         if runtime_device != DEVICE:
             status = log(
                 f"  ✓ Device: {runtime_device} (fallback from {DEVICE} for video compatibility)"
@@ -3031,7 +3041,7 @@ def run_pipeline(
                 try:
                     train_labels = extra_data["y"][extra_data["train_idx"]].cpu().tolist()
                     from training.trainer import compute_class_weights
-                    cw = compute_class_weights(train_labels)
+                    cw = compute_class_weights(train_labels, num_classes=num_classes)
                     status = log("  ✓ Class weights applied (imbalance correction)")
                     yield _emit(status)
                 except Exception as e:
@@ -3099,7 +3109,7 @@ def run_pipeline(
                         # Fallback: iterate (safe but slower)
                         all_labels = [int(lbl) for _, lbls in train_loader
                                       for lbl in lbls.tolist()]
-                    cw = compute_class_weights(all_labels)
+                    cw = compute_class_weights(all_labels, num_classes=num_classes)
                     status = log("  ✓ Class weights applied (imbalance correction)")
                     yield _emit(status)
                 except Exception as e:
@@ -3503,14 +3513,20 @@ def run_pipeline(
         yield _emit(status)
 
         sample_batch = None
-        if not sklearn_model and val_loader is not None:
-            try:
-                sample_inputs, _ = next(iter(val_loader))
+        if not sklearn_model:
+            # Any real batch works for tracing the ONNX graph; fall back to the
+            # training loader when validation is empty (very small datasets).
+            for loader in (val_loader, train_loader):
+                if loader is None:
+                    continue
+                try:
+                    sample_inputs, _ = next(iter(loader))
+                except StopIteration:
+                    continue
                 sample_batch = ({k: v[:1] for k, v in sample_inputs.items()}
                                 if isinstance(sample_inputs, dict)
                                 else sample_inputs[:1])
-            except StopIteration:
-                pass
+                break
 
         from export.exporter import export_bundle
         prep["model_name"] = model_name

@@ -5,7 +5,6 @@ transforms, no augmentation) and through export/bundle_runtime.py, and
 requires the arrays to match. If training preprocessing changes without the
 runtime following, exported models silently get different inputs.
 """
-import random
 from pathlib import Path
 
 import numpy as np
@@ -73,10 +72,11 @@ def test_tabular_matches_training_rows(tmp_path, scaling):
     _, _, _, prep, _, X_train, _, X_val, _ = load_tabular_data(
         str(path), label_col="label", augmentation="none", scaling_strategy=scaling, val_split=0.2)
 
-    order = list(range(n))
-    random.Random(42).shuffle(order)
-    n_val = max(1, int(n * 0.2))
-    X_by_row = dict(zip(order[n_val:] + order[:n_val], np.concatenate([X_train, X_val])))
+    from data_pipeline.splits import stratified_split
+
+    classes = sorted(set(df["label"].astype(str)))
+    train_idx, val_idx = stratified_split([classes.index(str(v)) for v in df["label"]], 0.2)
+    X_by_row = dict(zip(train_idx + val_idx, np.concatenate([X_train, X_val])))
     for i in range(n):
         raw = df.drop(columns=["label"]).iloc[i].to_dict()
         got = rt.tabular_to_model_input(raw, prep)[0]

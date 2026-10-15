@@ -82,11 +82,10 @@ def load_image_data(
     if not samples:
         raise ValueError(f"No images found in {data_path}")
 
-    random.seed(42)
-    random.shuffle(samples)
-    n_val          = max(1, int(len(samples) * val_split))
-    train_samples  = samples[n_val:]
-    val_samples    = samples[:n_val]
+    from data_pipeline.splits import stratified_split
+    train_idx, val_idx = stratified_split([label for _, label in samples], val_split)
+    train_samples  = [samples[i] for i in train_idx]
+    val_samples    = [samples[i] for i in val_idx]
 
     normalization_presets = {
         "imagenet": (IMAGENET_MEAN, IMAGENET_STD),
