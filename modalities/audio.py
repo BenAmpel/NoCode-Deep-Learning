@@ -26,7 +26,14 @@ AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 
 # Decoding lives in the bundle runtime so training and exported inference
 # read audio identically.
-from export.bundle_runtime import load_audio_waveform, scale_spectrogram  # noqa: E402
+from export.bundle_runtime import load_audio_waveform, needs_ffmpeg, scale_spectrogram  # noqa: E402
+
+
+def audio_needs_ffmpeg_message(paths: list[str]) -> str:
+    """Explain that these files can't be decoded until ffmpeg is installed."""
+    exts = sorted({Path(p).suffix.lower() for p in paths})
+    return (f"{len(paths)} audio file(s) ({', '.join(exts)}) need ffmpeg to decode, and ffmpeg "
+            "isn't installed. Install ffmpeg, or convert them to WAV, MP3, FLAC or OGG.")
 
 
 class AudioDataset(Dataset):
@@ -146,6 +153,12 @@ def load_audio_data(
     ]
     if verify_files:
         samples = _filter_valid_audio_samples(samples)
+    else:
+        # Fail before training starts, not on the first undecodable batch.
+        blocked = [path for path, _ in samples if needs_ffmpeg(path)]
+        if blocked:
+            raise ValueError(audio_needs_ffmpeg_message(blocked) + (
+                " Or tick 'Skip unreadable audio files' to train without them."))
     if not samples:
         raise ValueError(f"No audio files found in {data_path}")
 

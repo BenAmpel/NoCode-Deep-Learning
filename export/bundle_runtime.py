@@ -11,7 +11,7 @@ tests compare it against the training pipelines.
 It must stay importable on its own: no imports from the rest of the app.
 
 Dependencies: numpy and onnxruntime always. Per modality, only when used:
-Pillow (image, audio), torch + torchaudio + scipy (audio), transformers
+Pillow (image, audio), torch + torchaudio + soundfile + scipy (audio), transformers
 (pretrained text), opencv-python-headless (video), joblib + scikit-learn
 (sklearn bundles saved without ONNX).
 """
@@ -208,35 +208,61 @@ def _decode_audio_with_ffmpeg(path: str):
         Path(tmp_path).unlink(missing_ok=True)
 
 
-def load_audio_waveform(path: str, target_sr: int | None = None):
-    """Decode an audio file to a (channels, samples) float tensor, resampled if asked."""
+# soundfile's bundled libsndfile decodes these without ffmpeg. Anything else
+# (.m4a / AAC) needs the ffmpeg command-line tool.
+SOUNDFILE_EXTS = {".wav", ".flac", ".mp3", ".ogg"}
+
+
+def needs_ffmpeg(path: str) -> bool:
+    """True if decoding ``path`` depends on ffmpeg and ffmpeg isn't installed."""
+    return Path(path).suffix.lower() not in SOUNDFILE_EXTS and shutil.which("ffmpeg") is None
+
+
+def _read_with_soundfile(path: str):
+    import soundfile
+    import torch
+
+    data, sample_rate = soundfile.read(path, dtype="float32", always_2d=True)
+    return torch.from_numpy(np.ascontiguousarray(data.T)), int(sample_rate)
+
+
+def _read_with_torchaudio(path: str):
     import torchaudio
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return torchaudio.load(path)
+
+
+def load_audio_waveform(path: str, target_sr: int | None = None):
+    """Decode an audio file to a (channels, samples) float tensor, resampled if asked.
+
+    Tries soundfile (wav, flac, mp3, ogg), then torchaudio (works only when
+    torchcodec + FFmpeg libraries are installed), then scipy for wav and the
+    ffmpeg command-line tool for everything else.
+    """
+    import torchaudio
+
+    suffix = Path(path).suffix.lower()
+    decoders = [("soundfile", _read_with_soundfile), ("torchaudio", _read_with_torchaudio)]
+    decoders.append(("scipy", _read_wav_with_scipy) if suffix == ".wav"
+                    else ("ffmpeg", _decode_audio_with_ffmpeg))
 
     waveform = sample_rate = None
     errors: list[str] = []
-    suffix = Path(path).suffix.lower()
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            waveform, sample_rate = torchaudio.load(path)
-    except Exception as exc:
-        errors.append(f"torchaudio.load failed: {exc}")
-
-    if waveform is None or sample_rate is None:
+    for name, decode in decoders:
         try:
-            if suffix == ".wav":
-                waveform, sample_rate = _read_wav_with_scipy(path)
-            else:
-                waveform, sample_rate = _decode_audio_with_ffmpeg(path)
+            waveform, sample_rate = decode(path)
+            break
         except Exception as exc:
-            errors.append(str(exc))
+            errors.append(f"{name}: {exc}")
 
     if waveform is None or sample_rate is None:
         hint = ""
-        if suffix in {".mp3", ".m4a", ".ogg", ".flac"} and not shutil.which("ffmpeg"):
-            hint = " Install ffmpeg to enable fallback decoding for compressed audio."
-        raise RuntimeError(("; ".join(errors) or f"Unable to decode audio file: {path}") + hint)
+        if needs_ffmpeg(path):
+            hint = (f" {suffix or 'This'} audio needs ffmpeg, which isn't installed. Install ffmpeg, "
+                    "or convert the file to WAV, MP3, FLAC or OGG.")
+        raise RuntimeError(f"Could not decode audio file {path} ({'; '.join(errors)}).{hint}")
 
     if target_sr is not None and sample_rate != target_sr:
         waveform = torchaudio.functional.resample(waveform, sample_rate, target_sr)

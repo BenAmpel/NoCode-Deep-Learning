@@ -100,8 +100,9 @@ def test_audio_bundle_serves_like_app_and_model(tmp_path):
     from modalities.audio import load_audio_data
     from ui.inference_helpers import predict_audio
 
-    # WAV only: the fixture also has .mp3 files, which need ffmpeg to decode
-    # and the Windows CI runner doesn't have it. Codecs aren't what this tests.
+    # WAV only: the fixture also has an .m4a file, which needs ffmpeg to decode
+    # and the Windows CI runner doesn't have it. Codecs are tested in
+    # test_audio_decoding.py; this tests export.
     wav_only = tmp_path / "wav_audio"
     for wav in AUDIO.rglob("*.wav"):
         (wav_only / wav.parent.name).mkdir(parents=True, exist_ok=True)
