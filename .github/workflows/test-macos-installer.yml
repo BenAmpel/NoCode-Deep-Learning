@@ -80,6 +80,36 @@ jobs:
           assert version
           EOF
 
+      - name: First launch of the installed app (smoke mode)
+        # The real first run: launcher -> python.org Python -> progress window
+        # -> ~2 GB dependency install -> app start -> HTTP check -> exit 0.
+        timeout-minutes: 60
+        env:
+          NOCODE_DL_SMOKE_TEST: "1"
+        run: |
+          set +e
+          /Applications/NoCode-DL.app/Contents/MacOS/NoCode-DL
+          code=$?
+          set -e
+          LOGS="$HOME/Library/Logs/NoCode-DL"
+          echo "Launcher exit code: $code"
+          echo "===== launcher.log ====="; cat "$LOGS/launcher.log" || true
+          mkdir -p "$RUNNER_TEMP/first-run"; cp "$LOGS"/*.log "$RUNNER_TEMP/first-run/" || true
+          test "$code" -eq 0
+          grep -q "Successfully installed" "$LOGS/launcher.log"
+          grep -q "answered HTTP 200" "$LOGS/server.log"
+          grep -q "Launch and shutdown succeeded" "$LOGS/server.log"
+          grep -E "progress window (shown|unavailable)" "$LOGS/launcher.log"
+
+      - name: Upload first-launch logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-first-launch
+          path: ${{ runner.temp }}/first-run
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:

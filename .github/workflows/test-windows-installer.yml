@@ -88,6 +88,84 @@ jobs:
           $installDir = Join-Path $env:LOCALAPPDATA "NoCode-DL"
           python -c "import sys; from pathlib import Path; install_dir = Path(r'$installDir'); sys.path.insert(0, str(install_dir / 'runtime')); from runtime_setup import install_is_current; print('runtime_setup imported OK'); ok, reason = install_is_current(install_dir / '.venv'); print(f'install_is_current on fresh install: ok={ok}, reason={reason}'); assert not ok; version = (install_dir / '.bundle_version').read_text().strip(); print(f'Bundle version: {version}'); assert version"
 
+      - name: First launch from the Start menu shortcut (smoke mode)
+        # The real first run: hidden PowerShell -> Python -> progress window ->
+        # ~2 GB dependency install -> app start -> HTTP check -> exit 0.
+        timeout-minutes: 60
+        env:
+          NOCODE_DL_SMOKE_TEST: "1"
+        run: |
+          $lnk = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "NoCode-DL.lnk" |
+            Select-Object -First 1
+          if (-not $lnk) { throw "Start menu shortcut not found" }
+          $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk.FullName)
+          Write-Host "Shortcut: $($shortcut.TargetPath) $($shortcut.Arguments)"
+
+          $shots = Join-Path $env:RUNNER_TEMP "first-run"
+          New-Item -ItemType Directory -Force $shots | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Save-Screen([string]$path) {
+            try {
+              $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+              $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+              $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+              $g.Dispose(); $bmp.Dispose()
+            } catch { Write-Host "screenshot failed: $_" }
+          }
+
+          $proc = Start-Process -FilePath $shortcut.TargetPath -ArgumentList $shortcut.Arguments `
+            -WorkingDirectory $shortcut.WorkingDirectory -WindowStyle Minimized -PassThru
+          $null = $proc.Handle  # keep the handle so ExitCode is available afterwards
+          $tick = 0
+          while (-not $proc.HasExited) {
+            if ($tick -in @(2, 6, 18, 36) -or ($tick -gt 0 -and $tick % 60 -eq 0)) {
+              Save-Screen (Join-Path $shots ("screen-{0:D4}s.png" -f ($tick * 5)))
+            }
+            Start-Sleep -Seconds 5
+            $tick++
+          }
+          $proc.WaitForExit()
+          $code = $proc.ExitCode
+          Write-Host "Launcher exit code: $code after $($tick * 5)s"
+
+          $logs = Join-Path $env:LOCALAPPDATA "NoCode-DL\logs"
+          Copy-Item "$logs\*" $shots -ErrorAction SilentlyContinue
+          Write-Host "===== launcher.log ====="; Get-Content "$logs\launcher.log" -ErrorAction SilentlyContinue
+          Write-Host "===== server.log ====="; Get-Content "$logs\server.log" -ErrorAction SilentlyContinue
+
+          if ($code -ne 0) { throw "First launch exited with code $code" }
+          $launcher = Get-Content "$logs\launcher.log" -Raw
+          $server = Get-Content "$logs\server.log" -Raw
+          if ($launcher -notmatch "progress window shown") { throw "The progress window was not shown" }
+          if ($launcher -notmatch "Successfully installed") { throw "pip output did not reach launcher.log" }
+          if ($server -notmatch "answered HTTP 200") { throw "The app did not answer HTTP" }
+          if ($server -notmatch "Launch and shutdown succeeded") { throw "The smoke test did not finish" }
+
+      - name: Second launch from NoCode-DL.bat (no reinstall, exit code passed through)
+        timeout-minutes: 15
+        env:
+          NOCODE_DL_SMOKE_TEST: "1"
+        run: |
+          $bat = Join-Path $env:LOCALAPPDATA "NoCode-DL\NoCode-DL.bat"
+          cmd /c "`"$bat`""
+          $code = $LASTEXITCODE
+          Write-Host "NoCode-DL.bat exit code: $code"
+          if ($code -ne 0) { throw "Second launch exited with code $code" }
+          $tail = Get-Content (Join-Path $env:LOCALAPPDATA "NoCode-DL\logs\launcher.log") -Tail 60
+          $tail
+          if (($tail -join "`n") -match "Installing dependencies") { throw "The second launch reinstalled dependencies" }
+
+      - name: Upload first-launch screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-first-launch
+          path: ${{ runner.temp }}/first-run
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:

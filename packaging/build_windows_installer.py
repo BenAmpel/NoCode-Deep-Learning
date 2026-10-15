@@ -61,6 +61,136 @@ RUNTIME_ITEMS = [
 ]
 
 
+# Windows PowerShell 5.1 reads a .ps1 without a BOM as ANSI, so this script
+# must stay ASCII-only.
+LAUNCHER_PS1 = """$ErrorActionPreference = "Stop"
+# Invoke-WebRequest is many times slower while it draws a progress bar.
+$ProgressPreference = "SilentlyContinue"
+try { $host.UI.RawUI.WindowTitle = "__APP__" } catch {}
+Set-Location $PSScriptRoot
+
+# CI sets NOCODE_DL_SMOKE_TEST: run the whole first launch, but never wait on
+# a person (bootstrap_windows.py starts the app with --smoke-test).
+$smoke = [bool]$env:NOCODE_DL_SMOKE_TEST -and ($env:NOCODE_DL_SMOKE_TEST -ne "0")
+
+# The shortcuts run this script in a hidden window, so anything a person
+# must read or answer is a dialog, never Write-Host or Read-Host.
+function Show-Message([string]$text, [string]$buttons = "OK", [string]$icon = "Information") {
+    Write-Host $text
+    if ($smoke) { if ($buttons -eq "YesNo") { return "Yes" } else { return "OK" } }
+    Add-Type -AssemblyName System.Windows.Forms
+    return [System.Windows.Forms.MessageBox]::Show($text, "__APP__", $buttons, $icon).ToString()
+}
+function Fail([string]$text) {
+    Show-Message $text "OK" "Error" | Out-Null
+    exit 1
+}
+
+# 3.11-3.13 only: numpy 2.4 / scikit-learn 1.8 need >= 3.11.
+$versionCheck = "import sys; exit(0 if (3,11) <= sys.version_info[:2] <= (3,13) else 1)"
+function Find-Python {
+    $candidates = @(
+        "$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe",
+        "$env:LOCALAPPDATA\\Programs\\Python\\Python313\\python.exe",
+        "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe",
+        "C:\\Python312\\python.exe",
+        "$env:ProgramFiles\\Python312\\python.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) {
+            $ok = & $c -c $versionCheck 2>$null
+            if ($LASTEXITCODE -eq 0) { return $c }
+        }
+    }
+    try {
+        $cmd = (Get-Command python -ErrorAction Stop).Source
+        $ok = & $cmd -c $versionCheck 2>$null
+        if ($LASTEXITCODE -eq 0) { return $cmd }
+    } catch {}
+    return $null
+}
+
+$python = Find-Python
+
+if (-not $python) {
+    # Detect true architecture.
+    # PROCESSOR_ARCHITECTURE can report ARM64 inside x64 VMs on Apple Silicon
+    # (e.g. UTM/Parallels running x64 Windows), so ask WMI what the CPU is.
+    $isArm64 = $false
+    if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
+        try {
+            $cpu = (Get-WmiObject Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1).Architecture
+            # Architecture 12 = ARM64; anything else (9=x64, 0=x86) means emulated
+            $isArm64 = ($cpu -eq 12)
+        } catch { $isArm64 = $false }
+    }
+    $arch = if ($isArm64) { "arm64" } else { "amd64" }
+    $url  = if ($isArm64) { "__ARM64_URL__" } else { "__AMD64_URL__" }
+    $expected = if ($isArm64) { "__ARM64_SHA256__" } else { "__AMD64_SHA256__" }
+    $answer = Show-Message ("__APP__ needs Python __PYVER__ from python.org (about 25 MB). Download and install it now?" +
+        "`n`nA Python setup window will show its progress; __APP__ opens when it is done.") "YesNo" "Question"
+    if ($answer -ne "Yes") { exit 1 }
+    Write-Host "Downloading Python __PYVER__ ($arch) from $url"
+    $installer = Join-Path $env:TEMP "python-__PYVER__-installer.exe"
+    try {
+        # Use the system proxy with the signed-in user's credentials (corporate networks).
+        [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -UseDefaultCredentials
+    } catch {
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
+        Fail ("Could not download Python __PYVER__. Check your internet connection and open __APP__ again." +
+            "`n`n$($_.Exception.Message)")
+    }
+    $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLower()
+    if ($actual -ne $expected) {
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
+        Fail ("The downloaded Python installer failed its checksum check, so it was not installed." +
+            "`n`nExpected $expected`nGot      $actual")
+    }
+    # /passive shows the installer's progress without asking anything.
+    $mode = if ($smoke) { "/quiet" } else { "/passive" }
+    $proc = Start-Process $installer -ArgumentList "$mode InstallAllUsers=0 PrependPath=1 Include_test=0 Include_launcher=0" -Wait -PassThru
+    Remove-Item $installer -Force -ErrorAction SilentlyContinue
+    if ($proc.ExitCode -ne 0) {
+        Fail "The Python installer exited with code $($proc.ExitCode). Open __APP__ again to retry."
+    }
+    $python = "$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe"
+}
+
+if (-not (Test-Path $python)) {
+    Fail "Python could not be found or installed. Please install Python 3.12 from https://www.python.org and open __APP__ again."
+}
+
+# bootstrap_windows.py shows the progress window, writes logs to
+# %LOCALAPPDATA%\\__APP__\\logs and reports its own errors; its exit code is the app's.
+Write-Host "[__APP__] Using Python: $python"
+& $python runtime\\bootstrap_windows.py
+exit $LASTEXITCODE
+"""
+
+
+def launcher_ps1() -> str:
+    script = LAUNCHER_PS1
+    for key, value in {
+        "__APP__": APP_NAME,
+        "__PYVER__": PYTHON_VERSION,
+        "__AMD64_URL__": PYTHON_INSTALLER_URL.format(arch="amd64"),
+        "__ARM64_URL__": PYTHON_INSTALLER_URL.format(arch="arm64"),
+        "__AMD64_SHA256__": PYTHON_INSTALLER_SHA256["amd64"],
+        "__ARM64_SHA256__": PYTHON_INSTALLER_SHA256["arm64"],
+    }.items():
+        script = script.replace(key, value)
+    return script.replace("\n", "\r\n")
+
+
+# The Start menu / desktop shortcut: PowerShell in a hidden (and, until it
+# hides, minimized) window, so only bootstrap_windows.py's progress window shows.
+SHORTCUT_PARAMETERS = (
+    f'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{{app}}\\{APP_NAME}.ps1""'
+)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a Windows installer for NoCode-DL.")
     parser.add_argument("--version", help="Installer version string. Defaults to timestamp.")
@@ -143,110 +273,16 @@ def stage_files(staging: Path, version: str) -> None:
 
     # PowerShell launcher: finds/installs Python then runs runtime/bootstrap_windows.py.
     # Architecture-aware: downloads amd64 or arm64 installer from python.org.
-    amd64_url = PYTHON_INSTALLER_URL.format(arch="amd64")
-    arm64_url  = PYTHON_INSTALLER_URL.format(arch="arm64")
     ps1 = staging / f"{APP_NAME}.ps1"
-    ps1.write_text(
-        f'$ErrorActionPreference = "Stop"\r\n'
-        f'try {{ $host.UI.RawUI.WindowTitle = "{APP_NAME}" }} catch {{}}\r\n'
-        f'Set-Location $PSScriptRoot\r\n'
-        f'\r\n'
-        f'# 3.11-3.13 only: numpy 2.4 / scikit-learn 1.8 need >= 3.11.\r\n'
-        f'$versionCheck = "import sys; exit(0 if (3,11) <= sys.version_info[:2] <= (3,13) else 1)"\r\n'
-        f'function Find-Python {{\r\n'
-        f'    $candidates = @(\r\n'
-        f'        "$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe",\r\n'
-        f'        "$env:LOCALAPPDATA\\Programs\\Python\\Python313\\python.exe",\r\n'
-        f'        "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe",\r\n'
-        f'        "C:\\Python312\\python.exe",\r\n'
-        f'        "$env:ProgramFiles\\Python312\\python.exe"\r\n'
-        f'    )\r\n'
-        f'    foreach ($c in $candidates) {{\r\n'
-        f'        if (Test-Path $c) {{\r\n'
-        f'            $ok = & $c -c $versionCheck 2>$null\r\n'
-        f'            if ($LASTEXITCODE -eq 0) {{ return $c }}\r\n'
-        f'        }}\r\n'
-        f'    }}\r\n'
-        f'    try {{\r\n'
-        f'        $cmd = (Get-Command python -ErrorAction Stop).Source\r\n'
-        f'        $ok = & $cmd -c $versionCheck 2>$null\r\n'
-        f'        if ($LASTEXITCODE -eq 0) {{ return $cmd }}\r\n'
-        f'    }} catch {{}}\r\n'
-        f'    return $null\r\n'
-        f'}}\r\n'
-        f'\r\n'
-        f'$python = Find-Python\r\n'
-        f'\r\n'
-        f'if (-not $python) {{\r\n'
-        f'    # Detect true architecture.\r\n'
-        f'    # PROCESSOR_ARCHITECTURE can report ARM64 inside x64 VMs on Apple Silicon\r\n'
-        f'    # (e.g. UTM/Parallels running x64 Windows). We verify by actually trying\r\n'
-        f'    # to run an ARM64 binary — if it fails we fall back to amd64.\r\n'
-        f'    $isArm64 = $false\r\n'
-        f'    if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {{\r\n'
-        f'        # Quick probe: does an arm64 python installer even launch here?\r\n'
-        f'        try {{\r\n'
-        f'            $probe = Start-Process -FilePath "cmd.exe" -ArgumentList "/c exit 0" -PassThru -Wait -ErrorAction Stop\r\n'
-        f'            # Check via WMI whether the OS is truly ARM64\r\n'
-        f'            $cpu = (Get-WmiObject Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1).Architecture\r\n'
-        f'            # Architecture 12 = ARM64; anything else (9=x64, 0=x86) means emulated\r\n'
-        f'            $isArm64 = ($cpu -eq 12)\r\n'
-        f'        }} catch {{ $isArm64 = $false }}\r\n'
-        f'    }}\r\n'
-        f'    $arch = if ($isArm64) {{ "arm64" }} else {{ "amd64" }}\r\n'
-        f'    $url  = if ($isArm64) {{ "{arm64_url}" }} else {{ "{amd64_url}" }}\r\n'
-        f'    $expected = if ($isArm64) {{ "{PYTHON_INSTALLER_SHA256["arm64"]}" }} else {{ "{PYTHON_INSTALLER_SHA256["amd64"]}" }}\r\n'
-        f'    Write-Host "Python 3.11-3.13 not found. Downloading Python {PYTHON_VERSION} ($arch)..."\r\n'
-        f'    $installer = "$env:TEMP\\python-{PYTHON_VERSION}-installer.exe"\r\n'
-        f'    # Use the system proxy with the signed-in user\'s credentials (corporate networks).\r\n'
-        f'    [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials\r\n'
-        f'    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\r\n'
-        f'    Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -UseDefaultCredentials\r\n'
-        f'    $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLower()\r\n'
-        f'    if ($actual -ne $expected) {{\r\n'
-        f'        Remove-Item $installer -Force -ErrorAction SilentlyContinue\r\n'
-        f'        Write-Host "ERROR: the downloaded Python installer failed its checksum check."\r\n'
-        f'        Write-Host "Expected $expected"\r\n'
-        f'        Write-Host "Got      $actual"\r\n'
-        f'        Read-Host "Press Enter to exit"\r\n'
-        f'        exit 1\r\n'
-        f'    }}\r\n'
-        f'    Write-Host "Installing Python (this may take a minute)..."\r\n'
-        f'    $proc = Start-Process $installer -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_launcher=0" -Wait -PassThru\r\n'
-        f'    Remove-Item $installer -Force -ErrorAction SilentlyContinue\r\n'
-        f'    if ($proc.ExitCode -ne 0) {{\r\n'
-        f'        Write-Host "ERROR: the Python installer exited with code $($proc.ExitCode)."\r\n'
-        f'        Read-Host "Press Enter to exit"\r\n'
-        f'        exit 1\r\n'
-        f'    }}\r\n'
-        f'    $python = "$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe"\r\n'
-        f'}}\r\n'
-        f'\r\n'
-        f'if (-not (Test-Path $python)) {{\r\n'
-        f'    Write-Host ""\r\n'
-        f'    Write-Host "ERROR: Python could not be found or installed."\r\n'
-        f'    Write-Host "Please install Python 3.12 from https://www.python.org and re-launch."\r\n'
-        f'    Read-Host "Press Enter to exit"\r\n'
-        f'    exit 1\r\n'
-        f'}}\r\n'
-        f'\r\n'
-        f'Write-Host "[{APP_NAME}] Using Python: $python"\r\n'
-        f'& $python runtime\\bootstrap_windows.py\r\n'
-        f'$code = $LASTEXITCODE\r\n'
-        f'if ($code -ne 0) {{\r\n'
-        f'    Write-Host ""\r\n'
-        f'    Write-Host "{APP_NAME} exited with code $code"\r\n'
-        f'    Read-Host "Press Enter to close"\r\n'
-        f'}}\r\n'
-        f'exit $code\r\n',
-        encoding="utf-8",
-    )
+    ps1.write_text(launcher_ps1(), encoding="utf-8")
 
-    # Thin bat wrapper — keeps the shortcut simple and avoids PowerShell title-bar flash
+    # For running by hand or from CI: a visible console and the app's exit code.
+    # The Start menu and desktop shortcuts run the .ps1 in a hidden window instead.
     bat = staging / f"{APP_NAME}.bat"
     bat.write_text(
         f"@echo off\r\n"
-        f'powershell.exe -ExecutionPolicy Bypass -File "%~dp0{APP_NAME}.ps1"\r\n',
+        f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0{APP_NAME}.ps1"\r\n'
+        f"exit /b %ERRORLEVEL%\r\n",
         encoding="utf-8",
     )
 
@@ -288,14 +324,14 @@ Source: "NoCode-DL-staged\\*"; DestDir: "{{app}}"; Flags: recursesubdirs createa
 Source: "NoCode-DL-staged\\.bundle_version"; DestDir: "{{app}}"
 
 [Icons]
-Name: "{{group}}\\{APP_NAME}"; Filename: "{{app}}\\{APP_NAME}.bat"; IconFilename: "{{app}}\\icon.ico"; Comment: "Launch {APP_NAME}"
-Name: "{{autodesktop}}\\{APP_NAME}"; Filename: "{{app}}\\{APP_NAME}.bat"; IconFilename: "{{app}}\\icon.ico"; Comment: "Launch {APP_NAME}"; Tasks: desktopicon
+Name: "{{group}}\\{APP_NAME}"; Filename: "{{sys}}\\WindowsPowerShell\\v1.0\\powershell.exe"; Parameters: "{SHORTCUT_PARAMETERS}"; WorkingDir: "{{app}}"; IconFilename: "{{app}}\\icon.ico"; Comment: "Launch {APP_NAME}"; Flags: runminimized
+Name: "{{autodesktop}}\\{APP_NAME}"; Filename: "{{sys}}\\WindowsPowerShell\\v1.0\\powershell.exe"; Parameters: "{SHORTCUT_PARAMETERS}"; WorkingDir: "{{app}}"; IconFilename: "{{app}}\\icon.ico"; Comment: "Launch {APP_NAME}"; Tasks: desktopicon; Flags: runminimized
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Run]
-Filename: "{{app}}\\{APP_NAME}.bat"; Description: "Launch {APP_NAME} now"; Flags: postinstall nowait skipifsilent shellexec
+Filename: "{{sys}}\\WindowsPowerShell\\v1.0\\powershell.exe"; Parameters: "{SHORTCUT_PARAMETERS}"; WorkingDir: "{{app}}"; Description: "Launch {APP_NAME} now"; Flags: postinstall nowait skipifsilent runminimized
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{{app}}"
@@ -396,6 +432,7 @@ def main() -> None:
     print("[2/4] Staging files ...")
     staging = DIST_ROOT / f"{APP_NAME}-staged"
     stage_files(staging, version)
+    shutil.copy2(icon_path, staging / "icon.ico")  # the shortcuts' IconFilename
 
     print("[3/4] Generating Inno Setup script ...")
     iss_path = generate_iss(staging, version, icon_path)
