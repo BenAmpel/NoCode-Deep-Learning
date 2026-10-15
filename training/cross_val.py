@@ -15,6 +15,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, SubsetRandomSampler
 
 from config import DEVICE
+from training import cancel as _cancel
 from training.trainer import _compute_loss, _forward, _make_optimizer, _make_scheduler
 from eval.metrics import classification_metric_summary, regression_metric_summary
 
@@ -51,6 +52,7 @@ def _train_one_fold(
         model.train()
         train_loss = 0.0
         for batch in train_loader:
+            _cancel.check()  # Stop pressed: end between batches
             optimizer.zero_grad()
             logits, labels = _forward(model, batch)
             # Shared with train_pytorch so regression logits (B, 1) are flattened

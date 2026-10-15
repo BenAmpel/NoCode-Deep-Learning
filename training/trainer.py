@@ -14,6 +14,7 @@ from torch.optim.lr_scheduler import (
     LinearLR, CosineAnnealingLR as CosLR,
 )
 from config import DEVICE
+from training import cancel as _cancel
 
 # ---------------------------------------------------------------------------
 # Batch helpers
@@ -125,6 +126,7 @@ def train_pytorch(
         model.train()
         train_loss = 0.0
         for batch in train_loader:
+            _cancel.check()  # Stop pressed: end between batches
             optimizer.zero_grad()
             if amp_enabled:
                 with torch.autocast(device):

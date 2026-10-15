@@ -17,6 +17,7 @@ import gradio as gr
 import numpy as np
 
 from config import DEVICE, DEFAULTS, VIDEO_DEFAULTS, TEXT_DEFAULTS, set_seed
+from training import cancel as _cancel
 from models.registry import get_models, get_compatible_tasks, get_modes, is_sklearn, is_vit, is_whisper
 from ui.project_state import load_project_state, save_project_state
 from ui.tooltips import TOOLTIPS
@@ -1644,20 +1645,21 @@ button[role="tab"]:focus-visible {
 
 def _loss_plot(history: list[dict]) -> Any:
     """
-    Reuse a single named figure on every call (num='nocode_loss') so matplotlib
-    never accumulates open figures across training epochs — preventing a memory
-    leak that would otherwise grow linearly with epoch count.
+    Training/validation loss and metric curves for ``history``.
     """
-    plt = _get_pyplot()
+    from matplotlib.figure import Figure
+
     epochs     = [h["epoch"]      for h in history]
     train_loss = [h["train_loss"] for h in history]
     val_loss   = [h["val_loss"]   for h in history]
     val_metric = [h["val_acc"]    for h in history]
 
-    # clear=True redraws into the existing figure instead of allocating a new one.
+    # A standalone Figure (not pyplot) per call: pyplot's shared named figure
+    # let two concurrent runs draw into each other's plot, and nothing is
+    # registered globally, so it is freed once Gradio has rendered it.
     # dpi=130 keeps plots sharp on high-DPI (Retina) displays.
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4), dpi=130,
-                                    num="nocode_loss_curves", clear=True)
+    fig = Figure(figsize=(10, 4), dpi=130)
+    ax1, ax2 = fig.subplots(1, 2)
     ax1.plot(epochs, train_loss, label="Train loss", marker="o", markersize=3)
     ax1.plot(epochs, val_loss,   label="Val loss",   marker="o", markersize=3)
     ax1.set_xlabel("Epoch"); ax1.set_ylabel("Loss")
@@ -2530,6 +2532,9 @@ def run_pipeline(
     stopped_early_flag = False
     runtime_device = "cpu" if (modality == "video" and DEVICE == "mps") else DEVICE
     set_seed(DEFAULTS["seed"])
+    _cancel.reset()
+    _get_pyplot().close("all")  # figures from the previous run are already rendered
+    run_temp_files: list[str] = []  # removed when the run ends, not at app exit
 
     try:
         # ── 1. Load data ──────────────────────────────────────────────────────
@@ -2627,7 +2632,7 @@ def run_pipeline(
                 _cleaning_tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
                 cleaned_df.to_csv(_cleaning_tmp.name, index=False)
                 _cleaning_tmp.close()
-                atexit.register(os.unlink, _cleaning_tmp.name)
+                run_temp_files.append(_cleaning_tmp.name)
                 data_path = _cleaning_tmp.name
 
             train_loader, val_loader, classes, prep, vocab_size, val_texts = load_text_data(
@@ -2672,7 +2677,7 @@ def run_pipeline(
                 _cleaning_tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
                 cleaned_df.to_csv(_cleaning_tmp.name, index=False)
                 _cleaning_tmp.close()
-                atexit.register(os.unlink, _cleaning_tmp.name)
+                run_temp_files.append(_cleaning_tmp.name)
                 data_path = _cleaning_tmp.name
 
             train_loader, val_loader, classes, prep, input_size, \
@@ -2720,7 +2725,7 @@ def run_pipeline(
                 _cleaning_tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
                 cleaned_df.to_csv(_cleaning_tmp.name, index=False)
                 _cleaning_tmp.close()
-                atexit.register(os.unlink, _cleaning_tmp.name)
+                run_temp_files.append(_cleaning_tmp.name)
                 data_path = _cleaning_tmp.name
 
             train_loader, val_loader, classes, prep, input_size, \
@@ -3614,6 +3619,9 @@ def run_pipeline(
             dash_actions=_build_action_items(task, history, metrics_payload, model_name),
         )
 
+    except _cancel.TrainingStopped:
+        _set_phase("stopped", eta_text="ETA: stopped")
+        yield _emit(log("⏹ Training stopped. Nothing was exported for this run."))
     except Exception as exc:
         _set_phase("error", eta_text="ETA: halted")
         try:
@@ -3628,6 +3636,12 @@ def run_pipeline(
             f"Traceback (most recent call last):\n{tb}"
         ))
 
+    finally:
+        for _tmp in run_temp_files:
+            try:
+                os.unlink(_tmp)
+            except OSError:
+                pass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gradio UI
@@ -5409,6 +5423,9 @@ with gr.Blocks(title="NoCode-DL") as demo:
 
     # ── File upload → auto-fill data path ────────────────────────────────────
 
+    _UPLOAD_DIRS: list[str] = []
+    _MAX_UPLOAD_DIRS = 3
+
     def handle_upload(uploaded_file, mod, current_label, current_text, current_features, current_time):
         """Extract zip → temp dir or use CSV path directly."""
         if uploaded_file is None:
@@ -5417,8 +5434,12 @@ with gr.Blocks(title="NoCode-DL") as demo:
         path = uploaded_file if isinstance(uploaded_file, str) else uploaded_file.name
         if path.lower().endswith(".zip"):
             tmp_dir = tempfile.mkdtemp(prefix="nocode_dl_")
-            # Register cleanup so the temp directory is removed on process exit
+            # Remove on exit, and keep only the most recent extractions while
+            # running: every upload used to add a full copy until shutdown.
             atexit.register(shutil.rmtree, tmp_dir, True)
+            _UPLOAD_DIRS.append(tmp_dir)
+            while len(_UPLOAD_DIRS) > _MAX_UPLOAD_DIRS:
+                shutil.rmtree(_UPLOAD_DIRS.pop(0), ignore_errors=True)
             from data_pipeline.io_utils import safe_extract_zip
             try:
                 safe_extract_zip(path, tmp_dir)
@@ -5883,10 +5904,11 @@ with gr.Blocks(title="NoCode-DL") as demo:
             dashboard_kpi, dashboard_primary_chart, dashboard_explain_plot,
             dashboard_explain_html, dashboard_loss_chart, dashboard_actions,
         ],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     # Stop button cancels the running training generator
-    stop_btn.click(None, cancels=[train_event])
 
     # Auto-fill inference bundle path from training result
     bundle_out.change(
@@ -6114,7 +6136,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as exc:
             yield f"❌ Cross-validation failed: {exc}"
 
-    cv_run_btn.click(
+    cv_event = cv_run_btn.click(
         run_cv,
         inputs=[
             modality, data_path, text_col, label_col, time_col,
@@ -6125,6 +6147,8 @@ with gr.Blocks(title="NoCode-DL") as demo:
             hidden_size, num_layers, cv_k,
         ],
         outputs=cv_results_box,
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     def run_cv_significance(modality_val, data_path_val, label_col_val, time_col_val, window_size_val, subset_enabled_val, subset_percent_val, subset_seed_val, training_mode_val,
@@ -6349,7 +6373,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
         plot = _plot_cv_significance_scores(metric_name, base_model_name, baseline_scores, challenger_curves)
         return "\n".join(lines), plot
 
-    cv_significance_btn.click(
+    cv_sig_event = cv_significance_btn.click(
         run_cv_significance,
         inputs=[
             modality, data_path, label_col, time_col, window_size, use_random_subset, subset_percent, subset_seed, training_mode,
@@ -6361,6 +6385,8 @@ with gr.Blocks(title="NoCode-DL") as demo:
             cv_significance_metric, cv_significance_models,
         ],
         outputs=[cv_significance_box, cv_significance_plot],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     # ── Hyperparameter search callback ────────────────────────────────────────
@@ -6432,7 +6458,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as exc:
             yield f"❌ Hyperparameter search failed: {exc}"
 
-    hparam_run_btn.click(
+    hparam_event = hparam_run_btn.click(
         run_hparam_search,
         inputs=[
             modality, data_path, text_col, label_col, time_col,
@@ -6443,6 +6469,8 @@ with gr.Blocks(title="NoCode-DL") as demo:
             hparam_lr_vals, hparam_dropout_vals, hparam_n_trials, hparam_epochs,
         ],
         outputs=hparam_results_box,
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     def run_model_sweep(
@@ -6505,7 +6533,11 @@ with gr.Blocks(title="NoCode-DL") as demo:
             visible_cols = ["model", *selected_metrics, "status", "bundle"]
             return df[[c for c in visible_cols if c in df.columns]]
 
+        _cancel.reset()
         for idx, model_choice in enumerate(selected_models, start=1):
+            if _cancel.stop_requested():
+                status_lines.append("⏹ Sweep stopped.")
+                break
             status_lines.append(f"- Running `{model_choice}` ({idx}/{len(selected_models)})…")
             yield "\n".join(status_lines), _sorted_frame(rows)
 
@@ -6571,7 +6603,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
         ])
         yield "\n".join(status_lines), _sorted_frame(rows)
 
-    sweep_run_btn.click(
+    sweep_event = sweep_run_btn.click(
         run_model_sweep,
         inputs=[
             modality, data_path, text_col, label_col, feature_cols, time_col,
@@ -6592,6 +6624,8 @@ with gr.Blocks(title="NoCode-DL") as demo:
             bundle_name, sweep_models, sweep_metrics, sweep_sort_metric, sweep_sort_order,
         ],
         outputs=[sweep_status_box, sweep_table],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     def _plot_cv_significance_scores(metric_name, baseline_name, baseline_scores, challenger_scores_by_name):
@@ -6618,6 +6652,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
         ax.grid(alpha=0.22, linestyle=":")
         ax.legend(frameon=False, fontsize=8)
         fig.tight_layout()
+        plt.close(fig)  # rendered by Gradio after return; frees pyplot's reference
         return fig
 
     # ── FastAPI generator ─────────────────────────────────────────────────────
@@ -6860,10 +6895,12 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as e:
             yield f"❌ Error: {e}", None, f"```\n{e}\n```", None
 
-    det_vid_btn.click(
+    det_vid_event = det_vid_btn.click(
         detect_video,
         inputs=[det_vid_input, det_model, det_conf, det_iou],
         outputs=[det_vid_status, det_vid_output, det_vid_stats_md, det_vid_chart],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
     )
 
     # ── YOLO custom training ──────────────────────────────────────────────────
@@ -6916,10 +6953,19 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as ex:
             yield f"❌ Error: {ex}", ""
 
-    yolo_train_btn.click(
+    yolo_event = yolo_train_btn.click(
         train_yolo_custom,
         inputs=[yolo_data_path, yolo_model_size, yolo_epochs, yolo_batch],
         outputs=[yolo_status_box, yolo_result_md],
+        concurrency_id="heavy_jobs",
+        concurrency_limit=1,
+    )
+
+    # Stop sets the cooperative flag checked between training batches (the
+    # cancel alone only lands at the next yield) and cancels every heavy job.
+    stop_btn.click(
+        _cancel.request_stop,
+        cancels=[train_event, cv_event, cv_sig_event, hparam_event, sweep_event, det_vid_event, yolo_event],
     )
 
     # ── Annotation Studio callbacks ──────────────────────────────────────────

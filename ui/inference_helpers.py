@@ -352,6 +352,7 @@ def predictions_to_chart(predictions: list[dict]):
         ax.text(0.5, 0.5, "No predictions available", ha="center", va="center",
                 transform=ax.transAxes, fontsize=12, color="grey")
         ax.axis("off")
+        plt.close(fig)  # rendered by Gradio after return; frees pyplot's reference
         return fig
 
     if "value" in valid[0]:
@@ -365,6 +366,7 @@ def predictions_to_chart(predictions: list[dict]):
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         fig.tight_layout()
+        plt.close(fig)  # rendered by Gradio after return; frees pyplot's reference
         return fig
 
     labels      = [p["label"]      for p in valid]
@@ -409,6 +411,7 @@ def predictions_to_chart(predictions: list[dict]):
     ax.tick_params(axis="y", labelsize=10)
 
     fig.tight_layout()
+    plt.close(fig)  # rendered by Gradio after return; frees pyplot's reference
     return fig
 
 

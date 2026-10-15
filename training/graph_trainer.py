@@ -8,6 +8,7 @@ import torch.nn as nn
 from sklearn.linear_model import LogisticRegression
 
 from config import DEVICE
+from training import cancel as _cancel
 from models.graph_models import node2vec_embeddings
 
 
@@ -43,6 +44,7 @@ def train_graph_pytorch(
     epoch_times = []
 
     for epoch in range(1, int(epochs) + 1):
+        _cancel.check()  # Stop pressed: end between epochs
         t0 = time.time()
         model.train()
         optimizer.zero_grad()
