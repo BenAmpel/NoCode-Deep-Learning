@@ -240,7 +240,7 @@ def _default_values(bf) -> dict:
 def test_train_button_yields_one_value_per_output():
     bf = _event_for("train_from_ui")
     values = _default_values(bf)
-    values[app.data_path] = ""  # fails pre-flight before any work starts
+    values[app.c.data_path] = ""  # fails pre-flight before any work starts
     updates = list(bf.fn(values))
     assert len(updates) == 1
     assert len(updates[0]) == len(bf.outputs)
@@ -250,7 +250,7 @@ def test_train_button_yields_one_value_per_output():
 def test_sweep_button_yields_one_value_per_output():
     bf = _event_for("sweep_from_ui")
     values = _default_values(bf)
-    values[app.sweep_models] = ["MLP"]  # fewer than two models: stops early
+    values[app.c.sweep_models] = ["MLP"]  # fewer than two models: stops early
     updates = list(bf.fn(values))
     assert updates and all(len(u) == len(bf.outputs) for u in updates)
     assert "at least two models" in updates[0][0]

@@ -3,10 +3,9 @@ NoCode-DL — No-Code Deep Learning Platform
 Run with:  python run_local.py
 """
 from __future__ import annotations
-import atexit, base64, html, io, logging, os, re, time, traceback, tempfile, shutil, zipfile
+import atexit, logging, os, re, traceback, tempfile, shutil, zipfile
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 # Must be set before gradio is imported. Gradio's usage analytics contact
 # api.gradio.app and checkip.amazonaws.com, which contradicts the app's
@@ -16,24 +15,59 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 import gradio as gr
 import numpy as np
 
-from config import DEVICE, DEFAULTS, VIDEO_DEFAULTS, TEXT_DEFAULTS, set_seed
+from config import DEVICE
 from training import cancel as _cancel
-from models.registry import (
-    XGBOOST_UNAVAILABLE_NOTE,
-    get_compatible_tasks,
-    get_models,
-    get_modes,
-    is_sklearn,
-    is_vit,
-    is_whisper,
-    xgboost_available,
-)
+from models.registry import get_models, get_compatible_tasks, get_modes, is_sklearn, is_vit
 from ui.project_state import load_project_state, save_project_state
-from ui.tooltips import TOOLTIPS
 from pipeline import RUN_CONFIG_FIELDS, RunConfig
 from pipeline.context import RunResult
 from pipeline.progress import RunLog, Update
 from pipeline.runner import PreflightError, cleanup as cleanup_run, execute as execute_run, preflight_errors, prepare_run, run as run_stages
+from ui.helpers import (
+    CLASSIFICATION_METRIC_OPTIONS,
+    HISTORY_COLUMNS,
+    REGRESSION_METRIC_OPTIONS,
+    TASKS,
+    _BUILTIN_AUDIO_TUTORIAL_PATH,
+    _BUILTIN_IMAGE_TUTORIAL_PATH,
+    _BUILTIN_TABULAR_TUTORIAL_PATH,
+    _BUILTIN_TEXT_TUTORIAL_PATH,
+    _BUILTIN_TIMESERIES_TUTORIAL_PATH,
+    _BUILTIN_VIDEO_TUTORIAL_PATH,
+    _DEFAULT_CLASSIFICATION_NOTE,
+    _DEFAULT_DIAGNOSTICS_NOTE,
+    _DEFAULT_EXPLANATION_NOTE,
+    _DEFAULT_SAMPLE_REVIEW_NOTE,
+    _OUTPUTS_ROOT,
+    _PROJECT_ROOT,
+    _apply_recommendation_payload,
+    _build_action_items,
+    _build_dashboard_kpi,
+    _build_evaluation_notes,
+    _build_image_quality_lab_html,
+    _build_text_quality_lab_html,
+    _cleaning_preview_empty_html,
+    _format_eval_kpis,
+    _format_eval_summary,
+    _format_live_training_metrics_card,
+    _format_status_block,
+    _get_pyplot,
+    _list_bundles,
+    _loss_plot,
+    _metric_display_value,
+    _path_signature,
+    _pick_primary_chart,
+    _read_structured_preview,
+    _slug_part,
+    _suggest_tabular_example,
+    _suggest_timeseries_example,
+    _tutorial_markdown,
+    _why_this_matters_markdown,
+    _workflow_mode_updates,
+    _workspace_status_markdown,
+    suggest_bundle_name,
+)
+from ui.layout import build_layout
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -43,256 +77,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("nocode_dl")
 
-# Project root — used to build CWD-independent absolute paths
-_PROJECT_ROOT = Path(__file__).resolve().parent
-_OUTPUTS_ROOT = _PROJECT_ROOT / "outputs"
-_BUILTIN_IMAGE_TUTORIAL_PATH      = _PROJECT_ROOT / "fixtures" / "mnist_tutorial"
-_BUILTIN_TABULAR_TUTORIAL_PATH    = _PROJECT_ROOT / "fixtures" / "iris_tutorial"
-_BUILTIN_TEXT_TUTORIAL_PATH       = _PROJECT_ROOT / "fixtures" / "newsgroups_tutorial"
-_BUILTIN_AUDIO_TUTORIAL_PATH      = _PROJECT_ROOT / "fixtures" / "speechcommands_tutorial"
-_BUILTIN_TIMESERIES_TUTORIAL_PATH = _PROJECT_ROOT / "fixtures" / "timeseries_tutorial"
-_BUILTIN_VIDEO_TUTORIAL_PATH      = _PROJECT_ROOT / "fixtures" / "video_tutorial"
-
-
-def _path_signature(dpath: str | os.PathLike | None) -> tuple[str, float, bool]:
-    if not dpath:
-        return ("", 0.0, False)
-    try:
-        path = Path(dpath).expanduser().resolve()
-        stat = path.stat()
-        return (str(path), stat.st_mtime, path.is_dir())
-    except Exception:
-        return (str(dpath), 0.0, False)
-
-
-def _get_pyplot():
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    return plt
-
-
-def _pil_image_to_data_url(image) -> str:
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
-
-
-def _cleaning_preview_empty_html(message: str) -> str:
-    return (
-        '<div class="studio-quality-lab">'
-        '<h3 style="margin:0 0 10px 0;color:var(--color-text-primary);">Data Quality Lab</h3>'
-        f'<p style="margin:0;color:var(--color-text-secondary);">{html.escape(message)}</p>'
-        '</div>'
-    )
-
-
-def _render_quality_lab_html(title: str, subtitle: str, chips: list[str], cards_html: list[str]) -> str:
-    chips_html = "".join(
-        f'<span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;'
-        f'background:var(--color-surface-tint);border:1px solid var(--color-border);margin:0 8px 8px 0;'
-        f'font-size:12px;font-weight:600;color:var(--color-text-on-surface);">{html.escape(chip)}</span>'
-        for chip in chips
-    )
-    cards = "".join(cards_html)
-    return (
-        '<div class="studio-quality-lab" style="margin-top:14px;padding:18px 20px;border:1px solid var(--color-border);'
-        'border-radius:20px;background:linear-gradient(180deg,var(--color-surface) 0%,var(--color-surface-soft) 100%);box-shadow:var(--shadow-sm);">'
-        f'<h3 style="margin:0 0 8px 0;color:var(--color-text-primary);">{html.escape(title)}</h3>'
-        f'<p style="margin:0 0 14px 0;color:var(--color-text-secondary);line-height:1.5;">{html.escape(subtitle)}</p>'
-        f'<div style="margin:0 0 12px 0;">{chips_html or "<span style=\"color:var(--color-text-muted);font-size:12px;\">No visible changes selected.</span>"}</div>'
-        f'<div style="display:grid;gap:14px;">{cards}</div>'
-        '</div>'
-    )
-
-
-def _build_text_quality_lab_html(
-    preview_df,
-    text_col: str,
-    *,
-    lowercase: bool,
-    strip_urls: bool,
-    strip_punctuation: bool,
-    remove_stopwords: bool,
-    deduplicate: bool,
-    apply_stemming: bool,
-    apply_lemmatization: bool,
-) -> str:
-    if preview_df is None or preview_df.empty or not text_col or text_col not in preview_df.columns:
-        return _cleaning_preview_empty_html("Preview a text dataset to inspect concrete before-and-after cleaning examples.")
-
-    sample_df = preview_df[[text_col]].copy()
-    sample_df[text_col] = sample_df[text_col].fillna("").astype(str)
-    sample_df = sample_df[sample_df[text_col].str.strip().str.len() > 0].head(3).reset_index(drop=True)
-    if sample_df.empty:
-        return _cleaning_preview_empty_html("No non-empty text rows were available for the cleaning preview.")
-
-    from data_pipeline.cleaning import clean_text_dataframe
-
-    cleaned_df, _ = clean_text_dataframe(
-        sample_df,
-        text_col=text_col,
-        lowercase=lowercase,
-        strip_urls=strip_urls,
-        strip_punctuation=strip_punctuation,
-        remove_stopwords=remove_stopwords,
-        deduplicate=False,
-        apply_stemming=apply_stemming,
-        apply_lemmatization=apply_lemmatization,
-        drop_empty_rows=False,
-    )
-
-    chips: list[str] = []
-    if lowercase:
-        chips.append("Lowercase")
-    if strip_urls:
-        chips.append("Remove URLs")
-    if strip_punctuation:
-        chips.append("Remove punctuation")
-    if remove_stopwords:
-        chips.append("Remove stop words")
-    if apply_stemming:
-        chips.append("Stemming")
-    if apply_lemmatization:
-        chips.append("Lemmatization")
-    if deduplicate:
-        chips.append("Duplicate rows dropped during training")
-
-    cards_html: list[str] = []
-    for idx, (before, after) in enumerate(zip(sample_df[text_col].tolist(), cleaned_df[text_col].tolist()), start=1):
-        cards_html.append(
-            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px;'
-            'border:1px solid var(--color-border);border-radius:16px;background:var(--color-surface);">'
-            f'<div><div style="margin-bottom:8px;font-size:12px;font-weight:700;color:var(--color-text-muted);letter-spacing:.08em;text-transform:uppercase;">Original sample {idx}</div>'
-            f'<div style="padding:12px;border-radius:14px;background:var(--color-surface-soft);border:1px solid var(--color-border-row);color:var(--color-text-primary);line-height:1.55;">{html.escape(before[:360] or " ")}</div></div>'
-            f'<div><div style="margin-bottom:8px;font-size:12px;font-weight:700;color:var(--color-accent-dark);letter-spacing:.08em;text-transform:uppercase;">Proposed cleaned version</div>'
-            f'<div style="padding:12px;border-radius:14px;background:var(--color-surface-tint);border:1px solid var(--color-border);color:var(--color-text-primary);line-height:1.55;">{html.escape(after[:360] or " ")}</div></div>'
-            '</div>'
-        )
-
-    subtitle = (
-        "These are real rows from the loaded dataset with the current text-cleaning choices applied. "
-        "Re-preview after changing the toggles to compare different strategies."
-    )
-    return _render_quality_lab_html("Data Quality Lab", subtitle, chips, cards_html)
-
-
-def _build_image_quality_lab_html(
-    dpath: str,
-    *,
-    image_size_value: int,
-    horizontal_flip: bool,
-    vertical_flip: bool,
-    rotation: bool,
-    color_jitter: bool,
-    grayscale: bool,
-    perspective: bool,
-    normalization_preset: str,
-    force_grayscale: bool,
-) -> str:
-    path = Path(str(dpath or "")).expanduser()
-    if not path.exists():
-        return _cleaning_preview_empty_html("Preview an image dataset to inspect concrete before-and-after augmentation examples.")
-
-    from PIL import Image, ImageEnhance, ImageOps
-
-    samples = []
-    for candidate in sorted(path.rglob("*")):
-        if candidate.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}:
-            samples.append(candidate)
-        if len(samples) >= 3:
-            break
-
-    if not samples:
-        return _cleaning_preview_empty_html("No supported image files were found for the cleaning preview.")
-
-    chips: list[str] = []
-    if horizontal_flip:
-        chips.append("Horizontal flip")
-    if vertical_flip:
-        chips.append("Vertical flip")
-    if rotation:
-        chips.append("Rotation")
-    if color_jitter:
-        chips.append("Color jitter")
-    if grayscale:
-        chips.append("Augmentation grayscale")
-    if perspective:
-        chips.append("Perspective warp")
-    if force_grayscale:
-        chips.append("Convert to grayscale before training")
-    if normalization_preset and normalization_preset != "none":
-        chips.append(f"Normalization: {normalization_preset}")
-    chips.append(f"Training size: {int(image_size_value)}×{int(image_size_value)}")
-
-    cards_html: list[str] = []
-    for idx, sample_path in enumerate(samples, start=1):
-        with Image.open(sample_path) as img:
-            original = img.convert("RGB")
-            transformed = original.copy()
-
-        if force_grayscale or grayscale:
-            transformed = ImageOps.grayscale(transformed).convert("RGB")
-        if horizontal_flip:
-            transformed = ImageOps.mirror(transformed)
-        if vertical_flip:
-            transformed = ImageOps.flip(transformed)
-        if rotation:
-            transformed = transformed.rotate(15, resample=Image.Resampling.BICUBIC, fillcolor=(245, 248, 244))
-        if color_jitter:
-            transformed = ImageEnhance.Color(transformed).enhance(1.45)
-            transformed = ImageEnhance.Contrast(transformed).enhance(1.08)
-        if perspective:
-            w, h = transformed.size
-            transformed = transformed.transform(
-                (w, h),
-                Image.Transform.QUAD,
-                (8, 6, w - 8, 0, w - 2, h - 8, 0, h - 2),
-                resample=Image.Resampling.BICUBIC,
-            )
-
-        original_preview = ImageOps.contain(original, (220, 220))
-        transformed_preview = ImageOps.contain(transformed, (220, 220))
-        original_url = _pil_image_to_data_url(original_preview)
-        transformed_url = _pil_image_to_data_url(transformed_preview)
-        label = sample_path.parent.name
-
-        cards_html.append(
-            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px;'
-            'border:1px solid var(--color-border);border-radius:16px;background:var(--color-surface);">'
-            f'<div><div style="margin-bottom:8px;font-size:12px;font-weight:700;color:var(--color-text-muted);letter-spacing:.08em;text-transform:uppercase;">Original · class {html.escape(label)}</div>'
-            f'<div style="padding:10px;border-radius:14px;background:var(--color-surface-soft);border:1px solid var(--color-border-row);text-align:center;"><img src="{original_url}" alt="Original sample {idx}" style="max-width:100%;max-height:220px;border-radius:12px;"/></div></div>'
-            f'<div><div style="margin-bottom:8px;font-size:12px;font-weight:700;color:var(--color-accent-dark);letter-spacing:.08em;text-transform:uppercase;">Proposed transformed version</div>'
-            f'<div style="padding:10px;border-radius:14px;background:var(--color-surface-tint);border:1px solid var(--color-border);text-align:center;"><img src="{transformed_url}" alt="Transformed sample {idx}" style="max-width:100%;max-height:220px;border-radius:12px;"/></div></div>'
-            '</div>'
-        )
-
-    subtitle = (
-        "These previews use real images from the dataset and deterministic versions of the currently selected image transforms. "
-        "They are meant to show the direction of change before training."
-    )
-    return _render_quality_lab_html("Data Quality Lab", subtitle, chips, cards_html)
-
-
-# Keep YOLO options local so the app doesn't touch cv2/ultralytics at startup.
-YOLO_MODELS = {
-    "YOLOv8 Nano  (~6 MB  · fastest)":   "yolov8n.pt",
-    "YOLOv8 Small (~22 MB · balanced)":  "yolov8s.pt",
-    "YOLOv8 Medium (~52 MB · accurate)": "yolov8m.pt",
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Constants
-# ─────────────────────────────────────────────────────────────────────────────
-MODALITIES = ["graph", "image", "text", "tabular", "timeseries", "audio", "video"]
-PROJECT_MODES = ["Beginner", "Guided", "Advanced"]
-OPTIMIZERS = ["adam", "adamw", "sgd"]
-SCHEDULERS = ["cosine", "warmup_cosine", "step", "none"]
-AUG_LEVELS = ["none", "light", "medium", "heavy"]
-# "multi-label" is omitted until loaders produce multi-hot targets (see models/registry.py).
-TASKS      = ["classification", "clustering", "regression", "anomaly"]
-
+# The component tree is built in ui/layout.py; the callbacks below wire it up.
 APP_THEME = gr.themes.Soft(
     primary_hue="emerald",
     secondary_hue="cyan",
@@ -322,719 +107,6 @@ APP_THEME = gr.themes.Soft(
 _APP_CSS_PATH = _PROJECT_ROOT / "styles" / "app.css"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# UI helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _loss_plot(history: list[dict]) -> Any:
-    """
-    Training/validation loss and metric curves for ``history``.
-    """
-    from matplotlib.figure import Figure
-
-    epochs     = [h["epoch"]      for h in history]
-    train_loss = [h["train_loss"] for h in history]
-    val_loss   = [h["val_loss"]   for h in history]
-    val_metric = [h["val_acc"]    for h in history]
-
-    # A standalone Figure (not pyplot) per call: pyplot's shared named figure
-    # let two concurrent runs draw into each other's plot, and nothing is
-    # registered globally, so it is freed once Gradio has rendered it.
-    # dpi=130 keeps plots sharp on high-DPI (Retina) displays.
-    fig = Figure(figsize=(10, 4), dpi=130)
-    ax1, ax2 = fig.subplots(1, 2)
-    ax1.plot(epochs, train_loss, label="Train loss", marker="o", markersize=3)
-    ax1.plot(epochs, val_loss,   label="Val loss",   marker="o", markersize=3)
-    ax1.set_xlabel("Epoch"); ax1.set_ylabel("Loss")
-    ax1.set_title("Loss"); ax1.legend()
-    ax2.plot(epochs, val_metric, color="steelblue", marker="o", markersize=3)
-    ax2.set_xlabel("Epoch"); ax2.set_ylabel("Accuracy % / MAE")
-    ax2.set_title("Validation Metric")
-    fig.tight_layout()
-    return fig
-
-
-HISTORY_COLUMNS = [
-    "id",
-    "timestamp",
-    "model",
-    "modality",
-    "task",
-    "mode",
-    "val_acc",
-    "val_loss",
-    "bundle",
-]
-
-
-def _format_eval_summary(summary: str) -> str:
-    """Render evaluation text as readable markdown."""
-    if not summary or not str(summary).strip():
-        return "> ℹ️ Evaluation metrics will appear here after training completes."
-
-    text = str(summary).strip()
-    if "precision" in text and "recall" in text and "f1-score" in text:
-        headline, _, report_block = text.partition("\n")
-        accuracy_match = re.search(r"Validation Accuracy:\s*([0-9.]+)%", text)
-        macro_match = re.search(r"macro avg\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+(\d+)", text)
-        weighted_match = re.search(r"weighted avg\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+(\d+)", text)
-
-        rows = []
-        for raw_line in report_block.splitlines():
-            line = raw_line.strip()
-            if not line or "precision" in line or line.startswith("accuracy"):
-                continue
-            match = re.match(r"(.+?)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)\s+(\d+)$", line)
-            if not match:
-                continue
-            label, precision, recall, f1_score, support = match.groups()
-            rows.append((label.strip(), precision, recall, f1_score, support))
-
-        chips = []
-        if accuracy_match:
-            chips.append(("Accuracy", f"{accuracy_match.group(1)}%"))
-        if macro_match:
-            chips.append(("Macro F1", macro_match.group(3)))
-        if weighted_match:
-            chips.append(("Weighted F1", weighted_match.group(3)))
-
-        chip_html = "".join(
-            f'<div class="studio-report-chip"><strong>{html.escape(label)}</strong><span>{html.escape(value)}</span></div>'
-            for label, value in chips
-        )
-        rows_html = "".join(
-            "<tr>"
-            f"<td>{html.escape(label)}</td>"
-            f"<td>{html.escape(precision)}</td>"
-            f"<td>{html.escape(recall)}</td>"
-            f"<td>{html.escape(f1_score)}</td>"
-            f"<td>{html.escape(support)}</td>"
-            "</tr>"
-            for label, precision, recall, f1_score, support in rows
-        )
-
-        return (
-            f'<div class="studio-report">'
-            f'<h3>{html.escape(headline.strip())}</h3>'
-            f'<div class="studio-report-chip-row">{chip_html}</div>'
-            f'<div class="studio-report-table-wrap">'
-            f'<table class="studio-report-table">'
-            f'<thead><tr><th>Label</th><th>Precision</th><th>Recall</th><th>F1-score</th><th>Support</th></tr></thead>'
-            f'<tbody>{rows_html}</tbody>'
-            f'</table>'
-            f'</div>'
-            f'</div>'
-        )
-
-    return text
-
-
-def _format_status_block(title: str, body: str, *, success: bool = True) -> str:
-    """Format action feedback as markdown."""
-    cleaned = (body or "").strip()
-    icon = "✅" if success else "⚠️"
-    if not cleaned:
-        return f"*{title} status will appear here.*"
-    return f"### {icon} {title}\n\n```text\n{cleaned}\n```"
-
-
-_DEFAULT_CLASSIFICATION_NOTE = (
-    "*Classification plots will appear here for classification or multi-label runs.*"
-)
-_DEFAULT_EXPLANATION_NOTE = (
-    "*Explanation tools will appear here when the current model and modality support them.*"
-)
-_DEFAULT_DIAGNOSTICS_NOTE = (
-    "*Regression and anomaly diagnostics will appear here when they apply to the selected task.*"
-)
-_DEFAULT_SAMPLE_REVIEW_NOTE = (
-    "*Sample review updates after evaluation with misclassifications or clustering structure when available.*"
-)
-
-CLASSIFICATION_METRIC_OPTIONS = [
-    "accuracy",
-    "precision_macro",
-    "recall_macro",
-    "f1_macro",
-    "balanced_accuracy",
-    "auc_ovr",
-    "mcc",
-]
-REGRESSION_METRIC_OPTIONS = [
-    "mae",
-    "rmse",
-    "r2",
-    "mape",
-]
-
-
-def tip(key: str, fallback: str = "") -> str:
-    return TOOLTIPS.get(key, fallback)
-
-
-def _list_bundles() -> list[str]:
-    """Return absolute paths of saved model bundles, most recent first."""
-    if not _OUTPUTS_ROOT.is_dir():
-        return []
-    bundles = []
-    for entry in sorted(_OUTPUTS_ROOT.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-        if entry.is_dir() and (entry / "labels.json").exists():
-            bundles.append(str(entry))
-    return bundles
-
-
-def _section_intro(title: str, desc: str) -> str:
-    """Reusable HTML block for section headers inside cards/groups."""
-    return f'<div class="studio-section-intro"><h3>{html.escape(title)}</h3><p>{html.escape(desc)}</p></div>'
-
-
-_TUTORIAL_MODALITIES = ["image", "tabular", "text", "audio", "timeseries", "video"]
-
-_TUTORIAL_META: dict[str, dict] = {
-    "image": {
-        "title":    "MNIST handwritten digits",
-        "desc":     "10 digit classes · 300 images each · downloads ~12 MB on first use",
-        "loaded":   (
-            "### Image tutorial loaded — MNIST\n\n"
-            "300 PNG images per digit class (0–9). "
-            "**Suggested flow:** preview class balance → train a small CNN → evaluate with GradCAM → export.\n\n"
-            f"**Dataset**: `{_BUILTIN_IMAGE_TUTORIAL_PATH}`"
-        ),
-    },
-    "tabular": {
-        "title":    "Iris species classification",
-        "desc":     "3 species · 150 rows · 4 numeric features · no download needed",
-        "loaded":   (
-            "### Tabular tutorial loaded — Iris\n\n"
-            "Classic 3-class dataset: predict iris species from sepal/petal measurements. "
-            "**Suggested flow:** check feature distributions → train a gradient-boosted model → inspect SHAP values.\n\n"
-            f"**Dataset**: `{_BUILTIN_TABULAR_TUTORIAL_PATH / 'iris.csv'}`"
-        ),
-    },
-    "text": {
-        "title":    "20 Newsgroups topic classification",
-        "desc":     "3 topic categories · ~900 documents · downloads via scikit-learn on first use",
-        "loaded":   (
-            "### Text tutorial loaded — 20 Newsgroups\n\n"
-            "Classify news posts into Space, Hockey, or Politics. "
-            "**Suggested flow:** preview class balance → train a text classifier → evaluate confusion matrix.\n\n"
-            f"**Dataset**: `{_BUILTIN_TEXT_TUTORIAL_PATH / 'newsgroups.csv'}`"
-        ),
-    },
-    "audio": {
-        "title":    "Spoken digit recognition",
-        "desc":     "Digits 0–9 · ~50 WAV clips per class · downloads ~10 MB on first use",
-        "loaded":   (
-            "### Audio tutorial loaded — Spoken Digits\n\n"
-            "Classify short spoken digit recordings (Free Spoken Digit Dataset). "
-            "**Suggested flow:** preview waveform distribution → train a 1-D CNN → evaluate accuracy per digit.\n\n"
-            f"**Dataset**: `{_BUILTIN_AUDIO_TUTORIAL_PATH}`"
-        ),
-    },
-    "timeseries": {
-        "title":    "Synthetic signal classification",
-        "desc":     "3 signal types · 200 series each · 50 timesteps · generated locally",
-        "loaded":   (
-            "### Timeseries tutorial loaded — Synthetic Signals\n\n"
-            "Classify sinusoidal vs. ramp signals with added noise — a minimal time-series benchmark. "
-            "**Suggested flow:** preview signal statistics → train a 1-D CNN → evaluate per-class accuracy.\n\n"
-            f"**Dataset**: `{_BUILTIN_TIMESERIES_TUTORIAL_PATH / 'timeseries.csv'}`"
-        ),
-    },
-    "video": {
-        "title":    "Synthetic shape recognition",
-        "desc":     "3 shape classes · 30 MP4 clips each · generated locally using OpenCV",
-        "loaded":   (
-            "### Video tutorial loaded — Synthetic Shapes\n\n"
-            "Classify short video clips by moving shape (circle / square / triangle). "
-            "**Suggested flow:** preview frame statistics → train a video CNN → evaluate confusion matrix.\n\n"
-            f"**Dataset**: `{_BUILTIN_VIDEO_TUTORIAL_PATH}`"
-        ),
-    },
-}
-
-
-def _tutorial_markdown(modality: str = "image", loaded: bool = False) -> str:
-    meta = _TUTORIAL_META.get(modality, _TUTORIAL_META["image"])
-    if loaded:
-        return meta["loaded"]
-    return (
-        f"### Tutorial: {meta['title']}\n\n"
-        f"{meta['desc']}\n\n"
-        "Click **Load Tutorial** to download the dataset (if needed) and pre-fill all settings."
-    )
-
-
-def _build_evaluation_notes(
-    *,
-    task: str,
-    modality: str,
-    model_name: str,
-    sklearn_model: bool,
-    cm_fig,
-    roc_fig,
-    gcam_fig,
-    shap_fig,
-    reg_fig,
-    anomaly_fig,
-    mis_img_fig,
-    mis_df_val,
-    tsne_fig,
-) -> tuple[str, str, str, str]:
-    """Create guided notes for each Evaluate section."""
-    if task in {"classification", "multi-label"}:
-        class_lines = ["### Classification views"]
-        class_lines.append("- Confusion matrix is ready." if cm_fig is not None else "- Confusion matrix is not available for this run.")
-        class_lines.append("- ROC curves are ready." if roc_fig is not None else "- ROC curves were not generated for this run.")
-    else:
-        class_lines = [
-            "### Classification views",
-            f"- This section is not the primary focus for **{task}** runs.",
-        ]
-
-    explain_lines = ["### Explanations"]
-    if modality in {"image", "audio", "video"} and not sklearn_model:
-        explain_lines.append("- Grad-CAM is ready." if gcam_fig is not None else "- Grad-CAM was not generated for this run.")
-    else:
-        explain_lines.append(f"- Grad-CAM does not apply to **{modality}** runs with the current model.")
-    if modality == "tabular":
-        explain_lines.append("- SHAP feature importance is ready." if shap_fig is not None else "- SHAP was not available for this model or run.")
-    else:
-        explain_lines.append("- SHAP is mainly used for tabular runs.")
-
-    diagnostics_lines = ["### Prediction diagnostics"]
-    if task == "regression":
-        diagnostics_lines.append("- Regression diagnostics are ready." if reg_fig is not None else "- Regression diagnostics were not generated.")
-    else:
-        diagnostics_lines.append(f"- Regression diagnostics do not apply to **{task}** runs.")
-    if task == "anomaly" or model_name == "Autoencoder":
-        diagnostics_lines.append("- Anomaly reconstruction analysis is ready." if anomaly_fig is not None else "- Anomaly diagnostics were not generated.")
-    else:
-        diagnostics_lines.append("- Anomaly diagnostics are reserved for anomaly or autoencoder workflows.")
-
-    review_lines = ["### Sample review"]
-    if mis_df_val is not None or mis_img_fig is not None:
-        review_lines.append("- Misclassified examples are available below.")
-    elif task in {"classification", "multi-label", "regression"} and model_name != "Autoencoder":
-        review_lines.append("- No sample review artifacts were produced for this run.")
-    else:
-        review_lines.append("- Misclassification review is not central to this task.")
-    if tsne_fig is not None:
-        review_lines.append("- Clustering structure is available in the t-SNE plot.")
-    elif task == "clustering" or model_name == "Autoencoder":
-        review_lines.append("- Clustering/t-SNE was skipped or unavailable for this run.")
-    else:
-        review_lines.append("- t-SNE visualisation is reserved for clustering-style runs.")
-
-    return (
-        "\n".join(class_lines),
-        "\n".join(explain_lines),
-        "\n".join(diagnostics_lines),
-        "\n".join(review_lines),
-    )
-
-
-def _format_eval_kpis(summary: str, history: list[dict], task: str) -> str:
-    """Render a compact KPI strip for the Evaluate tab."""
-    metric_label = "Validation metric"
-    metric_value = "Not available"
-    accuracy_match = re.search(r"Validation Accuracy:\s*([0-9.]+)%", summary or "")
-    if accuracy_match:
-        metric_label = "Validation accuracy"
-        metric_value = f"{accuracy_match.group(1)}%"
-    elif history:
-        last_metric = history[-1].get("val_acc")
-        if last_metric is not None:
-            metric_value = str(last_metric)
-
-    val_loss = "Not available"
-    if history and history[-1].get("val_loss") is not None:
-        val_loss = str(history[-1]["val_loss"])
-
-    cards = [
-        ("Run type", f"{task.replace('_', ' ').title()} run"),
-        (metric_label, metric_value),
-        ("Validation loss", val_loss),
-    ]
-    card_html = "".join(
-        f'<div class="studio-kpi"><strong>{html.escape(label)}</strong><span>{html.escape(value)}</span></div>'
-        for label, value in cards
-    )
-    return f'<div class="studio-kpi-grid studio-kpi-grid--compact">{card_html}</div>'
-
-
-def _metric_display_value(metric_name: str, value):
-    if value is None:
-        return None
-    if metric_name in {"accuracy", "precision_macro", "recall_macro", "f1_macro", "balanced_accuracy"}:
-        return round(float(value) * 100.0, 2)
-    return round(float(value), 4)
-
-
-# ── Dashboard helpers ─────────────────────────────────────────────────────
-
-def _build_dashboard_kpi(
-    task: str, modality: str, history: list[dict],
-    metrics_payload: dict, model_name: str, training_mode: str,
-) -> str:
-    """Build the KPI strip HTML for the executive dashboard."""
-    task_label = (task or "unknown").replace("_", " ").title()
-
-    # Primary metric
-    if task in ("classification", "multi-label"):
-        metric_val = metrics_payload.get("accuracy")
-        if metric_val is not None:
-            metric_val = f"{float(metric_val) * 100:.1f}%"
-            raw = float(metrics_payload["accuracy"])
-            color = "#16856f" if raw >= 0.8 else "#c4820e" if raw >= 0.6 else "#c42b1c"
-        else:
-            metric_val = f"{history[-1]['val_acc']:.1f}%" if history else "—"
-            color = "var(--color-text-primary)"
-        metric_label = "Validation accuracy"
-    elif task == "regression":
-        metric_val = metrics_payload.get("mae")
-        metric_label = "Validation MAE"
-        metric_val = f"{float(metric_val):.4f}" if metric_val else "—"
-        color = "var(--color-text-primary)"
-    elif task == "clustering":
-        metric_val = metrics_payload.get("silhouette")
-        metric_label = "Silhouette"
-        metric_val = f"{float(metric_val):.3f}" if metric_val else "—"
-        color = "var(--color-text-primary)"
-    else:
-        metric_val, metric_label, color = "—", "Metric", "var(--color-text-primary)"
-
-    # Val loss
-    val_loss = f"{history[-1]['val_loss']:.4f}" if history else "—"
-
-    # Epochs
-    n_epochs = len(history) if history else 0
-    epoch_text = f"{n_epochs}"
-
-    cards = [
-        ("Task", f"{task_label} · {modality}"),
-        (metric_label, f'<span style="color:{color};font-size:1.5rem;">{metric_val}</span>'),
-        ("Val Loss", val_loss),
-        ("Model", f"{model_name} ({training_mode})"),
-    ]
-    card_html = "".join(
-        f'<div class="studio-kpi"><strong>{html.escape(label)}</strong><span>{value}</span></div>'
-        for label, value in cards
-    )
-    return f'<div class="studio-kpi-grid">{card_html}</div>'
-
-
-def _pick_primary_chart(task, cm_fig, reg_fig, tsne_fig, anomaly_fig):
-    """Return the most relevant diagnostic chart for the task."""
-    if task in ("classification", "multi-label"):
-        return cm_fig
-    if task == "regression":
-        return reg_fig
-    if task == "clustering":
-        return tsne_fig
-    if task == "anomaly":
-        return anomaly_fig
-    return cm_fig or reg_fig or tsne_fig or anomaly_fig
-
-
-def _build_action_items(
-    task: str, history: list[dict], metrics_payload: dict, model_name: str,
-) -> str:
-    """Generate actionable recommendations based on training results."""
-    items = []
-
-    if not history:
-        return "### Recommendations\n\n*Train a model to see recommendations.*"
-
-    # Check for overfitting
-    if len(history) >= 3:
-        last = history[-1]
-        if last["val_loss"] > last["train_loss"] * 1.3:
-            gap = (last["val_loss"] - last["train_loss"]) / max(last["train_loss"], 1e-6) * 100
-            items.append(
-                f"**Possible overfitting** — validation loss is {gap:.0f}% higher than training loss. "
-                "Consider more training data, stronger regularization (dropout), or data augmentation."
-            )
-
-    # Check for underfitting
-    if task in ("classification", "multi-label"):
-        acc = metrics_payload.get("accuracy")
-        if acc is not None and float(acc) < 0.7:
-            items.append(
-                f"**Low accuracy ({float(acc)*100:.1f}%)** — the model may be underfitting. "
-                "Try a larger architecture, more epochs, or a higher learning rate."
-            )
-        f1 = metrics_payload.get("f1_macro")
-        if acc and f1 and abs(float(acc) - float(f1)) > 0.15:
-            items.append(
-                "**Accuracy/F1 gap** — high accuracy but lower F1 suggests class imbalance. "
-                "Check the confusion matrix for classes the model ignores."
-            )
-
-    # Check early stopping
-    if len(history) < 10 and len(history) >= 3:
-        last_losses = [h["val_loss"] for h in history[-3:]]
-        if all(last_losses[i] >= last_losses[i-1] for i in range(1, len(last_losses))):
-            items.append(
-                f"**Early stopping likely triggered** at epoch {len(history)}. "
-                "The model converged quickly — try a lower learning rate for finer tuning."
-            )
-
-    # Check for good results
-    if task in ("classification", "multi-label"):
-        acc = metrics_payload.get("accuracy")
-        if acc and float(acc) >= 0.9:
-            items.append(
-                f"**Strong performance ({float(acc)*100:.1f}% accuracy)** — "
-                "verify on held-out data and check the confusion matrix for edge cases before deploying."
-            )
-
-    # Always suggest next steps
-    items.append(
-        "**Next steps** — review the Evaluate tab for detailed diagnostics, "
-        "try the model on new inputs in Try Your Model, and export via Export & History."
-    )
-
-    lines = ["### Recommendations", ""]
-    for item in items:
-        lines.append(f"- {item}")
-    return "\n".join(lines)
-
-
-def _slug_part(value: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", (value or "").strip().lower()).strip("_")
-    return cleaned or "project"
-
-
-def suggest_bundle_name(dpath: str, mod: str, model: str, task: str, current_name: str) -> str:
-    current = (current_name or "").strip()
-    if current and current not in {"my_model", "project"}:
-        return current
-
-    source = ""
-    if dpath:
-        source = Path(str(dpath)).stem
-    parts = [
-        _slug_part(source) if source else _slug_part(mod or "dataset"),
-        _slug_part(model or "model"),
-        _slug_part(task or "task"),
-    ]
-    return "_".join(parts[:3])
-
-
-def _workspace_status_markdown(
-    dpath: str,
-    mod: str,
-    label: str,
-    model: str,
-    task: str,
-    bundle_name: str,
-    bundle_path: str,
-) -> tuple[str, str]:
-    dataset_ready = bool(str(dpath or "").strip())
-    model_ready = bool(str(model or "").strip())
-    trained = bool(str(bundle_path or "").strip())
-    effective_bundle_name = suggest_bundle_name(dpath, mod, model, task, bundle_name)
-
-    dataset_status = "Ready" if dataset_ready else "Waiting"
-    model_status = "Ready" if model_ready else "Waiting"
-    train_status = "Complete" if trained else ("Ready to run" if dataset_ready and model_ready else "Blocked")
-
-    snapshot = [
-        "### Workspace cockpit",
-        "",
-        f"- **Dataset**: {dataset_status}",
-        f"- **Modality**: `{mod or 'not set'}`",
-        f"- **Label column**: `{label or 'not set'}`",
-        f"- **Model**: `{model or 'not selected'}`",
-        f"- **Task**: `{task or 'not selected'}`",
-        f"- **Bundle name**: `{effective_bundle_name or 'not set'}`",
-        f"- **Training**: {train_status}",
-    ]
-    if trained:
-        snapshot.append(f"- **Latest bundle**: `{bundle_path}`")
-
-    if not dataset_ready:
-        next_step = (
-            "### Next step\n\n"
-            "Upload a dataset or paste a local path, then click **Preview Dataset**. "
-            "The app will infer columns and help set up the workflow for you."
-        )
-    elif not model_ready:
-        next_step = (
-            "### Next step\n\n"
-            "Move to **Model**, keep the suggested defaults if you want a quick start, "
-            "and adjust only the task or architecture you actually want to explore."
-        )
-    elif not trained:
-        next_step = (
-            "### Next step\n\n"
-            "Go to **Train** and run a short baseline first. After that, review **Evaluate** "
-            "and try the saved bundle in **Try Your Model**."
-        )
-    else:
-        next_step = (
-            "### Next step\n\n"
-            "Your latest bundle is ready. Review the evaluation dashboard, try a prediction, "
-            "or export a serving bundle from **Export & History**."
-        )
-
-    return "\n".join(snapshot), next_step
-
-
-def _project_mode_default() -> str:
-    return str(load_project_state().get("project_mode", "Guided") or "Guided")
-
-
-def _workflow_mode_updates(project_mode: str):
-    mode = project_mode or "Guided"
-    is_beginner = mode == "Beginner"
-    is_guided = mode == "Guided"
-    is_advanced = mode == "Advanced"
-    return (
-        gr.update(visible=True),             # split_cleaning_group
-        gr.update(visible=not is_beginner),  # advanced_training_group
-        gr.update(visible=is_advanced),      # sequence_options_group
-        gr.update(visible=is_advanced),      # sklearn_options_group
-        gr.update(visible=True),             # column_mapping_group
-        gr.update(visible=not is_beginner),  # hyperparams_group
-        gr.update(visible=True),             # model_selection_group
-        gr.update(visible=not is_beginner),  # evaluation_report_group
-        gr.update(visible=not is_beginner),  # export_utilities_group
-        gr.update(visible=not is_beginner),  # history_group
-        gr.update(visible=True),             # explanation_group_top
-    )
-
-
-def _why_this_matters_markdown(project_mode: str, mod: str, model: str, task: str, recommendation: dict | None = None) -> str:
-    mode = project_mode or "Guided"
-    recommendation = recommendation or {}
-    if not model:
-        return (
-            "### Why this matters\n\n"
-            f"**{mode} mode** is active. Start by previewing the dataset so the workspace can recommend a safe baseline. "
-            "The goal of the first pass is not perfect tuning. It is to confirm the data, task, and model family line up."
-        )
-
-    rec_model = recommendation.get("model_name")
-    rec_reason = recommendation.get("rationale", [])
-    next_step = "Run a short baseline next, then trust the evaluation report before changing many settings."
-    lines = ["### Why this matters", ""]
-    if rec_model:
-        lines.append(f"- The current guided baseline favours **{rec_model}** for **{mod}** data.")
-    elif model:
-        lines.append(f"- You are working with **{model}** for a **{task}** task.")
-    if rec_reason:
-        lines.append(f"- {rec_reason[0]}")
-    if task == "classification":
-        lines.append("- Accuracy is useful, but class imbalance means F1 and per-class review matter too.")
-    elif task == "regression":
-        lines.append("- Focus on MAE/RMSE and residual patterns, not just a single headline score.")
-    elif task == "clustering":
-        lines.append("- Clustering quality is about whether the learned structure is stable and interpretable, not just whether a chart looks separated.")
-    if mode == "Beginner":
-        lines = lines[:4]
-    elif mode == "Advanced":
-        lines.append("- Advanced mode keeps more controls visible, so change one variable at a time if you want clean comparisons.")
-    lines.append(f"- {next_step}")
-    return "\n".join(lines)
-
-
-def _apply_recommendation_payload(modality_name: str, rec: dict | None):
-    rec = rec or {}
-    model_choices = get_models(modality_name, rec.get("training_mode", "fine-tune"))
-    task_choices = get_compatible_tasks(modality_name)
-    if modality_name in {"tabular", "timeseries"} and "regression" not in task_choices:
-        task_choices = task_choices + ["regression"]
-    model_value = rec.get("model_name")
-    if model_value not in model_choices and model_choices:
-        model_value = model_choices[0]
-    task_value = rec.get("task")
-    if task_value not in task_choices and task_choices:
-        task_value = task_choices[0]
-    return (
-        gr.update(value=rec.get("training_mode", "fine-tune")),
-        gr.update(choices=model_choices, value=model_value),
-        gr.update(choices=task_choices, value=task_value),
-        gr.update(value=rec.get("augmentation", "light")),
-        gr.update(value=rec.get("image_size", 160)),
-        gr.update(value=rec.get("batch_size", 16)),
-        gr.update(value=rec.get("epochs", 8)),
-        gr.update(value=rec.get("dropout", 0.3)),
-        gr.update(value=rec.get("scheduler", "cosine")),
-        gr.update(value=bool(rec.get("use_class_weights", False))),
-    )
-
-
-def _suggest_tabular_example(dpath: str, mod: str, label_col: str, current_value: str) -> str:
-    if (current_value or "").strip():
-        return current_value
-    if mod != "tabular":
-        return current_value or ""
-    try:
-        df = _read_structured_preview(dpath)
-        if df is None or df.empty:
-            return current_value or ""
-        row = df.iloc[0].to_dict()
-        if label_col in row:
-            row.pop(label_col, None)
-        if not row:
-            return current_value or ""
-        return "{\n" + ",\n".join(
-            f'  "{k}": {repr(v) if isinstance(v, str) else v}'
-            for k, v in row.items()
-        ) + "\n}"
-    except Exception:
-        return current_value or ""
-
-
-def _suggest_timeseries_example(dpath: str, mod: str, label_col: str, time_col: str, current_value: str) -> str:
-    if (current_value or "").strip():
-        return current_value
-    if mod != "timeseries":
-        return current_value or ""
-    try:
-        df = _read_structured_preview(dpath)
-        if df is None or df.empty:
-            return current_value or ""
-        feature_cols = [c for c in df.columns if c not in {label_col, time_col}]
-        if not feature_cols:
-            return current_value or ""
-        window = df[feature_cols].head(6).to_dict(orient="records")
-        lines = []
-        for row in window:
-            entries = ", ".join(
-                f'"{k}": {repr(v) if isinstance(v, str) else float(v) if v is not None else 0}'
-                for k, v in row.items()
-            )
-            lines.append(f"  {{{entries}}}")
-        return "[\n" + ",\n".join(lines) + "\n]"
-    except Exception:
-        return current_value or ""
-
-
-def _format_live_training_metrics_card(metrics: dict | None = None) -> str:
-    metrics = metrics or {}
-
-    def _value(key: str, default: str = "—") -> str:
-        value = metrics.get(key)
-        if value in (None, ""):
-            return default
-        return str(value)
-
-    cards = [
-        ("Phase", _value("phase", "Waiting")),
-        ("Epoch", _value("epoch_text")),
-        ("Train loss", _value("train_loss")),
-        ("Val loss", _value("val_loss")),
-        ("Metric", _value("metric")),
-        ("Learning rate", _value("lr")),
-    ]
-    card_html = "".join(
-        f'<div class="studio-kpi"><strong>{html.escape(label)}</strong><span>{html.escape(value)}</span></div>'
-        for label, value in cards
-    )
-    return f'<div class="studio-kpi-grid studio-kpi-grid--compact">{card_html}</div>'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1196,1183 +268,9 @@ def run_pipeline(
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Gradio 6 takes theme and css in launch(); see launch_app().
-with gr.Blocks(title="NoCode-DL") as demo:
-    with gr.Column(elem_classes=["studio-shell"]):
-        gr.HTML('<a href="#studio-main-content" class="studio-skip-link">Skip to main content</a>')
-        gr.HTML(
-            f"""
-<section class="studio-hero" aria-label="Welcome">
-  <div class="studio-hero__grid">
-    <div class="studio-hero__content">
-      <div class="studio-hero__eyebrow">NoCode Deep Learning Studio</div>
-      <h1 class="studio-hero__title">Build confident deep learning projects.</h1>
-      <p class="studio-hero__subtitle">
-        A local-first studio: drop in a dataset, let the workspace infer the setup,
-        experiment with modern model families, and learn the workflow visually instead of wrestling with boilerplate.
-      </p>
-      <div class="studio-hero__pills">
-        <span class="studio-hero__pill">Guided no-code workflow</span>
-        <span class="studio-hero__pill">Pretrained and from-scratch models</span>
-        <span class="studio-hero__pill">Runs locally on your machine</span>
-      </div>
-      <div class="studio-hero__meta">
-        <div class="studio-hero__meta-card">
-          <span class="studio-hero__meta-label">Runtime</span>
-          <span class="studio-hero__meta-value">Local-first on your machine</span>
-        </div>
-        <div class="studio-hero__meta-card">
-          <span class="studio-hero__meta-label">Hardware</span>
-          <span class="studio-hero__meta-value">Accelerator detected: {DEVICE.upper()}</span>
-        </div>
-        <div class="studio-hero__meta-card">
-          <span class="studio-hero__meta-label">Workflow</span>
-          <span class="studio-hero__meta-value">Data → Model → Train → Evaluate → Export</span>
-        </div>
-        <div class="studio-hero__meta-card">
-          <span class="studio-hero__meta-label">Privacy</span>
-          <span class="studio-hero__meta-value">🔒 Your data never leaves this machine</span>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-"""
-        )
+demo, c = build_layout()
 
-        project_mode_state = gr.State(value=_project_mode_default())
-        recommendation_state = gr.State(value={})
-        quality_report_state = gr.State(value={})
-
-        with gr.Row():
-            with gr.Group(elem_classes=["studio-card", "studio-card--soft"]) as why_group:
-                project_mode = gr.Radio(
-                    PROJECT_MODES,
-                    value=_project_mode_default(),
-                    label="Workspace mode",
-                    info=tip("project_mode"),
-                )
-            with gr.Group(elem_classes=["studio-card"]) as explanation_group_top:
-                why_box = gr.Markdown(
-                    _why_this_matters_markdown(_project_mode_default(), "image", "", "classification", {})
-                )
-
-        with gr.Row(elem_classes=["studio-cockpit"]):
-            with gr.Group(elem_classes=["studio-card"]):
-                workspace_snapshot = gr.Markdown(
-                    "### Workspace cockpit\n\n- **Dataset**: Waiting\n- **Model**: Waiting\n- **Training**: Blocked"
-                )
-            with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                next_step_box = gr.Markdown(
-                    "### Next step\n\nUpload a dataset or paste a local path to get started."
-                )
-
-        with gr.Row():
-            with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                with gr.Row():
-                    tutorial_modality_dropdown = gr.Dropdown(
-                        choices=_TUTORIAL_MODALITIES,
-                        value="image",
-                        label="Tutorial modality",
-                        scale=1,
-                        min_width=160,
-                    )
-                    load_tutorial_btn = gr.Button("✨ Load Tutorial", variant="secondary", scale=3)
-                tutorial_box = gr.Markdown(_tutorial_markdown("image"))
-
-        with gr.Tabs(elem_classes=["studio-panel"], elem_id="studio-main-content"):
-
-            # ── Tab 1: Data ───────────────────────────────────────────────────────
-            with gr.Tab("🗂 Data", elem_classes=["studio-tab-panel"]):
-                gr.HTML(
-                    """
-<section class="studio-banner" aria-label="Step 1: Data setup">
-  <div class="studio-banner__grid">
-    <div>
-      <div class="studio-banner__eyebrow">Step 1</div>
-      <h2>Turn raw files into a confident starting point.</h2>
-      <p>Upload a structured file or folder-based dataset and let the workspace detect the shape of the problem. The goal is to reduce manual setup so you can focus on reasoning about the data.</p>
-    </div>
-    <div class="studio-showcase">
-      <div class="studio-showcase__card"><strong>Auto-detected schema</strong><span>Columns and likely label fields appear as selectors instead of requiring memorized names.</span></div>
-      <div class="studio-showcase__card"><strong>Class balance preview</strong><span>Students can quickly see skew, missing fields, or modality mismatches before training.</span></div>
-    </div>
-  </div>
-</section>
-"""
-                )
-                with gr.Row():
-                    with gr.Column():
-                        with gr.Group(elem_classes=["studio-card"]) as model_selection_group:
-                            gr.HTML(_section_intro("Dataset setup", "Point the workspace at your source data, then let the app infer the columns and prepare the right controls for the modality."))
-                            modality = gr.Dropdown(MODALITIES, value="image", label="Modality",
-                                                   info=tip("modality"))
-
-                            with gr.Accordion("📂 Upload Dataset", open=True):
-                                gr.Markdown(
-                                    "Upload a **ZIP** (image/audio/video class folders or a graph folder with `nodes.csv` + `edges.csv`) "
-                                    "or **CSV/TSV/JSON** (tabular/text/timeseries). "
-                                    "The path below will be filled automatically."
-                                )
-                                data_upload = gr.File(
-                                    label="Drop file here",
-                                    file_types=[".zip", ".csv", ".tsv", ".json"],
-                                    file_count="single",
-                                )
-
-                            data_path = gr.Textbox(
-                                label="Data path",
-                                placeholder="/path/to/dataset  or  /path/to/data.csv",
-                                info=tip("data_path"))
-
-                        with gr.Group(elem_classes=["studio-card", "studio-card--compact"]) as column_mapping_group:
-                            gr.HTML(_section_intro("Column mapping", "For structured data, selectors populate from detected fields so you can choose from the actual dataset schema."))
-                            label_col   = gr.Dropdown(
-                                choices=[],
-                                value="label",
-                                label="Label column",
-                                info=tip("label_col"),
-                                allow_custom_value=True,
-                                visible=True,
-                            )
-                            text_col    = gr.Dropdown(
-                                choices=[],
-                                value="text",
-                                label="Input text column (X)",
-                                info=tip("text_col"),
-                                allow_custom_value=True,
-                                visible=False,
-                            )
-                            feature_cols = gr.Dropdown(
-                                choices=[],
-                                value=[],
-                                multiselect=True,
-                                label="Feature columns",
-                                info=tip("feature_cols"),
-                                visible=False,
-                            )
-                            time_col    = gr.Dropdown(
-                                choices=[],
-                                value="",
-                                label="Timestamp column (optional)",
-                                info=tip("time_col"),
-                                allow_custom_value=True,
-                                visible=False,
-                            )
-                            window_size = gr.Slider(10, 500, value=50,    step=10,
-                                                    label="Window size (timeseries)", visible=False,
-                                                    info=tip("window_size"))
-                            n_frames    = gr.Slider(4,  32,  value=8,     step=4,
-                                                    label="Frames to sample (video)", visible=False,
-                                                    info=tip("n_frames"))
-                            image_size  = gr.Slider(64, 384, value=160, step=16,
-                                                    label="Image size", visible=False,
-                                                    info=tip("image_size"))
-                            image_size_hint = gr.Markdown(
-                                value="",
-                                visible=False,
-                            )
-                            sample_rate = gr.Slider(8000, 44100, value=22050, step=1000,
-                                                    label="Sample rate Hz (audio)", visible=False,
-                                                    info=tip("sample_rate"))
-                            audio_image_size = gr.Slider(96, 384, value=224, step=32,
-                                                         label="Spectrogram image size", visible=False,
-                                                         info=tip("audio_image_size"))
-                            audio_n_mels = gr.Slider(32, 256, value=64, step=16,
-                                                     label="Mel bins", visible=False,
-                                                     info=tip("audio_n_mels"))
-                            augmentation = gr.Dropdown(AUG_LEVELS, value="light",
-                                                       label="Augmentation level",
-                                                       info=tip("augmentation"))
-
-                        with gr.Group(elem_classes=["studio-card", "studio-card--compact"]) as split_cleaning_group:
-                            with gr.Accordion("⚙️ Split, Subset & Cleaning", open=True):
-                                val_split = gr.Slider(0.1, 0.4, value=0.2, step=0.05,
-                                                      label="Validation split",
-                                                      info=tip("val_split"))
-                                use_random_subset = gr.Checkbox(
-                                    value=False,
-                                    label="Use random subset for quick experiments",
-                                    info=tip("use_random_subset"),
-                                    visible=False,
-                                )
-                                subset_percent = gr.Slider(
-                                    0.1, 100.0, value=1.0, step=0.1,
-                                    label="Subset percentage",
-                                    info=tip("subset_percent"),
-                                    visible=False,
-                                )
-                                subset_seed = gr.Number(
-                                    value=42,
-                                    precision=0,
-                                    label="Subset seed",
-                                    info=tip("subset_seed"),
-                                    visible=False,
-                                )
-                                use_data_cleaning = gr.Checkbox(value=False,
-                                                                 label="Auto-clean tabular data",
-                                                                 info=tip("use_data_cleaning"),
-                                                                 visible=False)
-                                tabular_missing_strategy = gr.Dropdown(
-                                    ["auto", "median", "mean", "drop"],
-                                    value="auto",
-                                    label="Tabular missing-value strategy",
-                                    info=tip("tabular_missing_strategy"),
-                                    visible=False,
-                                )
-                                tabular_clip_outliers = gr.Checkbox(
-                                    value=False,
-                                    label="Clip extreme tabular values",
-                                    info=tip("tabular_clip_outliers"),
-                                    visible=False,
-                                )
-                                text_lowercase = gr.Checkbox(
-                                    value=True,
-                                    label="Lowercase text",
-                                    info=tip("text_lowercase"),
-                                    visible=False,
-                                )
-                                text_strip_urls = gr.Checkbox(
-                                    value=True,
-                                    label="Remove URLs from text",
-                                    info=tip("text_strip_urls"),
-                                    visible=False,
-                                )
-                                text_strip_punctuation = gr.Checkbox(
-                                    value=False,
-                                    label="Remove punctuation from text",
-                                    info=tip("text_strip_punctuation"),
-                                    visible=False,
-                                )
-                                text_remove_stopwords = gr.Checkbox(
-                                    value=False,
-                                    label="Remove common stop words",
-                                    info=tip("text_remove_stopwords"),
-                                    visible=False,
-                                )
-                                text_deduplicate = gr.Checkbox(
-                                    value=False,
-                                    label="Remove duplicate text rows",
-                                    info=tip("text_deduplicate"),
-                                    visible=False,
-                                )
-                                text_apply_stemming = gr.Checkbox(
-                                    value=False,
-                                    label="Apply stemming",
-                                    info=tip("text_apply_stemming"),
-                                    visible=False,
-                                )
-                                text_apply_lemmatization = gr.Checkbox(
-                                    value=False,
-                                    label="Apply lightweight lemmatization",
-                                    info=tip("text_apply_lemmatization"),
-                                    visible=False,
-                                )
-                                text_use_ngrams = gr.Checkbox(
-                                    value=False,
-                                    label="Use n-gram baseline features for classical text models",
-                                    info=tip("text_use_ngrams"),
-                                    visible=False,
-                                )
-                                timeseries_sort_by_time = gr.Checkbox(
-                                    value=True,
-                                    label="Sort rows by timestamp",
-                                    info=tip("timeseries_sort_by_time"),
-                                    visible=False,
-                                )
-                                timeseries_fill_strategy = gr.Dropdown(
-                                    ["none", "forward_fill", "interpolate"],
-                                    value="none",
-                                    label="Time-series missing-value strategy",
-                                    info=tip("timeseries_fill_strategy"),
-                                    visible=False,
-                                )
-                                timeseries_forecast_mode = gr.Checkbox(
-                                    value=False,
-                                    label="Forecast future values",
-                                    info=tip("timeseries_forecast_mode"),
-                                    visible=False,
-                                )
-                                timeseries_forecast_horizon = gr.Slider(
-                                    1, 24, value=1, step=1,
-                                    label="Forecast horizon",
-                                    info=tip("timeseries_forecast_horizon"),
-                                    visible=False,
-                                )
-                                timeseries_lag_steps = gr.Slider(
-                                    0, 12, value=0, step=1,
-                                    label="Lag features",
-                                    info=tip("timeseries_lag_steps"),
-                                    visible=False,
-                                )
-                                timeseries_rolling_window = gr.Slider(
-                                    0, 24, value=0, step=1,
-                                    label="Rolling statistics window",
-                                    info=tip("timeseries_rolling_window"),
-                                    visible=False,
-                                )
-                                image_verify_files = gr.Checkbox(
-                                    value=False,
-                                    label="Skip unreadable image files",
-                                    info=tip("image_verify_files"),
-                                    visible=False,
-                                )
-                                image_aug_flip = gr.Checkbox(
-                                    value=True,
-                                    label="Image: horizontal flip",
-                                    info=tip("image_aug_flip"),
-                                    visible=False,
-                                )
-                                image_aug_vertical = gr.Checkbox(
-                                    value=False,
-                                    label="Image: vertical flip",
-                                    info=tip("image_aug_vertical"),
-                                    visible=False,
-                                )
-                                image_aug_rotation = gr.Checkbox(
-                                    value=False,
-                                    label="Image: rotation",
-                                    info=tip("image_aug_rotation"),
-                                    visible=False,
-                                )
-                                image_aug_color = gr.Checkbox(
-                                    value=False,
-                                    label="Image: color jitter",
-                                    info=tip("image_aug_color"),
-                                    visible=False,
-                                )
-                                image_aug_gray = gr.Checkbox(
-                                    value=False,
-                                    label="Image: grayscale",
-                                    info=tip("image_aug_gray"),
-                                    visible=False,
-                                )
-                                image_aug_perspective = gr.Checkbox(
-                                    value=False,
-                                    label="Image: perspective warp",
-                                    info=tip("image_aug_perspective"),
-                                    visible=False,
-                                )
-                                image_normalization = gr.Dropdown(
-                                    ["imagenet", "simple_0_1", "none"],
-                                    value="imagenet",
-                                    label="Image normalization preset",
-                                    info=tip("image_normalization"),
-                                    visible=False,
-                                )
-                                image_force_grayscale = gr.Checkbox(
-                                    value=False,
-                                    label="Convert all images to grayscale before training",
-                                    info=tip("image_force_grayscale"),
-                                    visible=False,
-                                )
-                                audio_verify_files = gr.Checkbox(
-                                    value=False,
-                                    label="Skip unreadable audio files",
-                                    info=tip("audio_verify_files"),
-                                    visible=False,
-                                )
-                                audio_normalize_waveform = gr.Checkbox(
-                                    value=True,
-                                    label="Normalize audio loudness",
-                                    info=tip("audio_normalize_waveform"),
-                                    visible=False,
-                                )
-                                audio_aug_noise = gr.Checkbox(
-                                    value=True,
-                                    label="Audio: add noise",
-                                    info=tip("audio_aug_noise"),
-                                    visible=False,
-                                )
-                                audio_aug_shift = gr.Checkbox(
-                                    value=False,
-                                    label="Audio: time shift",
-                                    info=tip("audio_aug_shift"),
-                                    visible=False,
-                                )
-                                audio_aug_gain = gr.Checkbox(
-                                    value=False,
-                                    label="Audio: gain jitter",
-                                    info=tip("audio_aug_gain"),
-                                    visible=False,
-                                )
-                                audio_aug_time_mask = gr.Checkbox(
-                                    value=False,
-                                    label="Audio: time masking",
-                                    info=tip("audio_aug_time_mask"),
-                                    visible=False,
-                                )
-                                audio_aug_freq_mask = gr.Checkbox(
-                                    value=False,
-                                    label="Audio: frequency masking",
-                                    info=tip("audio_aug_freq_mask"),
-                                    visible=False,
-                                )
-                                video_verify_files = gr.Checkbox(
-                                    value=False,
-                                    label="Skip unreadable video files",
-                                    info=tip("video_verify_files"),
-                                    visible=False,
-                                )
-                                tabular_scaling = gr.Dropdown(
-                                    ["standard", "minmax", "robust", "none"],
-                                    value="standard",
-                                    label="Tabular scaling strategy",
-                                    info=tip("tabular_scaling"),
-                                    visible=False,
-                                )
-
-                        preview_btn = gr.Button("🔍 Preview Dataset", variant="secondary")
-
-                    with gr.Column():
-                        with gr.Group(elem_classes=["studio-card"]) as evaluation_report_group:
-                            gr.HTML(_section_intro("Dataset intelligence", "Preview the upload, review validation feedback, and sanity-check class balance before you commit to training."))
-                            stats_summary_box = gr.Textbox(label="Dataset summary", lines=10,
-                                                            interactive=False)
-                            dist_plot         = gr.Plot(label="Class distribution")
-                            validation_box    = gr.Markdown(
-                                value="Review validation feedback and inferred columns here after previewing the dataset."
-                            )
-                            quality_report_box = gr.Markdown(
-                                value="The preflight Data Quality Report will appear here after preview."
-                            )
-                            quality_examples_box = gr.HTML(
-                                value=_cleaning_preview_empty_html(
-                                    "Preview a dataset to inspect concrete before-and-after examples from the current cleaning choices."
-                                )
-                            )
-
-            # ── Tab 2: Model ──────────────────────────────────────────────────────
-            with gr.Tab("🧠 Model", elem_classes=["studio-tab-panel"]):
-                gr.HTML(
-                    """
-<section class="studio-banner" aria-label="Step 2: Model selection">
-  <div class="studio-banner__grid">
-    <div>
-      <div class="studio-banner__eyebrow">Step 2</div>
-      <h2>Choose a model path that informs, not overwhelms.</h2>
-      <p>Stay in a guided lane with sensible defaults, while still having room to explore pretrained models, deeper architectures, and training strategy choices when you want them.</p>
-    </div>
-    <div class="studio-badge-list">
-      <span class="studio-badge">Fine-tune pretrained backbones</span>
-      <span class="studio-badge">Train from scratch</span>
-      <span class="studio-badge">Recommended defaults</span>
-      <span class="studio-badge">Advanced knobs when needed</span>
-    </div>
-  </div>
-</section>
-"""
-                )
-                with gr.Row():
-                    with gr.Column():
-                        with gr.Group(elem_classes=["studio-card"]) as export_utilities_group:
-                            gr.HTML(_section_intro("Architecture", "Choose how much of the model should be pretrained, select the task, and let the app guide the setup toward safe defaults."))
-                            training_mode = gr.Radio(["fine-tune", "from_scratch"], value="fine-tune",
-                                                     label="Training mode",
-                                                     info=tip("training_mode"))
-                            model_name    = gr.Dropdown([], label="Model architecture",
-                                                        info=tip("model_name"))
-                            task          = gr.Dropdown(TASKS, value="classification", label="Task",
-                                                        info=tip("task"))
-                            n_clusters    = gr.Slider(2, 32, value=8, step=1,
-                                                      label="Number of clusters (clustering only)",
-                                                      info=tip("n_clusters"),
-                                                      visible=False)
-                            use_class_weights = gr.Checkbox(
-                                value=False, label="Auto-balance class weights",
-                                info=tip("use_class_weights"))
-                            recommend_btn       = gr.Button("✨ Get Guided Recommendations",
-                                                            variant="secondary")
-                            apply_recommendations_btn = gr.Button(
-                                "Apply recommendations",
-                                variant="primary"
-                            )
-                            recommendations_box = gr.Markdown("*Load a dataset first, then click above.*")
-                            recommendation_rationale_box = gr.Markdown("*The rationale for the recommendation will appear here.*")
-
-                    with gr.Column():
-                        with gr.Group(elem_classes=["studio-card"]) as hyperparams_group:
-                            gr.HTML(_section_intro("Hyperparameters", "Keep the primary settings visible and tuck specialist controls away until they’re actually relevant."))
-                            lr         = gr.Slider(1e-5, 1e-1, value=1e-3, step=1e-5,
-                                                   label="Learning rate",
-                                                   info=tip("learning_rate"))
-                            batch_size = gr.Slider(4, 64, value=16, step=4, label="Batch size",
-                                                   info=tip("batch_size"))
-                            epochs     = gr.Slider(1, 100, value=10, step=1, label="Epochs",
-                                                   info=tip("epochs"))
-                            dropout    = gr.Slider(0.0, 0.8, value=0.3, step=0.05, label="Dropout",
-                                                   info=tip("dropout"))
-                            optimizer  = gr.Dropdown(OPTIMIZERS, value="adam", label="Optimizer",
-                                                     info=tip("optimizer"))
-                            scheduler_name = gr.Dropdown(SCHEDULERS, value="cosine",
-                                                         label="LR scheduler",
-                                                         info=tip("scheduler"))
-                            use_amp    = gr.Checkbox(value=False, label="Mixed precision (CUDA only)",
-                                                     info=tip("use_amp"))
-
-                            with gr.Accordion("Sequence model options", open=False) as sequence_options_group:
-                                hidden_size = gr.Slider(32, 512, value=128, step=32,
-                                                        label="Hidden size",
-                                                        info=tip("hidden_size"))
-                                num_layers  = gr.Slider(1, 4, value=1, step=1,
-                                                        label="Num layers",
-                                                        info=tip("num_layers"))
-
-                            with gr.Accordion("Tree & gradient boosting options", open=False) as sklearn_options_group:
-                                gr.Markdown(XGBOOST_UNAVAILABLE_NOTE, visible=not xgboost_available())
-                                n_estimators = gr.Slider(10,  500, value=100, step=10,
-                                                          label="n_estimators",
-                                                          info=tip("n_estimators"))
-                                max_depth    = gr.Slider(0,   50,  value=0,   step=1,
-                                                          label="Max depth (0 = unlimited)",
-                                                          info=tip("max_depth"))
-                                C_param      = gr.Slider(0.01, 10, value=1.0, step=0.01,
-                                                          label="C (LogisticRegression)",
-                                                          info=tip("C_param"))
-                                max_iter     = gr.Slider(100, 2000, value=1000, step=100,
-                                                          label="Max iter (LogReg)",
-                                                          info=tip("max_iter"))
-                                lr_xgb       = gr.Slider(0.01, 0.5, value=0.1, step=0.01,
-                                                          label="Learning rate (gradient boosting)",
-                                                          info=tip("lr_xgb"))
-
-            # ── Tab 3: Train ──────────────────────────────────────────────────────
-            with gr.Tab("🚀 Train", elem_classes=["studio-tab-panel"]):
-                gr.HTML(
-                    """
-<div class="studio-kpi-grid">
-  <div class="studio-kpi"><strong>Launch point</strong><span>Run the core training path first</span></div>
-  <div class="studio-kpi"><strong>Outputs</strong><span>Curves, summaries, exports, and bundle path</span></div>
-  <div class="studio-kpi"><strong>Advanced mode</strong><span>Cross-validation and search after baseline success</span></div>
-</div>
-"""
-                )
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        with gr.Group(elem_classes=["studio-card"]):
-                            gr.HTML(_section_intro("Run configuration", "Name the bundle, control checkpoint behavior, and start or stop the active training session from one place."))
-                            bundle_name = gr.Textbox(value="my_model", label="Bundle name",
-                                                      info=tip("bundle_name"))
-                            checkpoint_every = gr.Slider(0, 20, value=0, step=1,
-                                                          label="Save checkpoint every N epochs",
-                                                          info=tip("checkpoint_every"))
-                            train_btn   = gr.Button("▶ Train & Export", variant="primary")
-                            stop_btn    = gr.Button("⏹ Stop", variant="stop")
-                            gr.HTML("<p class='studio-inline-note'>Tip: start with a short run to verify your dataset and model pairing before longer experiments.</p>")
-
-                        with gr.Group(elem_classes=["studio-card", "studio-card--compact", "studio-card--soft"]) as advanced_training_group:
-                            gr.HTML(_section_intro("Advanced training", "Use these after the baseline workflow is stable. They reuse your Data and Model settings."))
-                            with gr.Accordion("🔬 Cross-validation and search", open=False):
-                                with gr.Tabs():
-                                    with gr.Tab("🔁 K-Fold Cross-Validation"):
-                                        gr.Markdown(
-                                            "Evaluate model stability across multiple train/val splits. "
-                                            "Supports up to 10 folds and reports a richer metric suite for classification."
-                                        )
-                                        cv_k = gr.Slider(2, 10, value=10, step=1,
-                                                          label="Number of folds (k)",
-                                                          info=tip("cv_k"))
-                                        cv_run_btn = gr.Button("▶ Run Cross-Validation",
-                                                               variant="secondary")
-                                        cv_significance_models = gr.Dropdown(
-                                            choices=[],
-                                            value=[],
-                                            multiselect=True,
-                                            label="Compare against additional model families",
-                                            info=tip("cv_significance_models"),
-                                        )
-                                        cv_significance_metric = gr.Dropdown(
-                                            choices=["accuracy", "precision_macro", "recall_macro", "f1_macro", "auc_ovr", "mcc"],
-                                            value="accuracy",
-                                            label="Significance metric",
-                                            info=tip("cv_significance_metric"),
-                                        )
-                                        cv_significance_btn = gr.Button(
-                                            "🧪 Test Significance Between Families",
-                                            variant="secondary",
-                                        )
-                                        cv_significance_box = gr.Markdown(
-                                            "*Select one or more additional families and use 10-fold CV to compare them against the active model.*"
-                                        )
-                                        cv_significance_plot = gr.Plot(
-                                            label="Fold-by-fold family comparison"
-                                        )
-                                        cv_results_box = gr.Textbox(
-                                            label="Cross-validation results", lines=10,
-                                            interactive=False,
-                                            value="*Configure Data & Model tabs, then click Run.*")
-
-                                    with gr.Tab("🎲 Random Hyperparameter Search"):
-                                        gr.Markdown(
-                                            "Try multiple learning rate and dropout combinations "
-                                            "and report which performs best on the validation set."
-                                        )
-                                        hparam_lr_vals = gr.Textbox(
-                                            value="1e-4, 1e-3, 1e-2",
-                                            label="Learning rate candidates (comma-separated)",
-                                            info=tip("hparam_lr_vals"))
-                                        hparam_dropout_vals = gr.Textbox(
-                                            value="0.1, 0.3, 0.5",
-                                            label="Dropout candidates (comma-separated)",
-                                            info=tip("hparam_dropout_vals"))
-                                        hparam_n_trials     = gr.Slider(2, 20, value=6, step=1,
-                                                                         label="Max trials (random subset of grid)",
-                                                                         info=tip("hparam_n_trials"))
-                                        hparam_epochs       = gr.Slider(1, 20, value=3, step=1,
-                                                                         label="Epochs per trial",
-                                                                         info=tip("hparam_epochs"))
-                                        hparam_run_btn      = gr.Button("▶ Run Hyperparameter Search",
-                                                                         variant="secondary")
-                                        hparam_results_box  = gr.Textbox(
-                                            label="Search results", lines=12,
-                                            interactive=False,
-                                            value="*Configure Data & Model tabs, then click Run.*")
-
-                                    with gr.Tab("🧭 Model Sweep"):
-                                        gr.Markdown(
-                                            "Train multiple selected model families with the current Data and Hyperparameter settings, then rank them in one sortable table."
-                                        )
-                                        sweep_models = gr.Dropdown(
-                                            choices=[],
-                                            value=[],
-                                            multiselect=True,
-                                            label="Models to train and compare",
-                                            info=tip("sweep_models"),
-                                        )
-                                        sweep_metrics = gr.Dropdown(
-                                            choices=CLASSIFICATION_METRIC_OPTIONS,
-                                            value=["accuracy", "f1_macro", "auc_ovr"],
-                                            multiselect=True,
-                                            label="Metrics to show in the table",
-                                            info=tip("sweep_metrics"),
-                                        )
-                                        with gr.Row():
-                                            sweep_sort_metric = gr.Dropdown(
-                                                choices=CLASSIFICATION_METRIC_OPTIONS,
-                                                value="accuracy",
-                                                label="Sort by metric",
-                                                info=tip("sweep_sort_metric"),
-                                            )
-                                            sweep_sort_order = gr.Dropdown(
-                                                choices=["descending", "ascending"],
-                                                value="descending",
-                                                label="Sort order",
-                                                info=tip("sweep_sort_order"),
-                                            )
-                                        sweep_run_btn = gr.Button("▶ Train Selected Models", variant="secondary")
-                                        sweep_status_box = gr.Markdown(
-                                            "*Choose models and metrics, then run the sweep to build a comparison table.*"
-                                        )
-                                        sweep_table = gr.DataFrame(
-                                            label="Model comparison table",
-                                            interactive=False,
-                                            wrap=True,
-                                            line_breaks=True,
-                                            max_height=320,
-                                        )
-
-                    with gr.Column(scale=2):
-                        with gr.Group(elem_classes=["studio-card"]):
-                            gr.HTML(_section_intro("Live training telemetry", "Watch progress, inspect the training trace, and monitor the learning curves while the job runs."))
-                            eta_box       = gr.Textbox(label="ETA", interactive=False, max_lines=1)
-                            live_metrics_card = gr.HTML(
-                                value=_format_live_training_metrics_card()
-                            )
-                            status_box    = gr.Textbox(label="Training log", lines=16, interactive=False)
-                            loss_plot     = gr.Plot(label="Loss & accuracy curves")
-
-                        with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                            gr.HTML(_section_intro("Run summary", "When training completes, this area consolidates the narrative summary and architecture overview into one executive view."))
-                            training_summary_out = gr.Markdown(
-                                value="> ℹ️ Training summary will appear here once training is complete.")
-                            arch_viz_out  = gr.Plot(label="Model architecture (parameter counts)")
-
-            # ── Tab 4: Evaluate ───────────────────────────────────────────────────
-            with gr.Tab("📊 Evaluate", elem_classes=["studio-tab-panel"]):
-                gr.HTML(
-                    """
-<div class="studio-kpi-grid">
-  <div class="studio-kpi"><strong>Core report</strong><span>Overall metrics and narrative summary</span></div>
-  <div class="studio-kpi"><strong>Diagnostics</strong><span>Task-specific plots for classification, regression, clustering, and anomaly runs</span></div>
-  <div class="studio-kpi"><strong>Failure analysis</strong><span>Misclassifications, explanations, and saliency tools</span></div>
-</div>
-"""
-                )
-                with gr.Group(elem_classes=["studio-card"]) as history_group:
-                    gr.HTML(_section_intro("Evaluation report", "High-level metrics land here first so you have a readable summary before digging into technical plots."))
-                    eval_kpi_bar = gr.HTML(
-                        value=_format_eval_kpis("", [], "classification")
-                    )
-                    eval_summary_box = gr.Markdown(
-                        value="> ℹ️ Evaluation metrics will appear here after training completes."
-                    )
-
-                with gr.Row():
-                    with gr.Column():
-                        with gr.Group(elem_classes=["studio-card"], visible=True) as classification_views_group:
-                            gr.HTML(_section_intro("Classification views", "Use these to inspect class-level performance and threshold behavior."))
-                            cm_plot  = gr.Plot(label="Confusion Matrix")
-                            roc_plot = gr.Plot(label="ROC / AUC Curves")
-                            classification_note = gr.Markdown(_DEFAULT_CLASSIFICATION_NOTE)
-                    with gr.Column():
-                        with gr.Group(elem_classes=["studio-card"], visible=True) as explanation_group:
-                            gr.HTML(_section_intro("Explanations", "Surface why the model behaved the way it did across visual, audio, and tabular workflows."))
-                            gradcam_out = gr.Plot(label="Grad-CAM heatmap (image / audio / video)")
-                            shap_out    = gr.Plot(label="SHAP feature importance (tabular)")
-                            text_shap_out = gr.HTML(
-                                value="<p style='color: var(--color-text-muted, #6a857c); font-style: italic;'>"
-                                      "Token importance highlights will appear here after training a text model.</p>")
-                            explanation_note = gr.Markdown(_DEFAULT_EXPLANATION_NOTE)
-
-                with gr.Row():
-                    with gr.Column():
-                        with gr.Group(elem_classes=["studio-card"], visible=False) as diagnostics_group:
-                            gr.HTML(_section_intro("Prediction diagnostics", "Regression and anomaly plots help you read error shape, spread, and outlier behavior quickly."))
-                            regression_plot_out = gr.Plot(label="Regression diagnostics (Predicted vs Actual · Residuals)")
-                            anomaly_plot_out = gr.Plot(label="Anomaly detection — reconstruction errors")
-                            diagnostics_note = gr.Markdown(_DEFAULT_DIAGNOSTICS_NOTE)
-                    with gr.Column():
-                        with gr.Group(elem_classes=["studio-card"], visible=True) as sample_review_group:
-                            gr.HTML(_section_intro("Sample review", "Look at the model’s mistakes and cluster structure to understand where learning is breaking down."))
-                            misclass_img = gr.Plot(label="Misclassified samples — visual")
-                            misclass_df  = gr.DataFrame(
-                                label="Misclassified samples — table",
-                                wrap=True,
-                                line_breaks=True,
-                                max_height=320,
-                                column_widths=["80px", "120px", "140px", "140px", "140px", "160px", "140px"],
-                            )
-                            sample_review_note = gr.Markdown(_DEFAULT_SAMPLE_REVIEW_NOTE)
-                        with gr.Group(elem_classes=["studio-card"], visible=False) as clustering_group:
-                            gr.HTML(_section_intro("Clustering review", "Inspect the learned structure and separation between clusters for clustering workflows."))
-                            tsne_plot_out   = gr.Plot(label="t-SNE cluster visualisation")
-                            clustering_note = gr.Markdown(
-                                "*Clustering structure will appear here for clustering runs.*"
-                            )
-
-            # ── Tab 5: Dashboard ──────────────────────────────────────────────────
-            with gr.Tab("📈 Dashboard", elem_classes=["studio-tab-panel"]):
-                with gr.Group(elem_classes=["studio-card"]):
-                    gr.HTML(_section_intro(
-                        "Executive Dashboard",
-                        "Consolidated view of your training run. Key metrics, the most relevant diagnostic, explainability, and actionable recommendations — all in one place."))
-                    dashboard_kpi = gr.HTML(
-                        value="<p style='color: var(--color-text-muted, #6a857c); font-style: italic;'>"
-                              "Train a model to populate the dashboard.</p>")
-
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        with gr.Group(elem_classes=["studio-card"]):
-                            gr.HTML(_section_intro("Primary Diagnostic", "The most relevant chart for your task type."))
-                            dashboard_primary_chart = gr.Plot(label="Diagnostic chart")
-                        with gr.Group(elem_classes=["studio-card"]):
-                            gr.HTML(_section_intro("Explainability", "Why the model made its decisions."))
-                            dashboard_explain_plot = gr.Plot(label="Explanation chart")
-                            dashboard_explain_html = gr.HTML(value="")
-                    with gr.Column(scale=2):
-                        with gr.Group(elem_classes=["studio-card"]):
-                            gr.HTML(_section_intro("Training Curves", "Loss and metric progression across epochs."))
-                            dashboard_loss_chart = gr.Plot(label="Loss & accuracy")
-                        with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                            dashboard_actions = gr.Markdown(
-                                "### Recommendations\n\n*Train a model to see recommendations.*")
-                        with gr.Group(elem_classes=["studio-card"]):
-                            streamlit_btn = gr.Button("🚀 Export Streamlit Dashboard", variant="secondary")
-                            streamlit_status = gr.Markdown("")
-
-            # ── Tab 6: Try Your Model ─────────────────────────────────────────────
-            with gr.Tab("🧪 Try Your Model", elem_classes=["studio-tab-panel"]):
-                with gr.Group(elem_classes=["studio-card"]):
-                    gr.HTML(_section_intro("Interactive inference", "Load the latest bundle, try new examples, and inspect confidence scores without leaving the workspace."))
-                    infer_bundle_path = gr.Dropdown(
-                        choices=[],
-                        label="Bundle path (select a saved bundle or paste a path)",
-                        info=tip("infer_bundle_path"),
-                        allow_custom_value=True,
-                    )
-                    infer_refresh_btn = gr.Button("🔄 Refresh bundles", variant="secondary", size="sm")
-
-                with gr.Tabs():
-                    with gr.Tab("🖼 Image"):
-                        with gr.Row():
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card"]):
-                                    gr.HTML(_section_intro("Image prediction", "Upload a single image and review the ranked class predictions."))
-                                    infer_img_input = gr.Image(type="filepath", label="Upload image",
-                                                                sources=["upload", "clipboard"])
-                                    infer_img_btn   = gr.Button("🔮 Predict", variant="primary")
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                                    infer_img_md    = gr.Markdown("*Upload an image and click Predict.*")
-                                    infer_img_chart = gr.Plot(label="Confidence scores")
-
-                    with gr.Tab("✍️ Text"):
-                        with gr.Row():
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card"]):
-                                    gr.HTML(_section_intro("Text prediction", "Paste a sample sentence or paragraph and run the trained classifier against it."))
-                                    infer_text_input = gr.Textbox(label="Enter text", lines=4,
-                                                                   placeholder="Type or paste text here…",
-                                                                   info=tip("infer_text_input"))
-                                    infer_text_btn   = gr.Button("🔮 Predict", variant="primary")
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                                    infer_text_md    = gr.Markdown("*Enter text and click Predict.*")
-                                    infer_text_chart = gr.Plot(label="Confidence scores")
-                                    infer_text_explain = gr.HTML(value="")
-
-                    with gr.Tab("📊 Tabular"):
-                        with gr.Row():
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card"]):
-                                    gr.HTML(_section_intro("Tabular prediction", "Provide feature values as JSON so the model can score a single record."))
-                                    gr.Markdown(
-                                        "Enter feature values as JSON, e.g. "
-                                        "`{\"age\": 25, \"income\": 50000, \"score\": 0.8}`"
-                                    )
-                                    infer_tab_fill_btn = gr.Button("✨ Use detected sample", variant="secondary")
-                                    infer_tab_input = gr.Textbox(label="Feature values (JSON)", lines=5,
-                                                                  placeholder='{"feature1": value, …}',
-                                                                  info=tip("infer_tab_input"))
-                                    infer_tab_btn   = gr.Button("🔮 Predict", variant="primary")
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                                    infer_tab_md    = gr.Markdown("*Enter features and click Predict.*")
-                                    infer_tab_chart = gr.Plot(label="Confidence scores")
-
-                    with gr.Tab("📈 Time-series"):
-                        with gr.Row():
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card"]):
-                                    gr.HTML(_section_intro("Time-series prediction", "Provide a short JSON window of sequential feature rows and score it with the current bundle."))
-                                    gr.Markdown(
-                                        "Enter a JSON array like "
-                                        "`[{\"sensor_a\": 0.12, \"sensor_b\": 1.4}, {\"sensor_a\": 0.18, \"sensor_b\": 1.3}]`"
-                                    )
-                                    infer_ts_fill_btn = gr.Button("✨ Use detected window sample", variant="secondary")
-                                    infer_ts_input = gr.Textbox(label="Time-series window (JSON)", lines=7,
-                                                                placeholder='[{"feature1": value, "feature2": value}, …]',
-                                                                info=tip("infer_ts_input"))
-                                    infer_ts_btn = gr.Button("🔮 Predict", variant="primary")
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                                    infer_ts_md = gr.Markdown("*Enter a window and click Predict.*")
-                                    infer_ts_chart = gr.Plot(label="Prediction summary")
-
-                    with gr.Tab("🔊 Audio"):
-                        with gr.Row():
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card"]):
-                                    gr.HTML(_section_intro("Audio prediction", "Upload a single clip to test the current bundle on new audio input."))
-                                    infer_aud_input = gr.Audio(type="filepath", label="Upload audio")
-                                    infer_aud_btn   = gr.Button("🔮 Predict", variant="primary")
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                                    infer_aud_md    = gr.Markdown("*Upload audio and click Predict.*")
-                                    infer_aud_chart = gr.Plot(label="Confidence scores")
-
-                    with gr.Tab("📁 Batch"):
-                        with gr.Row():
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card"]):
-                                    gr.HTML(_section_intro(
-                                        "Batch prediction",
-                                        "Point at a folder of files — the app detects the modality from the "
-                                        "loaded bundle and scores every matching file, then lets you download the results as CSV.",
-                                    ))
-                                    batch_folder = gr.Textbox(
-                                        label="Input folder path",
-                                        placeholder="/path/to/folder of images (or audio, text, video…)",
-                                        info="Paste an absolute path to a folder containing files to classify.",
-                                    )
-                                    batch_run_btn = gr.Button("🔮 Run Batch Prediction", variant="primary")
-                            with gr.Column():
-                                with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                                    batch_status = gr.Markdown("*Set a bundle and folder path, then click Run.*")
-                                    batch_df = gr.Dataframe(
-                                        headers=["file", "prediction", "confidence"],
-                                        datatype=["str", "str", "str"],
-                                        row_count=1,
-                                        column_count=3,
-                                        interactive=False,
-                                        wrap=True,
-                                        label="Predictions",
-                                    )
-                                    batch_save_btn = gr.Button("⬇️ Save CSV to outputs/", variant="secondary")
-                                    batch_save_status = gr.Markdown("")
-
-            # ── Tab 6: Export & History ───────────────────────────────────────────
-            with gr.Tab("📦 Export & History", elem_classes=["studio-tab-panel"]):
-                with gr.Group(elem_classes=["studio-card"]):
-                    gr.HTML(_section_intro("Bundle outputs", "Generate deployment artifacts, inspect the saved bundle path, and keep track of previous runs from one place."))
-                    bundle_out = gr.Textbox(label="Saved bundle path", interactive=False)
-                    with gr.Row():
-                        fastapi_btn    = gr.Button("⚡ Generate FastAPI Server", variant="secondary")
-                        model_card_btn = gr.Button("📄 Generate Model Card",    variant="secondary")
-                        docker_btn     = gr.Button("🐳 Generate Docker Bundle", variant="secondary")
-                    with gr.Row():
-                        fastapi_status_box    = gr.Markdown("*FastAPI export status will appear here.*")
-                        model_card_status_box = gr.Markdown("*Model card generation status will appear here.*")
-                        docker_status_box     = gr.Markdown("*Docker bundle status will appear here.*")
-
-                with gr.Group(elem_classes=["studio-card"]):
-                    gr.HTML(_section_intro("Run history", "Review earlier training runs and compare selected experiments side by side."))
-                    refresh_btn  = gr.Button("🔄 Refresh History")
-                    history_df   = gr.Dataframe(
-                        headers=HISTORY_COLUMNS,
-                        datatype=["number", "str", "str", "str", "str", "str", "number", "number", "str"],
-                        row_count=1,
-                        column_count=len(HISTORY_COLUMNS),
-                        interactive=False,
-                        wrap=True,
-                        line_breaks=True,
-                        max_height=320,
-                        column_widths=["70px", "150px", "120px", "110px", "130px", "120px", "90px", "90px", "360px"],
-                        label="All training runs",
-                    )
-                    compare_ids  = gr.Textbox(value="",
-                                               label="Compare run IDs (comma-separated, e.g. 0,1,2)",
-                                               info=tip("compare_ids"))
-                    compare_btn  = gr.Button("📈 Compare Selected Runs")
-                    compare_status_box = gr.Markdown("*Select one or more run IDs to generate a comparison plot.*")
-                    compare_plot = gr.Plot(label="Run comparison")
-
-            # ── Tab 7: Object Detection ───────────────────────────────────────────
-            with gr.Tab("🎯 Object Detection"):
-                gr.Markdown(
-                    """
-    ### YOLO Object Detection
-    Upload an **image** or **video** to detect objects using a pretrained YOLOv8 model,
-    or **train a custom YOLO classifier** on your own image dataset.
-    No extra setup — weights are downloaded automatically on first use.
-                    """
-                )
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        det_model = gr.Dropdown(
-                            choices=list(YOLO_MODELS.keys()),
-                            value=list(YOLO_MODELS.keys())[0],
-                            label="Model",
-                            info=tip("det_model"),
-                        )
-                        det_conf  = gr.Slider(0.05, 0.95, value=0.25, step=0.05,
-                                              label="Confidence threshold",
-                                              info=tip("det_conf"))
-                        det_iou   = gr.Slider(0.05, 0.95, value=0.45, step=0.05,
-                                              label="IoU threshold (NMS)",
-                                              info=tip("det_iou"))
-
-                with gr.Tabs():
-
-                    # ── Inference: Image ──────────────────────────────────────────
-                    with gr.Tab("🖼 Image"):
-                        with gr.Row():
-                            with gr.Column():
-                                det_img_input  = gr.Image(type="filepath",
-                                                           label="Upload image",
-                                                           sources=["upload", "clipboard"])
-                                det_img_btn    = gr.Button("🔍 Detect Objects", variant="primary")
-                            with gr.Column():
-                                det_img_output = gr.Image(label="Detected objects",
-                                                           interactive=False)
-                        det_img_stats_md = gr.Markdown("*Upload an image and click Detect.*")
-                        det_img_chart    = gr.Plot(label="Detection breakdown")
-
-                    # ── Inference: Video ──────────────────────────────────────────
-                    with gr.Tab("🎬 Video"):
-                        with gr.Row():
-                            with gr.Column():
-                                det_vid_input  = gr.Video(label="Upload video",
-                                                           sources=["upload"],
-                                                           format="mp4")
-                                det_vid_btn    = gr.Button("▶ Detect Objects in Video",
-                                                            variant="primary")
-                            with gr.Column():
-                                det_vid_output = gr.Video(label="Annotated video",
-                                                           interactive=False)
-                        det_vid_status   = gr.Textbox(label="Progress", lines=3,
-                                                       interactive=False)
-                        det_vid_stats_md = gr.Markdown("*Upload a video and click Detect.*")
-                        det_vid_chart    = gr.Plot(label="Detection breakdown")
-
-                    # ── Custom Training ───────────────────────────────────────────
-                    with gr.Tab("🏋 Train Custom Classifier"):
-                        gr.Markdown(
-                            """
-    Train YOLOv8 as an **image classifier** on your own classes.
-    Organise your images as `dataset_folder/class_name/image.jpg` (same format as the Data tab),
-    then point to the root folder below.
-                            """
-                        )
-                        with gr.Row():
-                            with gr.Column():
-                                yolo_data_path = gr.Textbox(
-                                    label="Dataset folder",
-                                    placeholder="/path/to/image_class_folders",
-                                    info=tip("yolo_data_dir"))
-                                yolo_model_size = gr.Dropdown(
-                                    choices=["YOLOv8 Nano", "YOLOv8 Small", "YOLOv8 Medium"],
-                                    value="YOLOv8 Nano",
-                                    label="Model size",
-                                    info=tip("yolo_model_size"))
-                                yolo_epochs   = gr.Slider(1, 100, value=20, step=1,
-                                                           label="Epochs",
-                                                           info=tip("yolo_epochs"))
-                                yolo_batch    = gr.Slider(4, 64, value=16, step=4,
-                                                           label="Batch size",
-                                                           info=tip("yolo_batch"))
-                                yolo_train_btn = gr.Button("▶ Train", variant="primary")
-                            with gr.Column():
-                                yolo_status_box = gr.Textbox(label="Training log", lines=12,
-                                                              interactive=False)
-                        yolo_result_md = gr.Markdown("*Start training to see results.*")
-
-            # ── Tab 8: Annotation Studio ────────────────────────────────────────
-            with gr.Tab("🏷️ Annotation Studio", elem_classes=["studio-tab-panel"]):
-                with gr.Group(elem_classes=["studio-card"]):
-                    gr.HTML(_section_intro(
-                        "Annotation and relabeling",
-                        "Review concrete samples, correct labels in-place, and turn object detections into saved annotation files without leaving the app."
-                    ))
-
-                with gr.Tabs():
-                    with gr.Tab("🖼 Image relabel"):
-                        with gr.Row():
-                            with gr.Column():
-                                annotation_image_dir = gr.Textbox(
-                                    label="Image dataset folder",
-                                    placeholder="/path/to/image_class_folders",
-                                    info=tip("annotation_image_dir"),
-                                )
-                                annotation_image_refresh = gr.Button("🔄 Load image samples", variant="secondary")
-                                annotation_image_sample = gr.Dropdown(
-                                    choices=[],
-                                    label="Choose image sample",
-                                    info=tip("annotation_image_sample"),
-                                    allow_custom_value=True,
-                                )
-                                annotation_image_new_label = gr.Dropdown(
-                                    choices=[],
-                                    label="New label",
-                                    info=tip("annotation_image_new_label"),
-                                    allow_custom_value=True,
-                                )
-                                annotation_image_save = gr.Button("💾 Save relabel", variant="primary")
-                            with gr.Column():
-                                annotation_image_preview = gr.Image(
-                                    type="filepath",
-                                    label="Image preview",
-                                    interactive=False,
-                                )
-                                annotation_image_meta = gr.Markdown("*Load image samples to begin.*")
-                                annotation_image_status = gr.Markdown("")
-
-                    with gr.Tab("✍️ Text relabel"):
-                        with gr.Row():
-                            with gr.Column():
-                                annotation_text_path = gr.Textbox(
-                                    label="Text dataset path",
-                                    placeholder="/path/to/text.csv",
-                                    info=tip("annotation_text_path"),
-                                )
-                                annotation_text_col = gr.Textbox(
-                                    label="Text column",
-                                    value="text",
-                                )
-                                annotation_text_label_col = gr.Textbox(
-                                    label="Label column",
-                                    value="label",
-                                )
-                                annotation_text_refresh = gr.Button("🔄 Load text rows", variant="secondary")
-                                annotation_text_sample = gr.Dropdown(
-                                    choices=[],
-                                    label="Choose text row",
-                                    info=tip("annotation_text_sample"),
-                                )
-                                annotation_text_new_label = gr.Dropdown(
-                                    choices=[],
-                                    label="New label",
-                                    info=tip("annotation_text_new_label"),
-                                    allow_custom_value=True,
-                                )
-                                annotation_text_save = gr.Button("💾 Save relabel", variant="primary")
-                            with gr.Column():
-                                annotation_text_preview = gr.Markdown("*Load text rows to begin.*")
-                                annotation_text_status = gr.Markdown("")
-
-                    with gr.Tab("🔊 Audio relabel"):
-                        with gr.Row():
-                            with gr.Column():
-                                annotation_audio_dir = gr.Textbox(
-                                    label="Audio dataset folder",
-                                    placeholder="/path/to/audio_class_folders",
-                                    info=tip("annotation_audio_dir"),
-                                )
-                                annotation_audio_refresh = gr.Button("🔄 Load audio samples", variant="secondary")
-                                annotation_audio_sample = gr.Dropdown(
-                                    choices=[],
-                                    label="Choose audio sample",
-                                    info=tip("annotation_audio_sample"),
-                                    allow_custom_value=True,
-                                )
-                                annotation_audio_new_label = gr.Dropdown(
-                                    choices=[],
-                                    label="New label",
-                                    info=tip("annotation_audio_new_label"),
-                                    allow_custom_value=True,
-                                )
-                                annotation_audio_save = gr.Button("💾 Save relabel", variant="primary")
-                            with gr.Column():
-                                annotation_audio_preview = gr.Audio(
-                                    type="filepath",
-                                    label="Audio preview",
-                                    interactive=False,
-                                )
-                                annotation_audio_meta = gr.Markdown("*Load audio samples to begin.*")
-                                annotation_audio_status = gr.Markdown("")
-
-                    with gr.Tab("📦 Object box review"):
-                        with gr.Row():
-                            with gr.Column():
-                                annotation_det_model = gr.Dropdown(
-                                    choices=list(YOLO_MODELS.keys()),
-                                    value=list(YOLO_MODELS.keys())[0],
-                                    label="Detection model",
-                                    info=tip("det_model"),
-                                )
-                                annotation_det_conf = gr.Slider(
-                                    0.05, 0.95, value=0.25, step=0.05,
-                                    label="Confidence threshold",
-                                    info=tip("det_conf"),
-                                )
-                                annotation_det_iou = gr.Slider(
-                                    0.05, 0.95, value=0.45, step=0.05,
-                                    label="IoU threshold",
-                                    info=tip("det_iou"),
-                                )
-                                annotation_det_image = gr.Image(
-                                    type="filepath",
-                                    label="Detection review image",
-                                    sources=["upload", "clipboard"],
-                                    interactive=True,
-                                )
-                                annotation_det_review_btn = gr.Button("🔍 Review boxes", variant="primary")
-                                annotation_det_save_btn = gr.Button("💾 Save YOLO review", variant="secondary")
-                            with gr.Column():
-                                annotation_det_output = gr.Image(
-                                    label="Detected boxes",
-                                    interactive=False,
-                                )
-                                annotation_det_status = gr.Markdown("*Upload an image and review the proposed boxes.*")
-                        annotation_det_table = gr.Dataframe(
-                            headers=["keep", "label", "confidence", "x1", "y1", "x2", "y2"],
-                            datatype=["bool", "str", "number", "number", "number", "number", "number"],
-                            row_count=1,
-                            column_count=7,
-                            interactive=True,
-                            label="Editable detection review",
-                            wrap=True,
-                            line_breaks=True,
-                        )
+with demo:
 
     # ── Dynamic callbacks ─────────────────────────────────────────────────────
 
@@ -2429,37 +327,6 @@ with gr.Blocks(title="NoCode-DL") as demo:
             gr.update(visible=(mod == "video")),
             gr.update(visible=(mod == "tabular")),
         )
-
-    @lru_cache(maxsize=32)
-    def _read_structured_preview_cached(path_sig):
-        if not path_sig[0]:
-            return None
-
-        candidate = path_sig[0]
-        if path_sig[2]:
-            graph_nodes = os.path.join(candidate, "nodes.csv")
-            if os.path.isfile(graph_nodes):
-                candidate = graph_nodes
-            else:
-                structured = []
-                for root, _dirs, files in os.walk(candidate):
-                    for name in files:
-                        if name.lower().endswith((".csv", ".tsv", ".json")):
-                            structured.append(os.path.join(root, name))
-                if len(structured) == 1:
-                    candidate = structured[0]
-                else:
-                    return None
-
-        from data_pipeline.io_utils import read_structured_file
-
-        lower = candidate.lower()
-        if lower.endswith((".csv", ".tsv", ".json")):
-            return read_structured_file(candidate, nrows=500)
-        return None
-
-    def _read_structured_preview(dpath):
-        return _read_structured_preview_cached(_path_signature(dpath))
 
     @lru_cache(maxsize=32)
     def _compute_stats_cached(path_sig, modality_name, label_name, subset_enabled, subset_percent, subset_seed):
@@ -2749,225 +616,225 @@ with gr.Blocks(title="NoCode-DL") as demo:
         })
         return project_mode_val
 
-    project_mode.change(
+    c.project_mode.change(
         persist_project_mode,
-        inputs=project_mode,
-        outputs=project_mode_state,
+        inputs=c.project_mode,
+        outputs=c.project_mode_state,
     )
-    project_mode.change(
+    c.project_mode.change(
         _workflow_mode_updates,
-        inputs=project_mode,
+        inputs=c.project_mode,
         outputs=[
-            split_cleaning_group,
-            advanced_training_group,
-            sequence_options_group,
-            sklearn_options_group,
-            column_mapping_group,
-            hyperparams_group,
-            model_selection_group,
-            evaluation_report_group,
-            export_utilities_group,
-            history_group,
-            explanation_group_top,
+            c.split_cleaning_group,
+            c.advanced_training_group,
+            c.sequence_options_group,
+            c.sklearn_options_group,
+            c.column_mapping_group,
+            c.hyperparams_group,
+            c.model_selection_group,
+            c.evaluation_report_group,
+            c.export_utilities_group,
+            c.history_group,
+            c.explanation_group_top,
         ],
     )
-    project_mode.change(
+    c.project_mode.change(
         _why_this_matters_markdown,
-        inputs=[project_mode, modality, model_name, task, recommendation_state],
-        outputs=why_box,
+        inputs=[c.project_mode, c.modality, c.model_name, c.task, c.recommendation_state],
+        outputs=c.why_box,
     )
 
-    modality.change(update_modality_controls, modality,
+    c.modality.change(update_modality_controls, c.modality,
                     [
-                        text_col, feature_cols, time_col, window_size, n_frames, image_size, image_size_hint, sample_rate, audio_image_size, label_col,
-                        use_random_subset, subset_percent, subset_seed,
-                        use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers,
-                        text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
-                        text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-                        timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
-                        image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
-                        image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
-                        audio_verify_files, audio_normalize_waveform, audio_n_mels,
-                        audio_aug_noise, audio_aug_shift, audio_aug_gain, audio_aug_time_mask, audio_aug_freq_mask,
-                        video_verify_files, tabular_scaling,
+                        c.text_col, c.feature_cols, c.time_col, c.window_size, c.n_frames, c.image_size, c.image_size_hint, c.sample_rate, c.audio_image_size, c.label_col,
+                        c.use_random_subset, c.subset_percent, c.subset_seed,
+                        c.use_data_cleaning, c.tabular_missing_strategy, c.tabular_clip_outliers,
+                        c.text_lowercase, c.text_strip_urls, c.text_strip_punctuation, c.text_remove_stopwords,
+                        c.text_deduplicate, c.text_apply_stemming, c.text_apply_lemmatization, c.text_use_ngrams,
+                        c.timeseries_sort_by_time, c.timeseries_fill_strategy, c.timeseries_forecast_mode, c.timeseries_forecast_horizon, c.timeseries_lag_steps, c.timeseries_rolling_window,
+                        c.image_verify_files, c.image_aug_flip, c.image_aug_vertical, c.image_aug_rotation,
+                        c.image_aug_color, c.image_aug_gray, c.image_aug_perspective, c.image_normalization, c.image_force_grayscale,
+                        c.audio_verify_files, c.audio_normalize_waveform, c.audio_n_mels,
+                        c.audio_aug_noise, c.audio_aug_shift, c.audio_aug_gain, c.audio_aug_time_mask, c.audio_aug_freq_mask,
+                        c.video_verify_files, c.tabular_scaling,
                     ])
-    modality.change(update_training_mode, [modality, training_mode], training_mode)
-    modality.change(
+    c.modality.change(update_training_mode, [c.modality, c.training_mode], c.training_mode)
+    c.modality.change(
         _column_choice_updates,
-        [data_path, modality, label_col, text_col, feature_cols, time_col],
-        [label_col, text_col, feature_cols, time_col],
+        [c.data_path, c.modality, c.label_col, c.text_col, c.feature_cols, c.time_col],
+        [c.label_col, c.text_col, c.feature_cols, c.time_col],
     )
-    modality.change(update_model_choices, [modality, training_mode], model_name)
-    modality.change(update_task_choices, modality, task)
-    modality.change(
+    c.modality.change(update_model_choices, [c.modality, c.training_mode], c.model_name)
+    c.modality.change(update_task_choices, c.modality, c.task)
+    c.modality.change(
         update_cv_significance_choices,
-        [modality, training_mode, model_name, task],
-        [cv_significance_models, cv_significance_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.cv_significance_models, c.cv_significance_metric],
     )
-    modality.change(
+    c.modality.change(
         update_model_sweep_controls,
-        [modality, training_mode, model_name, task],
-        [sweep_models, sweep_metrics, sweep_sort_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.sweep_models, c.sweep_metrics, c.sweep_sort_metric],
     )
-    modality.change(
+    c.modality.change(
         update_image_size_guidance,
-        [modality, model_name, image_size],
-        [image_size, image_size_hint],
+        [c.modality, c.model_name, c.image_size],
+        [c.image_size, c.image_size_hint],
     )
-    modality.change(
+    c.modality.change(
         update_modality_augmentation_defaults,
-        [modality, augmentation],
+        [c.modality, c.augmentation],
         [
-            image_aug_flip, image_aug_vertical, image_aug_rotation,
-            image_aug_color, image_aug_gray, image_aug_perspective,
-            audio_aug_noise, audio_aug_shift, audio_aug_gain, audio_aug_time_mask, audio_aug_freq_mask,
+            c.image_aug_flip, c.image_aug_vertical, c.image_aug_rotation,
+            c.image_aug_color, c.image_aug_gray, c.image_aug_perspective,
+            c.audio_aug_noise, c.audio_aug_shift, c.audio_aug_gain, c.audio_aug_time_mask, c.audio_aug_freq_mask,
         ],
     )
-    modality.change(
+    c.modality.change(
         _why_this_matters_markdown,
-        [project_mode, modality, model_name, task, recommendation_state],
-        why_box,
+        [c.project_mode, c.modality, c.model_name, c.task, c.recommendation_state],
+        c.why_box,
     )
-    training_mode.change(update_model_choices, [modality, training_mode], model_name)
-    training_mode.change(
+    c.training_mode.change(update_model_choices, [c.modality, c.training_mode], c.model_name)
+    c.training_mode.change(
         update_cv_significance_choices,
-        [modality, training_mode, model_name, task],
-        [cv_significance_models, cv_significance_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.cv_significance_models, c.cv_significance_metric],
     )
-    training_mode.change(
+    c.training_mode.change(
         update_model_sweep_controls,
-        [modality, training_mode, model_name, task],
-        [sweep_models, sweep_metrics, sweep_sort_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.sweep_models, c.sweep_metrics, c.sweep_sort_metric],
     )
-    model_name.change(
+    c.model_name.change(
         update_cv_significance_choices,
-        [modality, training_mode, model_name, task],
-        [cv_significance_models, cv_significance_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.cv_significance_models, c.cv_significance_metric],
     )
-    model_name.change(
+    c.model_name.change(
         update_image_size_guidance,
-        [modality, model_name, image_size],
-        [image_size, image_size_hint],
+        [c.modality, c.model_name, c.image_size],
+        [c.image_size, c.image_size_hint],
     )
-    model_name.change(
+    c.model_name.change(
         update_model_sweep_controls,
-        [modality, training_mode, model_name, task],
-        [sweep_models, sweep_metrics, sweep_sort_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.sweep_models, c.sweep_metrics, c.sweep_sort_metric],
     )
-    model_name.change(
+    c.model_name.change(
         update_evaluate_visibility,
-        [task, model_name],
-        [classification_views_group, explanation_group, diagnostics_group, sample_review_group, clustering_group],
+        [c.task, c.model_name],
+        [c.classification_views_group, c.explanation_group, c.diagnostics_group, c.sample_review_group, c.clustering_group],
     )
-    model_name.change(
+    c.model_name.change(
         _why_this_matters_markdown,
-        [project_mode, modality, model_name, task, recommendation_state],
-        why_box,
+        [c.project_mode, c.modality, c.model_name, c.task, c.recommendation_state],
+        c.why_box,
     )
-    augmentation.change(
+    c.augmentation.change(
         update_modality_augmentation_defaults,
-        [modality, augmentation],
+        [c.modality, c.augmentation],
         [
-            image_aug_flip, image_aug_vertical, image_aug_rotation,
-            image_aug_color, image_aug_gray, image_aug_perspective,
-            audio_aug_noise, audio_aug_shift, audio_aug_gain, audio_aug_time_mask, audio_aug_freq_mask,
+            c.image_aug_flip, c.image_aug_vertical, c.image_aug_rotation,
+            c.image_aug_color, c.image_aug_gray, c.image_aug_perspective,
+            c.audio_aug_noise, c.audio_aug_shift, c.audio_aug_gain, c.audio_aug_time_mask, c.audio_aug_freq_mask,
         ],
     )
-    task.change(update_clusters_visible, task, n_clusters)
-    task.change(update_class_weights_visible, task, use_class_weights)
-    task.change(
+    c.task.change(update_clusters_visible, c.task, c.n_clusters)
+    c.task.change(update_class_weights_visible, c.task, c.use_class_weights)
+    c.task.change(
         update_cv_significance_choices,
-        [modality, training_mode, model_name, task],
-        [cv_significance_models, cv_significance_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.cv_significance_models, c.cv_significance_metric],
     )
-    task.change(
+    c.task.change(
         update_model_sweep_controls,
-        [modality, training_mode, model_name, task],
-        [sweep_models, sweep_metrics, sweep_sort_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.sweep_models, c.sweep_metrics, c.sweep_sort_metric],
     )
-    task.change(
+    c.task.change(
         update_evaluate_visibility,
-        [task, model_name],
-        [classification_views_group, explanation_group, diagnostics_group, sample_review_group, clustering_group],
+        [c.task, c.model_name],
+        [c.classification_views_group, c.explanation_group, c.diagnostics_group, c.sample_review_group, c.clustering_group],
     )
-    task.change(
+    c.task.change(
         _why_this_matters_markdown,
-        [project_mode, modality, model_name, task, recommendation_state],
-        why_box,
+        [c.project_mode, c.modality, c.model_name, c.task, c.recommendation_state],
+        c.why_box,
     )
 
-    demo.load(update_modality_controls, modality,
+    demo.load(update_modality_controls, c.modality,
                     [
-                        text_col, feature_cols, time_col, window_size, n_frames, image_size, image_size_hint, sample_rate, audio_image_size, label_col,
-                        use_random_subset, subset_percent, subset_seed,
-                        use_data_cleaning, tabular_missing_strategy, tabular_clip_outliers,
-                        text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
-                        text_deduplicate, text_apply_stemming, text_apply_lemmatization, text_use_ngrams,
-                        timeseries_sort_by_time, timeseries_fill_strategy, timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
-                        image_verify_files, image_aug_flip, image_aug_vertical, image_aug_rotation,
-                        image_aug_color, image_aug_gray, image_aug_perspective, image_normalization, image_force_grayscale,
-                        audio_verify_files, audio_normalize_waveform, audio_n_mels,
-                        audio_aug_noise, audio_aug_shift, audio_aug_gain, audio_aug_time_mask, audio_aug_freq_mask,
-                        video_verify_files, tabular_scaling,
+                        c.text_col, c.feature_cols, c.time_col, c.window_size, c.n_frames, c.image_size, c.image_size_hint, c.sample_rate, c.audio_image_size, c.label_col,
+                        c.use_random_subset, c.subset_percent, c.subset_seed,
+                        c.use_data_cleaning, c.tabular_missing_strategy, c.tabular_clip_outliers,
+                        c.text_lowercase, c.text_strip_urls, c.text_strip_punctuation, c.text_remove_stopwords,
+                        c.text_deduplicate, c.text_apply_stemming, c.text_apply_lemmatization, c.text_use_ngrams,
+                        c.timeseries_sort_by_time, c.timeseries_fill_strategy, c.timeseries_forecast_mode, c.timeseries_forecast_horizon, c.timeseries_lag_steps, c.timeseries_rolling_window,
+                        c.image_verify_files, c.image_aug_flip, c.image_aug_vertical, c.image_aug_rotation,
+                        c.image_aug_color, c.image_aug_gray, c.image_aug_perspective, c.image_normalization, c.image_force_grayscale,
+                        c.audio_verify_files, c.audio_normalize_waveform, c.audio_n_mels,
+                        c.audio_aug_noise, c.audio_aug_shift, c.audio_aug_gain, c.audio_aug_time_mask, c.audio_aug_freq_mask,
+                        c.video_verify_files, c.tabular_scaling,
                     ])
-    demo.load(update_training_mode, [modality, training_mode], training_mode)
+    demo.load(update_training_mode, [c.modality, c.training_mode], c.training_mode)
     demo.load(
         update_cv_significance_choices,
-        [modality, training_mode, model_name, task],
-        [cv_significance_models, cv_significance_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.cv_significance_models, c.cv_significance_metric],
     )
     demo.load(
         update_model_sweep_controls,
-        [modality, training_mode, model_name, task],
-        [sweep_models, sweep_metrics, sweep_sort_metric],
+        [c.modality, c.training_mode, c.model_name, c.task],
+        [c.sweep_models, c.sweep_metrics, c.sweep_sort_metric],
     )
     demo.load(
         update_image_size_guidance,
-        [modality, model_name, image_size],
-        [image_size, image_size_hint],
+        [c.modality, c.model_name, c.image_size],
+        [c.image_size, c.image_size_hint],
     )
     demo.load(
         update_modality_augmentation_defaults,
-        [modality, augmentation],
+        [c.modality, c.augmentation],
         [
-            image_aug_flip, image_aug_vertical, image_aug_rotation,
-            image_aug_color, image_aug_gray, image_aug_perspective,
-            audio_aug_noise, audio_aug_shift, audio_aug_gain, audio_aug_time_mask, audio_aug_freq_mask,
+            c.image_aug_flip, c.image_aug_vertical, c.image_aug_rotation,
+            c.image_aug_color, c.image_aug_gray, c.image_aug_perspective,
+            c.audio_aug_noise, c.audio_aug_shift, c.audio_aug_gain, c.audio_aug_time_mask, c.audio_aug_freq_mask,
         ],
     )
-    demo.load(update_model_choices, [modality, training_mode], model_name)
-    demo.load(update_task_choices, modality, task)
+    demo.load(update_model_choices, [c.modality, c.training_mode], c.model_name)
+    demo.load(update_task_choices, c.modality, c.task)
     demo.load(
         update_workspace_cockpit,
-        [data_path, modality, label_col, model_name, task, bundle_name, bundle_out],
-        [workspace_snapshot, next_step_box],
+        [c.data_path, c.modality, c.label_col, c.model_name, c.task, c.bundle_name, c.bundle_out],
+        [c.workspace_snapshot, c.next_step_box],
     )
     demo.load(
         update_evaluate_visibility,
-        [task, model_name],
-        [classification_views_group, explanation_group, diagnostics_group, sample_review_group, clustering_group],
+        [c.task, c.model_name],
+        [c.classification_views_group, c.explanation_group, c.diagnostics_group, c.sample_review_group, c.clustering_group],
     )
     demo.load(
         _workflow_mode_updates,
-        [project_mode],
+        [c.project_mode],
         [
-            split_cleaning_group,
-            advanced_training_group,
-            sequence_options_group,
-            sklearn_options_group,
-            column_mapping_group,
-            hyperparams_group,
-            model_selection_group,
-            evaluation_report_group,
-            export_utilities_group,
-            history_group,
-            explanation_group_top,
+            c.split_cleaning_group,
+            c.advanced_training_group,
+            c.sequence_options_group,
+            c.sklearn_options_group,
+            c.column_mapping_group,
+            c.hyperparams_group,
+            c.model_selection_group,
+            c.evaluation_report_group,
+            c.export_utilities_group,
+            c.history_group,
+            c.explanation_group_top,
         ],
     )
     demo.load(
         _why_this_matters_markdown,
-        [project_mode, modality, model_name, task, recommendation_state],
-        why_box,
+        [c.project_mode, c.modality, c.model_name, c.task, c.recommendation_state],
+        c.why_box,
     )
 
     # ── File upload → auto-fill data path ────────────────────────────────────
@@ -3019,70 +886,70 @@ with gr.Blocks(title="NoCode-DL") as demo:
         updates = _column_choice_updates(path, mod, current_label, current_text, current_features, current_time)
         return path, *updates  # CSV / TSV / JSON: use the path directly
 
-    data_upload.change(
+    c.data_upload.change(
         handle_upload,
-        inputs=[data_upload, modality, label_col, text_col, feature_cols, time_col],
-        outputs=[data_path, label_col, text_col, feature_cols, time_col],
+        inputs=[c.data_upload, c.modality, c.label_col, c.text_col, c.feature_cols, c.time_col],
+        outputs=[c.data_path, c.label_col, c.text_col, c.feature_cols, c.time_col],
     )
-    data_path.change(
+    c.data_path.change(
         _column_choice_updates,
-        inputs=[data_path, modality, label_col, text_col, feature_cols, time_col],
-        outputs=[label_col, text_col, feature_cols, time_col],
+        inputs=[c.data_path, c.modality, c.label_col, c.text_col, c.feature_cols, c.time_col],
+        outputs=[c.label_col, c.text_col, c.feature_cols, c.time_col],
     )
-    data_path.change(
+    c.data_path.change(
         suggest_bundle_name,
-        inputs=[data_path, modality, model_name, task, bundle_name],
-        outputs=bundle_name,
+        inputs=[c.data_path, c.modality, c.model_name, c.task, c.bundle_name],
+        outputs=c.bundle_name,
     )
-    data_path.change(
+    c.data_path.change(
         update_workspace_cockpit,
-        inputs=[data_path, modality, label_col, model_name, task, bundle_name, bundle_out],
-        outputs=[workspace_snapshot, next_step_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.model_name, c.task, c.bundle_name, c.bundle_out],
+        outputs=[c.workspace_snapshot, c.next_step_box],
     )
-    label_col.change(
+    c.label_col.change(
         _column_choice_updates,
-        inputs=[data_path, modality, label_col, text_col, feature_cols, time_col],
-        outputs=[label_col, text_col, feature_cols, time_col],
+        inputs=[c.data_path, c.modality, c.label_col, c.text_col, c.feature_cols, c.time_col],
+        outputs=[c.label_col, c.text_col, c.feature_cols, c.time_col],
     )
-    label_col.change(
+    c.label_col.change(
         update_workspace_cockpit,
-        inputs=[data_path, modality, label_col, model_name, task, bundle_name, bundle_out],
-        outputs=[workspace_snapshot, next_step_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.model_name, c.task, c.bundle_name, c.bundle_out],
+        outputs=[c.workspace_snapshot, c.next_step_box],
     )
-    text_col.change(
+    c.text_col.change(
         _column_choice_updates,
-        inputs=[data_path, modality, label_col, text_col, feature_cols, time_col],
-        outputs=[label_col, text_col, feature_cols, time_col],
+        inputs=[c.data_path, c.modality, c.label_col, c.text_col, c.feature_cols, c.time_col],
+        outputs=[c.label_col, c.text_col, c.feature_cols, c.time_col],
     )
-    time_col.change(
+    c.time_col.change(
         _column_choice_updates,
-        inputs=[data_path, modality, label_col, text_col, feature_cols, time_col],
-        outputs=[label_col, text_col, feature_cols, time_col],
+        inputs=[c.data_path, c.modality, c.label_col, c.text_col, c.feature_cols, c.time_col],
+        outputs=[c.label_col, c.text_col, c.feature_cols, c.time_col],
     )
-    model_name.change(
+    c.model_name.change(
         suggest_bundle_name,
-        inputs=[data_path, modality, model_name, task, bundle_name],
-        outputs=bundle_name,
+        inputs=[c.data_path, c.modality, c.model_name, c.task, c.bundle_name],
+        outputs=c.bundle_name,
     )
-    model_name.change(
+    c.model_name.change(
         update_workspace_cockpit,
-        inputs=[data_path, modality, label_col, model_name, task, bundle_name, bundle_out],
-        outputs=[workspace_snapshot, next_step_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.model_name, c.task, c.bundle_name, c.bundle_out],
+        outputs=[c.workspace_snapshot, c.next_step_box],
     )
-    task.change(
+    c.task.change(
         suggest_bundle_name,
-        inputs=[data_path, modality, model_name, task, bundle_name],
-        outputs=bundle_name,
+        inputs=[c.data_path, c.modality, c.model_name, c.task, c.bundle_name],
+        outputs=c.bundle_name,
     )
-    task.change(
+    c.task.change(
         update_workspace_cockpit,
-        inputs=[data_path, modality, label_col, model_name, task, bundle_name, bundle_out],
-        outputs=[workspace_snapshot, next_step_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.model_name, c.task, c.bundle_name, c.bundle_out],
+        outputs=[c.workspace_snapshot, c.next_step_box],
     )
-    bundle_name.change(
+    c.bundle_name.change(
         update_workspace_cockpit,
-        inputs=[data_path, modality, label_col, model_name, task, bundle_name, bundle_out],
-        outputs=[workspace_snapshot, next_step_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.model_name, c.task, c.bundle_name, c.bundle_out],
+        outputs=[c.workspace_snapshot, c.next_step_box],
     )
 
     # ── Data preview ──────────────────────────────────────────────────────────
@@ -3262,18 +1129,18 @@ with gr.Blocks(title="NoCode-DL") as demo:
                 _why_this_matters_markdown(project_mode_val, mod, model_val, task_val, {}),
             )
 
-    preview_event = preview_btn.click(preview_dataset,
+    preview_event = c.preview_btn.click(preview_dataset,
                                       inputs=[
-                                          data_path, modality, label_col, text_col,
-                                          use_random_subset, subset_percent, subset_seed,
-                                          text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
-                                          text_deduplicate, text_apply_stemming, text_apply_lemmatization,
-                                          image_size, image_aug_flip, image_aug_vertical, image_aug_rotation,
-                                          image_aug_color, image_aug_gray, image_aug_perspective,
-                                          image_normalization, image_force_grayscale,
-                                          project_mode, model_name, task
+                                          c.data_path, c.modality, c.label_col, c.text_col,
+                                          c.use_random_subset, c.subset_percent, c.subset_seed,
+                                          c.text_lowercase, c.text_strip_urls, c.text_strip_punctuation, c.text_remove_stopwords,
+                                          c.text_deduplicate, c.text_apply_stemming, c.text_apply_lemmatization,
+                                          c.image_size, c.image_aug_flip, c.image_aug_vertical, c.image_aug_rotation,
+                                          c.image_aug_color, c.image_aug_gray, c.image_aug_perspective,
+                                          c.image_normalization, c.image_force_grayscale,
+                                          c.project_mode, c.model_name, c.task
                                       ],
-                                      outputs=[stats_summary_box, dist_plot, validation_box, quality_report_box, quality_examples_box, quality_report_state, why_box])
+                                      outputs=[c.stats_summary_box, c.dist_plot, c.validation_box, c.quality_report_box, c.quality_examples_box, c.quality_report_state, c.why_box])
 
     # ── Guided recommendations ────────────────────────────────────────────────
 
@@ -3307,28 +1174,28 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as e:
             return f"Error: {e}", "*Recommendation engine failed unexpectedly.*", {}, _why_this_matters_markdown(project_mode_val, mod, model_val, task_val, {})
 
-    recommend_btn.click(get_recommendations,
-                        inputs=[data_path, modality, label_col, use_random_subset, subset_percent, subset_seed, project_mode, model_name, task, quality_report_state],
-                        outputs=[recommendations_box, recommendation_rationale_box, recommendation_state, why_box])
+    c.recommend_btn.click(get_recommendations,
+                        inputs=[c.data_path, c.modality, c.label_col, c.use_random_subset, c.subset_percent, c.subset_seed, c.project_mode, c.model_name, c.task, c.quality_report_state],
+                        outputs=[c.recommendations_box, c.recommendation_rationale_box, c.recommendation_state, c.why_box])
     preview_event.then(
         get_recommendations,
-        inputs=[data_path, modality, label_col, use_random_subset, subset_percent, subset_seed, project_mode, model_name, task, quality_report_state],
-        outputs=[recommendations_box, recommendation_rationale_box, recommendation_state, why_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.use_random_subset, c.subset_percent, c.subset_seed, c.project_mode, c.model_name, c.task, c.quality_report_state],
+        outputs=[c.recommendations_box, c.recommendation_rationale_box, c.recommendation_state, c.why_box],
     )
     preview_event.then(
         _suggest_tabular_example,
-        inputs=[data_path, modality, label_col, infer_tab_input],
-        outputs=infer_tab_input,
+        inputs=[c.data_path, c.modality, c.label_col, c.infer_tab_input],
+        outputs=c.infer_tab_input,
     )
     preview_event.then(
         suggest_bundle_name,
-        inputs=[data_path, modality, model_name, task, bundle_name],
-        outputs=bundle_name,
+        inputs=[c.data_path, c.modality, c.model_name, c.task, c.bundle_name],
+        outputs=c.bundle_name,
     )
     preview_event.then(
         update_workspace_cockpit,
-        inputs=[data_path, modality, label_col, model_name, task, bundle_name, bundle_out],
-        outputs=[workspace_snapshot, next_step_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.model_name, c.task, c.bundle_name, c.bundle_out],
+        outputs=[c.workspace_snapshot, c.next_step_box],
     )
 
     def apply_recommendations(modality_val, rec, project_mode_val, data_path_val, label_col_val, bundle_name_val, bundle_path_val):
@@ -3353,76 +1220,76 @@ with gr.Blocks(title="NoCode-DL") as demo:
         why_text = _why_this_matters_markdown(project_mode_val, modality_val, selected_model, selected_task, rec)
         return (*updates, snapshot, next_step, why_text)
 
-    apply_recommendations_btn.click(
+    c.apply_recommendations_btn.click(
         apply_recommendations,
-        inputs=[modality, recommendation_state, project_mode, data_path, label_col, bundle_name, bundle_out],
+        inputs=[c.modality, c.recommendation_state, c.project_mode, c.data_path, c.label_col, c.bundle_name, c.bundle_out],
         outputs=[
-            training_mode, model_name, task, augmentation, image_size, batch_size, epochs, dropout, scheduler_name, use_class_weights,
-            workspace_snapshot, next_step_box, why_box,
+            c.training_mode, c.model_name, c.task, c.augmentation, c.image_size, c.batch_size, c.epochs, c.dropout, c.scheduler_name, c.use_class_weights,
+            c.workspace_snapshot, c.next_step_box, c.why_box,
         ],
     )
 
-    tutorial_modality_dropdown.change(
+    c.tutorial_modality_dropdown.change(
         lambda m: _tutorial_markdown(m),
-        inputs=[tutorial_modality_dropdown],
-        outputs=[tutorial_box],
+        inputs=[c.tutorial_modality_dropdown],
+        outputs=[c.tutorial_box],
     )
 
-    tutorial_event = load_tutorial_btn.click(
+    tutorial_event = c.load_tutorial_btn.click(
         load_builtin_walkthrough,
-        inputs=[tutorial_modality_dropdown],
+        inputs=[c.tutorial_modality_dropdown],
         outputs=[
-            modality,
-            data_path,
-            image_size,
-            augmentation,
-            val_split,
-            training_mode,
-            lr,
-            batch_size,
-            epochs,
-            dropout,
-            optimizer,
-            scheduler_name,
-            use_class_weights,
-            bundle_name,
-            tutorial_box,
+            c.modality,
+            c.data_path,
+            c.image_size,
+            c.augmentation,
+            c.val_split,
+            c.training_mode,
+            c.lr,
+            c.batch_size,
+            c.epochs,
+            c.dropout,
+            c.optimizer,
+            c.scheduler_name,
+            c.use_class_weights,
+            c.bundle_name,
+            c.tutorial_box,
         ],
     )
     tutorial_event.then(
         apply_builtin_walkthrough_model,
-        inputs=[modality, training_mode],
-        outputs=[model_name, task],
+        inputs=[c.modality, c.training_mode],
+        outputs=[c.model_name, c.task],
     )
     tutorial_event.then(
         preview_dataset,
         inputs=[
-            data_path, modality, label_col, text_col,
-            use_random_subset, subset_percent, subset_seed,
-            text_lowercase, text_strip_urls, text_strip_punctuation, text_remove_stopwords,
-            text_deduplicate, text_apply_stemming, text_apply_lemmatization,
-            image_size, image_aug_flip, image_aug_vertical, image_aug_rotation,
-            image_aug_color, image_aug_gray, image_aug_perspective,
-            image_normalization, image_force_grayscale,
-            project_mode, model_name, task
+            c.data_path, c.modality, c.label_col, c.text_col,
+            c.use_random_subset, c.subset_percent, c.subset_seed,
+            c.text_lowercase, c.text_strip_urls, c.text_strip_punctuation, c.text_remove_stopwords,
+            c.text_deduplicate, c.text_apply_stemming, c.text_apply_lemmatization,
+            c.image_size, c.image_aug_flip, c.image_aug_vertical, c.image_aug_rotation,
+            c.image_aug_color, c.image_aug_gray, c.image_aug_perspective,
+            c.image_normalization, c.image_force_grayscale,
+            c.project_mode, c.model_name, c.task
         ],
-        outputs=[stats_summary_box, dist_plot, validation_box, quality_report_box, quality_examples_box, quality_report_state, why_box],
+        outputs=[c.stats_summary_box, c.dist_plot, c.validation_box, c.quality_report_box, c.quality_examples_box, c.quality_report_state, c.why_box],
     )
     tutorial_event.then(
         get_recommendations,
-        inputs=[data_path, modality, label_col, use_random_subset, subset_percent, subset_seed, project_mode, model_name, task, quality_report_state],
-        outputs=[recommendations_box, recommendation_rationale_box, recommendation_state, why_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.use_random_subset, c.subset_percent, c.subset_seed, c.project_mode, c.model_name, c.task, c.quality_report_state],
+        outputs=[c.recommendations_box, c.recommendation_rationale_box, c.recommendation_state, c.why_box],
     )
     tutorial_event.then(
         update_workspace_cockpit,
-        inputs=[data_path, modality, label_col, model_name, task, bundle_name, bundle_out],
-        outputs=[workspace_snapshot, next_step_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.model_name, c.task, c.bundle_name, c.bundle_out],
+        outputs=[c.workspace_snapshot, c.next_step_box],
     )
 
     # ── Train button ──────────────────────────────────────────────────────────
 
     # Every RunConfig field is fed by the component of the same name.
-    run_config_components = {name: globals()[name] for name in RUN_CONFIG_FIELDS}
+    run_config_components = {name: c[name] for name in RUN_CONFIG_FIELDS}
 
     def train_from_ui(values, progress=gr.Progress(track_tqdm=False)):
         yield from run_pipeline(
@@ -3430,20 +1297,20 @@ with gr.Blocks(title="NoCode-DL") as demo:
             progress=progress,
         )
 
-    train_event = train_btn.click(
+    train_event = c.train_btn.click(
         train_from_ui,
         # A set of inputs makes Gradio pass one {component: value} dict.
         inputs=set(run_config_components.values()),
         outputs=[
-            status_box, loss_plot, eta_box, live_metrics_card,
-            eval_summary_box, cm_plot, roc_plot, tsne_plot_out,
-            gradcam_out, shap_out, misclass_img, misclass_df,
-            bundle_out, arch_viz_out,
-            training_summary_out, regression_plot_out, anomaly_plot_out, eval_kpi_bar,
-            classification_note, explanation_note, diagnostics_note, sample_review_note,
-            text_shap_out,
-            dashboard_kpi, dashboard_primary_chart, dashboard_explain_plot,
-            dashboard_explain_html, dashboard_loss_chart, dashboard_actions,
+            c.status_box, c.loss_plot, c.eta_box, c.live_metrics_card,
+            c.eval_summary_box, c.cm_plot, c.roc_plot, c.tsne_plot_out,
+            c.gradcam_out, c.shap_out, c.misclass_img, c.misclass_df,
+            c.bundle_out, c.arch_viz_out,
+            c.training_summary_out, c.regression_plot_out, c.anomaly_plot_out, c.eval_kpi_bar,
+            c.classification_note, c.explanation_note, c.diagnostics_note, c.sample_review_note,
+            c.text_shap_out,
+            c.dashboard_kpi, c.dashboard_primary_chart, c.dashboard_explain_plot,
+            c.dashboard_explain_html, c.dashboard_loss_chart, c.dashboard_actions,
         ],
         concurrency_id="heavy_jobs",
         concurrency_limit=1,
@@ -3452,21 +1319,21 @@ with gr.Blocks(title="NoCode-DL") as demo:
     # Stop button cancels the running training generator
 
     # Auto-fill inference bundle path from training result
-    bundle_out.change(
+    c.bundle_out.change(
         lambda p: gr.update(choices=_list_bundles(), value=p),
-        inputs=bundle_out, outputs=infer_bundle_path)
-    infer_refresh_btn.click(
+        inputs=c.bundle_out, outputs=c.infer_bundle_path)
+    c.infer_refresh_btn.click(
         lambda: gr.update(choices=_list_bundles()),
-        outputs=infer_bundle_path)
-    bundle_out.change(
+        outputs=c.infer_bundle_path)
+    c.bundle_out.change(
         update_workspace_cockpit,
-        inputs=[data_path, modality, label_col, model_name, task, bundle_name, bundle_out],
-        outputs=[workspace_snapshot, next_step_box],
+        inputs=[c.data_path, c.modality, c.label_col, c.model_name, c.task, c.bundle_name, c.bundle_out],
+        outputs=[c.workspace_snapshot, c.next_step_box],
     )
-    bundle_out.change(
+    c.bundle_out.change(
         _suggest_tabular_example,
-        inputs=[data_path, modality, label_col, infer_tab_input],
-        outputs=infer_tab_input,
+        inputs=[c.data_path, c.modality, c.label_col, c.infer_tab_input],
+        outputs=c.infer_tab_input,
     )
 
     # ── Cross-validation callback ─────────────────────────────────────────────
@@ -3677,17 +1544,17 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as exc:
             yield f"❌ Cross-validation failed: {exc}"
 
-    cv_event = cv_run_btn.click(
+    cv_event = c.cv_run_btn.click(
         run_cv,
         inputs=[
-            modality, data_path, text_col, label_col, time_col,
-            window_size, n_frames, sample_rate, augmentation,
-            val_split, use_random_subset, subset_percent, subset_seed, training_mode, model_name, task,
-            epochs, lr, batch_size, dropout, optimizer, scheduler_name, use_amp,
-            timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
-            hidden_size, num_layers, cv_k,
+            c.modality, c.data_path, c.text_col, c.label_col, c.time_col,
+            c.window_size, c.n_frames, c.sample_rate, c.augmentation,
+            c.val_split, c.use_random_subset, c.subset_percent, c.subset_seed, c.training_mode, c.model_name, c.task,
+            c.epochs, c.lr, c.batch_size, c.dropout, c.optimizer, c.scheduler_name, c.use_amp,
+            c.timeseries_forecast_mode, c.timeseries_forecast_horizon, c.timeseries_lag_steps, c.timeseries_rolling_window,
+            c.hidden_size, c.num_layers, c.cv_k,
         ],
-        outputs=cv_results_box,
+        outputs=c.cv_results_box,
         concurrency_id="heavy_jobs",
         concurrency_limit=1,
     )
@@ -3914,18 +1781,18 @@ with gr.Blocks(title="NoCode-DL") as demo:
         plot = _plot_cv_significance_scores(metric_name, base_model_name, baseline_scores, challenger_curves)
         return "\n".join(lines), plot
 
-    cv_sig_event = cv_significance_btn.click(
+    cv_sig_event = c.cv_significance_btn.click(
         run_cv_significance,
         inputs=[
-            modality, data_path, label_col, time_col, window_size, use_random_subset, subset_percent, subset_seed, training_mode,
-            timeseries_forecast_mode, timeseries_forecast_horizon, timeseries_lag_steps, timeseries_rolling_window,
-            model_name, task, batch_size, dropout,
-            optimizer, hidden_size, num_layers,
-            epochs, lr, n_estimators, max_depth,
-            C_param, max_iter, lr_xgb, cv_k,
-            cv_significance_metric, cv_significance_models,
+            c.modality, c.data_path, c.label_col, c.time_col, c.window_size, c.use_random_subset, c.subset_percent, c.subset_seed, c.training_mode,
+            c.timeseries_forecast_mode, c.timeseries_forecast_horizon, c.timeseries_lag_steps, c.timeseries_rolling_window,
+            c.model_name, c.task, c.batch_size, c.dropout,
+            c.optimizer, c.hidden_size, c.num_layers,
+            c.epochs, c.lr, c.n_estimators, c.max_depth,
+            c.C_param, c.max_iter, c.lr_xgb, c.cv_k,
+            c.cv_significance_metric, c.cv_significance_models,
         ],
-        outputs=[cv_significance_box, cv_significance_plot],
+        outputs=[c.cv_significance_box, c.cv_significance_plot],
         concurrency_id="heavy_jobs",
         concurrency_limit=1,
     )
@@ -3999,17 +1866,17 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as exc:
             yield f"❌ Hyperparameter search failed: {exc}"
 
-    hparam_event = hparam_run_btn.click(
+    hparam_event = c.hparam_run_btn.click(
         run_hparam_search,
         inputs=[
-            modality, data_path, text_col, label_col, time_col,
-            window_size, n_frames, sample_rate, augmentation,
-            val_split, use_random_subset, subset_percent, subset_seed, training_mode, model_name, task,
-            batch_size, dropout, optimizer,
-            hidden_size, num_layers,
-            hparam_lr_vals, hparam_dropout_vals, hparam_n_trials, hparam_epochs,
+            c.modality, c.data_path, c.text_col, c.label_col, c.time_col,
+            c.window_size, c.n_frames, c.sample_rate, c.augmentation,
+            c.val_split, c.use_random_subset, c.subset_percent, c.subset_seed, c.training_mode, c.model_name, c.task,
+            c.batch_size, c.dropout, c.optimizer,
+            c.hidden_size, c.num_layers,
+            c.hparam_lr_vals, c.hparam_dropout_vals, c.hparam_n_trials, c.hparam_epochs,
         ],
-        outputs=hparam_results_box,
+        outputs=c.hparam_results_box,
         concurrency_id="heavy_jobs",
         concurrency_limit=1,
     )
@@ -4137,15 +2004,15 @@ with gr.Blocks(title="NoCode-DL") as demo:
     def sweep_from_ui(values):
         yield from run_model_sweep(
             RunConfig.from_component_values(sweep_config_components, values, model_name=""),
-            values[sweep_models], values[sweep_metrics],
-            values[sweep_sort_metric], values[sweep_sort_order],
+            values[c.sweep_models], values[c.sweep_metrics],
+            values[c.sweep_sort_metric], values[c.sweep_sort_order],
         )
 
-    sweep_event = sweep_run_btn.click(
+    sweep_event = c.sweep_run_btn.click(
         sweep_from_ui,
         inputs={*sweep_config_components.values(),
-                sweep_models, sweep_metrics, sweep_sort_metric, sweep_sort_order},
-        outputs=[sweep_status_box, sweep_table],
+                c.sweep_models, c.sweep_metrics, c.sweep_sort_metric, c.sweep_sort_order},
+        outputs=[c.sweep_status_box, c.sweep_table],
         concurrency_id="heavy_jobs",
         concurrency_limit=1,
     )
@@ -4197,7 +2064,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as e:
             return _format_status_block("FastAPI export", f"Error: {e}", success=False)
 
-    fastapi_btn.click(gen_fastapi, inputs=[bundle_out, modality], outputs=fastapi_status_box)
+    c.fastapi_btn.click(gen_fastapi, inputs=[c.bundle_out, c.modality], outputs=c.fastapi_status_box)
 
     # ── Docker generator ──────────────────────────────────────────────────────
 
@@ -4219,7 +2086,7 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as e:
             return _format_status_block("Docker export", f"Error: {e}", success=False)
 
-    docker_btn.click(gen_docker, inputs=[bundle_out, modality], outputs=docker_status_box)
+    c.docker_btn.click(gen_docker, inputs=[c.bundle_out, c.modality], outputs=c.docker_status_box)
 
     # ── Model card generator ──────────────────────────────────────────────────
 
@@ -4240,10 +2107,10 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as e:
             return _format_status_block("Model card", f"Error: {e}", success=False)
 
-    model_card_btn.click(gen_model_card,
-                         inputs=[bundle_out, modality, model_name,
-                                 training_mode, task, eval_summary_box],
-                         outputs=model_card_status_box)
+    c.model_card_btn.click(gen_model_card,
+                         inputs=[c.bundle_out, c.modality, c.model_name,
+                                 c.training_mode, c.task, c.eval_summary_box],
+                         outputs=c.model_card_status_box)
 
     # ── Streamlit dashboard generator ─────────────────────────────────────────
 
@@ -4297,10 +2164,10 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as e:
             return f"### Export failed\n\n```\n{e}\n```"
 
-    streamlit_btn.click(
+    c.streamlit_btn.click(
         gen_streamlit,
-        inputs=[bundle_out, modality, model_name, training_mode, task, eval_summary_box],
-        outputs=streamlit_status,
+        inputs=[c.bundle_out, c.modality, c.model_name, c.training_mode, c.task, c.eval_summary_box],
+        outputs=c.streamlit_status,
     )
 
     # ── Run history ───────────────────────────────────────────────────────────
@@ -4339,17 +2206,17 @@ with gr.Blocks(title="NoCode-DL") as demo:
                 None,
             )
 
-    refresh_btn.click(refresh_history, outputs=history_df)
-    compare_btn.click(compare_runs, inputs=compare_ids, outputs=[compare_status_box, compare_plot])
+    c.refresh_btn.click(refresh_history, outputs=c.history_df)
+    c.compare_btn.click(compare_runs, inputs=c.compare_ids, outputs=[c.compare_status_box, c.compare_plot])
     # Only auto-load history on page load if the history file already exists —
     # avoids a redundant disk read (and silent failure) on a fresh install.
     from training.run_comparison import HISTORY_FILE as _HIST_FILE
     if _HIST_FILE.exists():
-        demo.load(refresh_history, outputs=history_df)
+        demo.load(refresh_history, outputs=c.history_df)
 
     demo.load(
         lambda: gr.update(choices=_list_bundles()),
-        outputs=infer_bundle_path,
+        outputs=c.infer_bundle_path,
     )
 
     # ── Object Detection callbacks ────────────────────────────────────────────
@@ -4369,10 +2236,10 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as e:
             return None, f"❌ Error: {e}", None
 
-    det_img_btn.click(
+    c.det_img_btn.click(
         detect_image,
-        inputs=[det_img_input, det_model, det_conf, det_iou],
-        outputs=[det_img_output, det_img_stats_md, det_img_chart],
+        inputs=[c.det_img_input, c.det_model, c.det_conf, c.det_iou],
+        outputs=[c.det_img_output, c.det_img_stats_md, c.det_img_chart],
     )
 
     def detect_video(vid_path, model_key, conf, iou):
@@ -4417,10 +2284,10 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as e:
             yield f"❌ Error: {e}", None, f"```\n{e}\n```", None
 
-    det_vid_event = det_vid_btn.click(
+    det_vid_event = c.det_vid_btn.click(
         detect_video,
-        inputs=[det_vid_input, det_model, det_conf, det_iou],
-        outputs=[det_vid_status, det_vid_output, det_vid_stats_md, det_vid_chart],
+        inputs=[c.det_vid_input, c.det_model, c.det_conf, c.det_iou],
+        outputs=[c.det_vid_status, c.det_vid_output, c.det_vid_stats_md, c.det_vid_chart],
         concurrency_id="heavy_jobs",
         concurrency_limit=1,
     )
@@ -4475,17 +2342,17 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as ex:
             yield f"❌ Error: {ex}", ""
 
-    yolo_event = yolo_train_btn.click(
+    yolo_event = c.yolo_train_btn.click(
         train_yolo_custom,
-        inputs=[yolo_data_path, yolo_model_size, yolo_epochs, yolo_batch],
-        outputs=[yolo_status_box, yolo_result_md],
+        inputs=[c.yolo_data_path, c.yolo_model_size, c.yolo_epochs, c.yolo_batch],
+        outputs=[c.yolo_status_box, c.yolo_result_md],
         concurrency_id="heavy_jobs",
         concurrency_limit=1,
     )
 
     # Stop sets the cooperative flag checked between training batches (the
     # cancel alone only lands at the next yield) and cancels every heavy job.
-    stop_btn.click(
+    c.stop_btn.click(
         _cancel.request_stop,
         cancels=[train_event, cv_event, cv_sig_event, hparam_event, sweep_event, det_vid_event, yolo_event],
     )
@@ -4549,20 +2416,20 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as exc:
             return gr.update(), gr.update(), f"❌ {exc}", None, "*Save failed.*"
 
-    annotation_image_refresh.click(
+    c.annotation_image_refresh.click(
         load_image_annotation_samples,
-        inputs=[annotation_image_dir],
-        outputs=[annotation_image_sample, annotation_image_new_label, annotation_image_status],
+        inputs=[c.annotation_image_dir],
+        outputs=[c.annotation_image_sample, c.annotation_image_new_label, c.annotation_image_status],
     )
-    annotation_image_sample.change(
+    c.annotation_image_sample.change(
         preview_image_annotation_sample,
-        inputs=[annotation_image_dir, annotation_image_sample],
-        outputs=[annotation_image_preview, annotation_image_meta, annotation_image_new_label],
+        inputs=[c.annotation_image_dir, c.annotation_image_sample],
+        outputs=[c.annotation_image_preview, c.annotation_image_meta, c.annotation_image_new_label],
     )
-    annotation_image_save.click(
+    c.annotation_image_save.click(
         save_image_relabel,
-        inputs=[annotation_image_dir, annotation_image_sample, annotation_image_new_label],
-        outputs=[annotation_image_sample, annotation_image_new_label, annotation_image_status, annotation_image_preview, annotation_image_meta],
+        inputs=[c.annotation_image_dir, c.annotation_image_sample, c.annotation_image_new_label],
+        outputs=[c.annotation_image_sample, c.annotation_image_new_label, c.annotation_image_status, c.annotation_image_preview, c.annotation_image_meta],
     )
 
     def load_audio_annotation_samples(dataset_dir):
@@ -4622,20 +2489,20 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as exc:
             return gr.update(), gr.update(), f"❌ {exc}", None, "*Save failed.*"
 
-    annotation_audio_refresh.click(
+    c.annotation_audio_refresh.click(
         load_audio_annotation_samples,
-        inputs=[annotation_audio_dir],
-        outputs=[annotation_audio_sample, annotation_audio_new_label, annotation_audio_status],
+        inputs=[c.annotation_audio_dir],
+        outputs=[c.annotation_audio_sample, c.annotation_audio_new_label, c.annotation_audio_status],
     )
-    annotation_audio_sample.change(
+    c.annotation_audio_sample.change(
         preview_audio_annotation_sample,
-        inputs=[annotation_audio_dir, annotation_audio_sample],
-        outputs=[annotation_audio_preview, annotation_audio_meta, annotation_audio_new_label],
+        inputs=[c.annotation_audio_dir, c.annotation_audio_sample],
+        outputs=[c.annotation_audio_preview, c.annotation_audio_meta, c.annotation_audio_new_label],
     )
-    annotation_audio_save.click(
+    c.annotation_audio_save.click(
         save_audio_relabel,
-        inputs=[annotation_audio_dir, annotation_audio_sample, annotation_audio_new_label],
-        outputs=[annotation_audio_sample, annotation_audio_new_label, annotation_audio_status, annotation_audio_preview, annotation_audio_meta],
+        inputs=[c.annotation_audio_dir, c.annotation_audio_sample, c.annotation_audio_new_label],
+        outputs=[c.annotation_audio_sample, c.annotation_audio_new_label, c.annotation_audio_status, c.annotation_audio_preview, c.annotation_audio_meta],
     )
 
     def load_text_annotation_samples(data_path_val, text_col_val, label_col_val):
@@ -4687,20 +2554,20 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as exc:
             return gr.update(), gr.update(), f"❌ {exc}", "*Save failed.*"
 
-    annotation_text_refresh.click(
+    c.annotation_text_refresh.click(
         load_text_annotation_samples,
-        inputs=[annotation_text_path, annotation_text_col, annotation_text_label_col],
-        outputs=[annotation_text_sample, annotation_text_new_label, annotation_text_status],
+        inputs=[c.annotation_text_path, c.annotation_text_col, c.annotation_text_label_col],
+        outputs=[c.annotation_text_sample, c.annotation_text_new_label, c.annotation_text_status],
     )
-    annotation_text_sample.change(
+    c.annotation_text_sample.change(
         preview_text_annotation_sample,
-        inputs=[annotation_text_path, annotation_text_sample, annotation_text_col, annotation_text_label_col],
-        outputs=[annotation_text_preview, annotation_text_new_label],
+        inputs=[c.annotation_text_path, c.annotation_text_sample, c.annotation_text_col, c.annotation_text_label_col],
+        outputs=[c.annotation_text_preview, c.annotation_text_new_label],
     )
-    annotation_text_save.click(
+    c.annotation_text_save.click(
         save_text_annotation_sample,
-        inputs=[annotation_text_path, annotation_text_sample, annotation_text_col, annotation_text_label_col, annotation_text_new_label],
-        outputs=[annotation_text_sample, annotation_text_new_label, annotation_text_status, annotation_text_preview],
+        inputs=[c.annotation_text_path, c.annotation_text_sample, c.annotation_text_col, c.annotation_text_label_col, c.annotation_text_new_label],
+        outputs=[c.annotation_text_sample, c.annotation_text_new_label, c.annotation_text_status, c.annotation_text_preview],
     )
 
     def review_detection_boxes(image_path_val, model_key_val, conf_val, iou_val):
@@ -4725,15 +2592,15 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as exc:
             return f"❌ {exc}"
 
-    annotation_det_review_btn.click(
+    c.annotation_det_review_btn.click(
         review_detection_boxes,
-        inputs=[annotation_det_image, annotation_det_model, annotation_det_conf, annotation_det_iou],
-        outputs=[annotation_det_output, annotation_det_table, annotation_det_status],
+        inputs=[c.annotation_det_image, c.annotation_det_model, c.annotation_det_conf, c.annotation_det_iou],
+        outputs=[c.annotation_det_output, c.annotation_det_table, c.annotation_det_status],
     )
-    annotation_det_save_btn.click(
+    c.annotation_det_save_btn.click(
         save_detection_review,
-        inputs=[annotation_det_image, annotation_det_table],
-        outputs=[annotation_det_status],
+        inputs=[c.annotation_det_image, c.annotation_det_table],
+        outputs=[c.annotation_det_status],
     )
 
     # ── Try Your Model — inference callbacks ──────────────────────────────────
@@ -4788,10 +2655,10 @@ with gr.Blocks(title="NoCode-DL") as demo:
         except Exception as e:
             return f"### ⚠️ Prediction error\n\n```text\n{e}\n```", None
 
-    infer_img_btn.click(
+    c.infer_img_btn.click(
         lambda bp, img: _predict(bp, "image", img),
-        inputs=[infer_bundle_path, infer_img_input],
-        outputs=[infer_img_md, infer_img_chart],
+        inputs=[c.infer_bundle_path, c.infer_img_input],
+        outputs=[c.infer_img_md, c.infer_img_chart],
     )
     def _predict_text_with_explanation(bp, txt):
         md, chart = _predict(bp, "text", txt)
@@ -4804,35 +2671,35 @@ with gr.Blocks(title="NoCode-DL") as demo:
                 pass
         return md, chart, explain_html
 
-    infer_text_btn.click(
+    c.infer_text_btn.click(
         _predict_text_with_explanation,
-        inputs=[infer_bundle_path, infer_text_input],
-        outputs=[infer_text_md, infer_text_chart, infer_text_explain],
+        inputs=[c.infer_bundle_path, c.infer_text_input],
+        outputs=[c.infer_text_md, c.infer_text_chart, c.infer_text_explain],
     )
-    infer_tab_btn.click(
+    c.infer_tab_btn.click(
         lambda bp, fv: _predict(bp, "tabular", fv),
-        inputs=[infer_bundle_path, infer_tab_input],
-        outputs=[infer_tab_md, infer_tab_chart],
+        inputs=[c.infer_bundle_path, c.infer_tab_input],
+        outputs=[c.infer_tab_md, c.infer_tab_chart],
     )
-    infer_tab_fill_btn.click(
+    c.infer_tab_fill_btn.click(
         _suggest_tabular_example,
-        inputs=[data_path, modality, label_col, infer_tab_input],
-        outputs=infer_tab_input,
+        inputs=[c.data_path, c.modality, c.label_col, c.infer_tab_input],
+        outputs=c.infer_tab_input,
     )
-    infer_ts_fill_btn.click(
+    c.infer_ts_fill_btn.click(
         _suggest_timeseries_example,
-        inputs=[data_path, modality, label_col, time_col, infer_ts_input],
-        outputs=infer_ts_input,
+        inputs=[c.data_path, c.modality, c.label_col, c.time_col, c.infer_ts_input],
+        outputs=c.infer_ts_input,
     )
-    infer_aud_btn.click(
+    c.infer_aud_btn.click(
         lambda bp, aud: _predict(bp, "audio", aud),
-        inputs=[infer_bundle_path, infer_aud_input],
-        outputs=[infer_aud_md, infer_aud_chart],
+        inputs=[c.infer_bundle_path, c.infer_aud_input],
+        outputs=[c.infer_aud_md, c.infer_aud_chart],
     )
-    infer_ts_btn.click(
+    c.infer_ts_btn.click(
         lambda bp, ts: _predict(bp, "timeseries", ts),
-        inputs=[infer_bundle_path, infer_ts_input],
-        outputs=[infer_ts_md, infer_ts_chart],
+        inputs=[c.infer_bundle_path, c.infer_ts_input],
+        outputs=[c.infer_ts_md, c.infer_ts_chart],
     )
 
     # ── Batch prediction ──────────────────────────────────────────────────────
@@ -4903,15 +2770,15 @@ with gr.Blocks(title="NoCode-DL") as demo:
         pd.DataFrame(df).to_csv(path, index=False)
         return f"✅ Saved to `{path}`"
 
-    batch_run_btn.click(
+    c.batch_run_btn.click(
         _batch_predict,
-        inputs=[infer_bundle_path, batch_folder],
-        outputs=[batch_df, batch_status],
+        inputs=[c.infer_bundle_path, c.batch_folder],
+        outputs=[c.batch_df, c.batch_status],
     )
-    batch_save_btn.click(
+    c.batch_save_btn.click(
         _batch_save_csv,
-        inputs=[batch_df],
-        outputs=[batch_save_status],
+        inputs=[c.batch_df],
+        outputs=[c.batch_save_status],
     )
 
 
