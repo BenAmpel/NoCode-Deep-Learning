@@ -200,3 +200,18 @@ def test_windows_launcher_script(tmp_path):
     builder.stage_files(tmp_path / "staged", "1.2.3")
     bat = (tmp_path / "staged" / "NoCode-DL.bat").read_text(encoding="utf-8")
     assert "exit /b %ERRORLEVEL%" in bat
+
+
+def test_time_left_follows_measured_progress():
+    # Windows CI showed "85% · ~8m 33s remaining": the estimate counted down
+    # from the 10-minute typical install while pip was nearly done.
+    progress = launcher_ui.Progress()
+    progress.phase("Installing", typical_secs=600, span=(0.03, 0.85))
+    start = progress.phase_start
+    assert progress.eta_text(start + 20).endswith("~9m 40s remaining")  # nothing measured yet
+    for i in range(launcher_ui.EXPECTED_PACKAGES):
+        progress.pip_line(f"Collecting pkg{i}==1.0")
+    progress.pip_line("Installing collected packages: a, b")  # 88% of the install
+    assert progress.eta_text(start + 90).endswith("~12s remaining")  # 90 s * 0.12 / 0.88
+    progress.pip_line("Successfully installed a-1 b-2")
+    assert progress.eta_text(start + 95).endswith("almost ready\u2026")

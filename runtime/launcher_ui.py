@@ -49,6 +49,9 @@ FUN_MESSAGES = (
 # once it has downloaded them all, so progress before that is measured
 # against this estimate.
 EXPECTED_PACKAGES = 100
+# Below this much measured progress the rate is too noisy to extrapolate,
+# so the time left counts down from the phase's typical duration instead.
+MEASURED_ETA_MIN = 0.1
 
 _WHEEL = re.compile(r"(?P<name>[A-Za-z0-9_.]+?)-(?P<version>\d[^-]*)-.*\.whl")
 _SDIST = re.compile(r"(?P<name>[A-Za-z0-9_.-]+?)-(?P<version>\d[\w.]*)\.(?:tar\.gz|zip)")
@@ -287,9 +290,15 @@ class Progress:
     def eta_text(self, now: float | None = None) -> str:
         now = time.time() if now is None else now
         percent = f"{int(self.overall(now) * 100)}%"
-        if self.typical > 0:
-            return f"{percent} · {fmt_eta(now - self.phase_start, self.typical)}"
-        return percent
+        if self.typical <= 0:
+            return percent
+        elapsed = now - self.phase_start
+        expected = self.typical
+        if self.fraction >= MEASURED_ETA_MIN:
+            # pip says how far along we are, so go by the actual rate rather
+            # than the typical duration (which showed "~8m left" at 85%).
+            expected = elapsed / self.fraction
+        return f"{percent} · {fmt_eta(elapsed, expected)}"
 
     def fail(self, message: str) -> None:
         self.error = message
