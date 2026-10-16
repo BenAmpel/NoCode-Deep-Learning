@@ -39,6 +39,20 @@ def _reexec_into_venv(venv_dir) -> None:
     raise SystemExit(subprocess.run([str(venv_python), script_path, *sys.argv[1:]]).returncode)
 
 
+def _http_status(port: int, path: str) -> int | None:
+    """Status of a GET to the local app, or None if it did not answer."""
+    from http.client import HTTPConnection
+
+    conn = HTTPConnection("127.0.0.1", port, timeout=30)
+    try:
+        conn.request("GET", path)
+        return conn.getresponse().status
+    except OSError:
+        return None
+    finally:
+        conn.close()
+
+
 def main() -> int:
     args = _parse_args()
     venv_dir = resolve_venv_dir(args.venv_dir)
@@ -68,10 +82,15 @@ def main() -> int:
             frontend=False,
             show_api=False,
         )
+        status = None
         try:
             time.sleep(2)
+            status = _http_status(args.server_port, "/config")
+            print(f"[smoke] GET /config on port {args.server_port} answered HTTP {status}")
         finally:
             demo.close()
+        if status != 200:
+            raise SystemExit(f"[smoke] The app did not answer correctly (HTTP {status}).")
         print("[smoke] Launch and shutdown succeeded.")
         return 0
 
