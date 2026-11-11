@@ -799,6 +799,26 @@ def build_layout() -> tuple[gr.Blocks, Components]:
                                     "*Clustering structure will appear here for clustering runs.*"
                                 )
 
+                    with gr.Row():
+                        with gr.Column():
+                            with gr.Group(elem_classes=["studio-card"], visible=True) as decision_group:
+                                gr.HTML(_section_intro("Threshold and cost", "Move the decision threshold and put a dollar value on hits and false alarms. Uses the validation predictions of a classification run."))
+                                decision_pos_class = gr.Dropdown(label="Positive class (the one you act on)", choices=[], value=None, allow_custom_value=False)
+                                decision_threshold = gr.Slider(0.0, 1.0, value=0.5, step=0.01, label="Decision threshold (flag when P(positive) ≥ threshold)")
+                                with gr.Row():
+                                    decision_tp_value = gr.Number(label="Value per caught positive ($)", value=0)
+                                    decision_fp_cost = gr.Number(label="Cost per false alarm ($)", value=0)
+                                    decision_fn_cost = gr.Number(label="Cost per missed positive ($)", value=0)
+                                decision_best_btn = gr.Button("Use best threshold", size="sm")
+                                decision_md = gr.Markdown("*Train a classification model to tune its threshold.*")
+                                decision_plot = gr.Plot(label="Score by threshold")
+                        with gr.Column():
+                            with gr.Group(elem_classes=["studio-card"], visible=True) as fairness_group:
+                                gr.HTML(_section_intro("Group fairness", "Compare positive rates across groups, including a column you left out of the model. Uses the threshold and positive class set at left."))
+                                fairness_group_col = gr.Dropdown(label="Group column", choices=[], value=None, allow_custom_value=False)
+                                fairness_md = gr.Markdown("*Train a tabular classification model to check group fairness.*")
+                                fairness_df = gr.DataFrame(label="Rates by group", interactive=False, wrap=True)
+
                 # ── Tab 5: Dashboard ──────────────────────────────────────────────────
                 with gr.Tab("📈 Dashboard", elem_classes=["studio-tab-panel"]):
                     with gr.Group(elem_classes=["studio-card"]):
@@ -947,6 +967,14 @@ def build_layout() -> tuple[gr.Blocks, Components]:
                                             value=None,
                                             info="Placed first in the results so each prediction can be matched to its row; all other non-feature columns are copied too.",
                                         )
+                                        with gr.Row():
+                                            batch_rank_col = gr.Dropdown(
+                                                label="Rank by (optional, tabular)",
+                                                choices=[""],
+                                                value="",
+                                                info="Keep only the top k rows per value of this column, e.g. top 3 movies per student.",
+                                            )
+                                            batch_top_k = gr.Number(label="Top k", value=3, precision=0, minimum=1)
                                         batch_run_btn = gr.Button("🔮 Run Batch Prediction", variant="primary")
                                 with gr.Column():
                                     with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
@@ -961,6 +989,77 @@ def build_layout() -> tuple[gr.Blocks, Components]:
                                         batch_results = gr.State(None)
                                         batch_save_btn = gr.Button("⬇️ Save CSV to outputs/", variant="secondary")
                                         batch_save_status = gr.Markdown("")
+
+                # ── Language Model: zero-shot labeling and document Q&A ──────────────
+                with gr.Tab("🤖 Language Model", elem_classes=["studio-tab-panel"]):
+                    with gr.Group(elem_classes=["studio-card"]):
+                        gr.HTML(_section_intro(
+                            "Model server",
+                            "Use a pretrained language model without training. Any OpenAI-compatible server works: "
+                            "Ollama or LM Studio on this computer, or a hosted endpoint. The API key stays in this "
+                            "browser session only. It is never saved to the project, the run history, or the logs.",
+                        ))
+                        with gr.Row():
+                            llm_base_url = gr.Textbox(label="Server URL", value="http://localhost:11434/v1",
+                                                      info="Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1")
+                            llm_model = gr.Textbox(label="Model name", value="llama3.2:3b",
+                                                   info="The exact name the server lists, e.g. llama3.2:3b.")
+                            llm_api_key = gr.Textbox(label="API key (hosted servers only)", type="password",
+                                                     value="", placeholder="Leave blank for a local server")
+                        with gr.Row():
+                            llm_test_btn = gr.Button("🔌 Test connection", variant="secondary")
+                            llm_test_status = gr.Markdown("")
+                    with gr.Tabs():
+                        with gr.Tab("🏷 Zero-shot labeling"):
+                            with gr.Row():
+                                with gr.Column():
+                                    with gr.Group(elem_classes=["studio-card"]):
+                                        gr.HTML(_section_intro(
+                                            "Label a folder of text files",
+                                            "The model reads each .txt file and picks one of your labels. The results use "
+                                            "the same columns as batch prediction, so you can score them with the same script.",
+                                        ))
+                                        llm_zs_folder = gr.Textbox(label="Folder of .txt files",
+                                                                   placeholder="/path/to/folder")
+                                        llm_zs_labels = gr.Textbox(label="Labels (comma-separated)",
+                                                                   placeholder="positive, negative, neutral")
+                                        llm_zs_instructions = gr.Textbox(
+                                            label="Label definitions (optional)", lines=4,
+                                            placeholder="positive: the customer would recommend us\n...",
+                                            info="Describe each label in plain words. Clear definitions usually raise accuracy.")
+                                        llm_zs_run_btn = gr.Button("🏷 Label files", variant="primary")
+                                with gr.Column():
+                                    with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
+                                        llm_zs_status = gr.Markdown("*Start a model server, pick a folder, and enter labels.*")
+                                        llm_zs_df = gr.Dataframe(interactive=False, wrap=True, label="Labels")
+                                        llm_zs_results = gr.State(None)
+                                        llm_zs_save_btn = gr.Button("⬇️ Save CSV to outputs/", variant="secondary")
+                                        llm_zs_save_status = gr.Markdown("")
+                        with gr.Tab("📄 Ask a document (RAG)"):
+                            with gr.Row():
+                                with gr.Column():
+                                    with gr.Group(elem_classes=["studio-card"]):
+                                        gr.HTML(_section_intro(
+                                            "Retrieval-augmented answers",
+                                            "The document is split into chunks. The chunks closest to your question are "
+                                            "sent to the model, which answers from them only. Without a model server you "
+                                            "still see which chunks were retrieved.",
+                                        ))
+                                        llm_rag_file = gr.File(label="Document (.txt, .md, .pdf)",
+                                                               file_types=[".txt", ".md", ".pdf"], type="filepath")
+                                        with gr.Row():
+                                            llm_rag_chunk = gr.Slider(20, 1000, value=200, step=10, label="Chunk size (words)")
+                                            llm_rag_overlap = gr.Slider(0, 200, value=40, step=5, label="Overlap (words)")
+                                            llm_rag_topk = gr.Slider(1, 10, value=3, step=1, label="Chunks to retrieve")
+                                        llm_rag_question = gr.Textbox(label="Question", lines=2)
+                                        llm_rag_use_model = gr.Checkbox(label="Send the chunks to the model for an answer",
+                                                                        value=True)
+                                        llm_rag_btn = gr.Button("🔎 Ask", variant="primary")
+                                with gr.Column():
+                                    with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
+                                        llm_rag_answer = gr.Markdown("*Upload a document and ask a question.*")
+                                        llm_rag_chunks = gr.Dataframe(interactive=False, wrap=True,
+                                                                      label="Retrieved chunks")
 
                 # ── Tab 6: Export & History ───────────────────────────────────────────
                 with gr.Tab("📦 Export & History", elem_classes=["studio-tab-panel"]):

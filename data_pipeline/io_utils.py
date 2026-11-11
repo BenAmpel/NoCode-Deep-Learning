@@ -108,12 +108,109 @@ def read_structured_file(path: str | Path, *, nrows: int | None = None, dtype=No
         return pd.read_csv(path, sep="\t", nrows=nrows, dtype=dtype)
 
     if suffix == ".json":
+        nested = _read_nested_json(path)
+        if nested is not None:
+            return nested.head(nrows) if nrows is not None else nested
+        # Parse as one document first. A one-line array or object also parses as
+        # "JSON Lines" (a single row holding everything), so lines=True is only
+        # the fallback for files that are not one document.
         try:
-            return pd.read_json(path, lines=True)
+            df = pd.read_json(path)
         except ValueError:
-            return pd.read_json(path)
+            df = pd.read_json(path, lines=True)
+        return df.head(nrows) if nrows is not None else df
 
     raise ValueError(f"Unsupported structured file type: {path.suffix}")
+
+
+_MAX_NESTED_JSON_BYTES = 200 * 1024 * 1024
+
+
+def _is_table_member(value) -> bool:
+    """A dict of dicts ({date: {currency: rate}}), a dict of equal-length
+    lists ({"time": [...], "temp": [...]}), or a list of dicts (records)."""
+    if isinstance(value, dict) and value:
+        vals = list(value.values())
+        if all(isinstance(v, dict) for v in vals):
+            return True
+        if all(isinstance(v, list) for v in vals):
+            return len({len(v) for v in vals}) == 1 and len(vals[0]) > 0
+        return False
+    if isinstance(value, list) and value:
+        return all(isinstance(v, dict) for v in value)
+    return False
+
+
+def _member_rows(value) -> int:
+    if isinstance(value, list):
+        return len(value)
+    vals = list(value.values())
+    return len(vals[0]) if isinstance(vals[0], list) else len(vals)
+
+
+def _table_from_member(name: str, value):
+    import pandas as pd
+
+    if isinstance(value, list):
+        return pd.json_normalize(value)
+    vals = list(value.values())
+    if isinstance(vals[0], list):
+        return pd.DataFrame(value)
+    # {key: {col: value}}: one row per key. Keys that parse as dates (the
+    # Frankfurter API shape) become a "date" column.
+    df = pd.json_normalize(vals)
+    keys = pd.Series([str(k) for k in value.keys()])
+    looks_like_dates = keys.str.match(r"^\d{4}-\d{2}-\d{2}").all()
+    key_col = "date" if looks_like_dates else name
+    if key_col in df.columns:
+        key_col = f"{key_col}_key"
+    df.insert(0, key_col, keys.to_numpy())
+    return df
+
+
+def _read_nested_json(path: Path):
+    """Flatten common API response shapes that ``pandas.read_json`` reads badly.
+
+    Returns a DataFrame for:
+
+    * a top-level object that wraps one table next to scalar metadata, e.g.
+      Frankfurter's ``{"base": "EUR", "rates": {date: {currency: rate}}}`` or
+      Open-Meteo's ``{"latitude": ..., "hourly": {"time": [...], ...}}``;
+    * a list of records with nested objects (flattened to ``a.b`` columns).
+
+    Returns None for everything else (JSON Lines, pandas' own orients, flat
+    records), so those keep loading exactly as before.
+    """
+    import json
+
+    import pandas as pd
+
+    try:
+        if path.stat().st_size > _MAX_NESTED_JSON_BYTES:
+            return None
+        with open(path, encoding="utf-8-sig") as fh:
+            obj = json.load(fh)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+
+    if isinstance(obj, list):
+        if obj and all(isinstance(r, dict) for r in obj) and any(
+            isinstance(v, dict) for r in obj for v in r.values()
+        ):
+            return pd.json_normalize(obj)
+        return None
+    if not isinstance(obj, dict) or not obj:
+        return None
+    # Every value a dict, or every value a list: pandas' own orients
+    # ("columns", "index", "split", ...). Leave those to read_json.
+    vals = list(obj.values())
+    if all(isinstance(v, dict) for v in vals) or all(isinstance(v, list) for v in vals):
+        return None
+    members = {k: v for k, v in obj.items() if _is_table_member(v)}
+    if not members:
+        return None
+    name = max(members, key=lambda k: _member_rows(members[k]))
+    return _table_from_member(str(name), members[name])
 
 
 def drop_missing_label_rows(df, label_col: str):

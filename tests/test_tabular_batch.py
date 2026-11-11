@@ -74,6 +74,8 @@ def test_classification_matches_single_row_path_and_saves_numeric_confidence(tmp
     classes = class_labels_in_order(_runtime_bundle(bundle))
     prob_cols = [f"prob_{c}" for c in classes]
     assert list(full.columns) == ["applicant_id", "prediction", "confidence", "confidence_score", *prob_cols]
+    assert np.allclose(full[prob_cols].sum(axis=1), 1.0, atol=1e-4)
+    assert np.allclose(full[prob_cols].max(axis=1), full["confidence_score"], atol=1e-6)
     assert full["applicant_id"].tolist() == ["00123", "00456", "A-9"]
     assert len(preview) == 3
 
@@ -245,3 +247,111 @@ def test_default_id_column_prefers_id_like_names():
     assert default_id_column(["age", "city", "transaction_id"], prep) == "transaction_id"
     assert default_id_column(["age", "ref", "city"], prep) == "ref"
     assert default_id_column(["age", "city"], prep) is None
+
+
+# ── per-class probabilities, kept columns, ranking, timing ─────────────────
+
+def test_keep_cols_and_name_collisions(tmp_path, train_csv):
+    from ui.tabular_batch import predict_csv
+
+    bundle = _export_mlp(tmp_path, train_csv)
+    rows = [dict(r, prediction="mine", rank="r1", student="007") for r in BATCH_ROWS]
+    csv_path = _write_batch(tmp_path, rows)
+    df, _ = predict_csv(bundle, csv_path, "applicant_id", keep_cols=["student", "prediction", "student", ""])
+    assert df["student"].tolist() == ["007"] * 3              # kept as text, deduplicated
+    assert df["prediction_input"].tolist() == ["mine"] * 3    # input clash renamed, not overwritten
+    assert set(df["prediction"]) <= {"yes", "no", "maybe"}
+    assert df.attrs["source_columns"]["prediction"] == "prediction_input"
+    with pytest.raises(Exception, match="not in the CSV"):
+        predict_csv(bundle, csv_path, "applicant_id", keep_cols=["nope"])
+
+
+def test_keep_col_equal_to_id_col_is_not_duplicated(tmp_path, train_csv):
+    from ui.tabular_batch import predict_csv
+
+    bundle = _export_mlp(tmp_path, train_csv)
+    df, _ = predict_csv(bundle, _write_batch(tmp_path, BATCH_ROWS), "applicant_id", keep_cols=["applicant_id"])
+    assert list(df.columns).count("applicant_id") == 1
+
+
+def test_top_k_per_group_edge_cases():
+    from ui.tabular_batch import TabularBatchError, top_k_per_group
+
+    df = pd.DataFrame({
+        "student": ["a", "a", "a", "b", None, "b", "a"],
+        "score": [0.1, 0.9, np.nan, 0.5, 0.3, 0.5, 0.9],
+        "rank": ["x"] * 7,                       # an input column already named rank
+    })
+    out = top_k_per_group(df, "student", "score", 2)
+    a = out[out.student == "a"]
+    assert a.score.tolist() == [0.9, 0.9]                        # ties keep CSV order
+    assert out[out.student == "b"]["top_k_rank"].tolist() == [1, 2]
+    assert out["rank"].tolist() == ["x"] * len(out)              # input column untouched
+    assert out.student.isna().sum() == 1                         # blank group is its own group
+    # k larger than every group keeps all rows; NaN ranks last.
+    allrows = top_k_per_group(df, "student", "score", 99)
+    assert len(allrows) == 7
+    assert allrows[allrows.student == "a"].score.isna().tolist()[-1]
+    for bad in (0, -1, "x", None):
+        with pytest.raises(TabularBatchError):
+            top_k_per_group(df, "student", "score", bad)
+    with pytest.raises(TabularBatchError):
+        top_k_per_group(df, "nope", "score", 1)
+    assert top_k_per_group(df.iloc[:0], "student", "score", 3).empty
+
+
+def test_rank_score_column_choices():
+    from ui.tabular_batch import rank_score_column
+
+    assert rank_score_column(pd.DataFrame({"anomaly_score": [1.0]})) == "anomaly_score"
+    assert rank_score_column(pd.DataFrame({"prob_no": [.2], "prob_yes": [.8]})) == "prob_yes"
+    assert rank_score_column(pd.DataFrame({"prob_a": [.2], "prob_b": [.8]}), "a") == "prob_a"
+    assert rank_score_column(pd.DataFrame({"prediction": [3.2]})) == "prediction"
+    assert rank_score_column(pd.DataFrame({"prediction": ["x"], "confidence_score": [.5]})) == "confidence_score"
+    assert rank_score_column(pd.DataFrame({"x": [1]})) is None
+
+
+def test_batch_ranking_end_to_end_and_timing(tmp_path, train_csv):
+    from ui.callbacks import infer
+
+    bundle = _export_mlp(tmp_path, train_csv)
+    rows = []
+    for s in ("s1", "s2"):
+        for j in range(4):
+            rows.append({"rid": f"{s}-{j}", "age": 20 + 7 * j, "income": 40000.0 + 9000 * j,
+                         "city": ["oslo", "lima", "pune", "oslo"][j], "student": s})
+    csv_path = _write_batch(tmp_path, rows)
+    preview, status, full = infer._batch_predict(bundle, "", str(csv_path), "rid", "student", 2)
+    assert status.startswith("✅"), status
+    assert "⏱" in status and "8 rows" in status
+    assert "Scored **8** rows" in status and "top 2 per `student`" in status
+    assert len(full) == 4 and full.groupby("student").size().tolist() == [2, 2]
+    # Rank by the ID column itself (one row per group).
+    _, status2, full2 = infer._batch_predict(bundle, "", str(csv_path), "rid", "rid", 1)
+    assert status2.startswith("✅") and len(full2) == 8
+    # Blank top k falls back to 3.
+    _, status3, full3 = infer._batch_predict(bundle, "", str(csv_path), "rid", "student", None)
+    assert len(full3) == 6, status3
+    # Invalid k is a readable message, not a crash.
+    _, status4, _ = infer._batch_predict(bundle, "", str(csv_path), "rid", "student", 0)
+    assert status4.startswith("⚠️")
+
+
+def test_rank_dropdown_lists_csv_columns(tmp_path, train_csv):
+    from ui.callbacks import infer
+
+    bundle = _export_mlp(tmp_path, train_csv)
+    id_upd, rank_upd = infer._batch_csv_columns(str(_write_batch(tmp_path, BATCH_ROWS)), bundle)
+    assert rank_upd["choices"][0] == "" and "city" in rank_upd["choices"]
+    id_upd, rank_upd = infer._batch_csv_columns(None, bundle)
+    assert rank_upd["choices"] == [""]
+
+
+def test_keep_col_that_is_a_feature_is_copied_once(tmp_path, train_csv):
+    from ui.tabular_batch import predict_csv
+
+    bundle = _export_mlp(tmp_path, train_csv)
+    df, _ = predict_csv(bundle, _write_batch(tmp_path, BATCH_ROWS), "applicant_id", keep_cols=["city"])
+    assert df["city"].tolist() == ["lima", "oslo", "pune"]      # a feature, copied only because it was asked for
+    assert list(df.columns).count("city") == 1
+    assert df.attrs["source_columns"]["city"] == "city"

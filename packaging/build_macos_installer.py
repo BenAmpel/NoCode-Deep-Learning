@@ -51,6 +51,7 @@ RUNTIME_ITEMS = [
     "eval",
     "export",
     "install.py",
+    "llm",
     "modalities",
     "pipeline",
     "models",

@@ -1,10 +1,13 @@
 """Try Your Model tab: single and batch predictions."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from ui.helpers import _OUTPUTS_ROOT, _suggest_tabular_example, _suggest_timeseries_example
 from ui.layout import Components
+
+logger = logging.getLogger("nocode_dl")
 
 
 # ── Try Your Model — inference callbacks ──────────────────────────────────
@@ -77,13 +80,30 @@ def _predict_text_with_explanation(bp, txt):
 _PREVIEW_ROWS = 500
 
 
-def _batch_predict(bundle_path: str, folder_path: str, csv_file=None, id_col=None):
+def _batch_predict(bundle_path: str, folder_path: str, csv_file=None, id_col=None,
+                   rank_col=None, top_k=None):
     """Score a folder of files, or a CSV for tabular bundles.
 
     Returns ``(preview, status, full_results)``: the table shows at most
     ``_PREVIEW_ROWS`` rows, and Save writes ``full_results`` (held in a
-    ``gr.State``) so IDs and numbers are saved exactly as computed.
+    ``gr.State``) so IDs and numbers are saved exactly as computed. The
+    status line ends with the wall-clock time, so teams can compare speed.
     """
+    import time as _time
+    start = _time.perf_counter()
+    preview, status, full = _batch_predict_inner(bundle_path, folder_path, csv_file, id_col, rank_col, top_k)
+    if full is not None and len(full):
+        elapsed = _time.perf_counter() - start
+        n = getattr(full, "attrs", {}).get("n_scored", len(full))
+        unit = "rows" if "file" not in getattr(full, "columns", []) else "files"
+        per = elapsed / n * 1000 if n else 0.0
+        timing = f"⏱ {n:,} {unit} in {elapsed:.1f} s ({per:.1f} ms each)."
+        status = f"{status}\n\n{timing}"
+        logger.info("Batch prediction: %s %s in %.2f s (bundle %s)", n, unit, elapsed, bundle_path)
+    return preview, status, full
+
+
+def _batch_predict_inner(bundle_path, folder_path, csv_file, id_col, rank_col, top_k):
     if not bundle_path:
         return None, "⚠️ Select a bundle first.", None
     try:
@@ -94,27 +114,47 @@ def _batch_predict(bundle_path: str, folder_path: str, csv_file=None, id_col=Non
         return None, f"⚠️ Could not load bundle: {exc}", None
 
     if mod == "tabular":
-        return _batch_predict_tabular(bundle_path, csv_file, id_col)
+        return _batch_predict_tabular(bundle_path, csv_file, id_col, rank_col, top_k)
     df, status = _batch_predict_folder(bundle_path, folder_path, mod)
     return df, status, df
 
 
-def _batch_predict_tabular(bundle_path: str, csv_file, id_col):
+def _batch_predict_tabular(bundle_path: str, csv_file, id_col, rank_col=None, top_k=None):
     csv_path = _upload_path(csv_file)
     if not csv_path:
         return None, "⚠️ This is a tabular bundle: upload a CSV with one row per prediction.", None
-    from ui.tabular_batch import TabularBatchError, is_autoencoder, predict_csv
+    from ui.tabular_batch import (
+        TabularBatchError, is_autoencoder, predict_csv, rank_score_column, top_k_per_group,
+    )
+    rank_col = rank_col or None
     try:
-        df, notes = predict_csv(bundle_path, csv_path, id_col or None)
+        df, notes = predict_csv(bundle_path, csv_path, id_col or None,
+                                keep_cols=[rank_col] if rank_col else None)
     except TabularBatchError as exc:
         return None, f"⚠️ {exc}", None
     except Exception as exc:
         return None, f"⚠️ Batch prediction failed: {type(exc).__name__}: {exc}", None
+    n_scored = len(df)
+    rank_note = ""
+    if rank_col:
+        # predict_csv renames an input column that clashes with an output name.
+        group_name = df.attrs.get("source_columns", {}).get(rank_col, rank_col)
+        score_col = rank_score_column(df)
+        if score_col is None:
+            return None, "⚠️ These results have no numeric score to rank by.", None
+        try:
+            df = top_k_per_group(df, group_name, score_col, top_k if top_k not in (None, "") else 3)
+        except TabularBatchError as exc:
+            return None, f"⚠️ {exc}", None
+        k = int(top_k) if top_k not in (None, "") else 3
+        rank_note = (f" Kept the top {k} per `{rank_col}` by `{score_col}`: "
+                     f"{len(df):,} rows across {df[group_name].nunique(dropna=False):,} groups.")
+    df.attrs["n_scored"] = n_scored
 
     from ui.inference_helpers import _cached_bundle
     prep = _cached_bundle(bundle_path).get("preprocessing", {})
     what = "Computed anomaly scores for" if is_autoencoder(prep) else "Scored"
-    status = f"✅ {what} **{len(df):,}** rows."
+    status = f"✅ {what} **{n_scored:,}** rows.{rank_note}"
     if len(df) > _PREVIEW_ROWS:
         status += f" The table shows the first {_PREVIEW_ROWS}; Save writes all of them."
     if notes:
@@ -131,16 +171,16 @@ def _upload_path(f) -> str | None:
 
 
 def _batch_csv_columns(csv_file, bundle_path):
-    """Fill the ID-column dropdown from an uploaded CSV's header."""
+    """Fill the ID-column and rank-by dropdowns from an uploaded CSV's header."""
     import gradio as gr
     csv_path = _upload_path(csv_file)
     if not csv_path:
-        return gr.update(choices=[], value=None)
+        return gr.update(choices=[], value=None), gr.update(choices=[""], value="")
     try:
         from ui.tabular_batch import default_id_column, read_columns
         columns = read_columns(csv_path)
     except Exception:
-        return gr.update(choices=[], value=None)
+        return gr.update(choices=[], value=None), gr.update(choices=[""], value="")
     prep = {}
     if bundle_path:
         try:
@@ -148,7 +188,8 @@ def _batch_csv_columns(csv_file, bundle_path):
             prep = _cached_bundle(bundle_path).get("preprocessing", {})
         except Exception:
             prep = {}
-    return gr.update(choices=columns, value=default_id_column(columns, prep))
+    return (gr.update(choices=columns, value=default_id_column(columns, prep)),
+            gr.update(choices=[""] + columns, value=""))
 
 
 def _batch_predict_folder(bundle_path: str, folder_path: str, mod: str):
@@ -255,11 +296,12 @@ def register(c: Components) -> None:
     c.batch_csv.change(
         _batch_csv_columns,
         inputs=[c.batch_csv, c.infer_bundle_path],
-        outputs=[c.batch_id_col],
+        outputs=[c.batch_id_col, c.batch_rank_col],
     )
     c.batch_run_btn.click(
         _batch_predict,
-        inputs=[c.infer_bundle_path, c.batch_folder, c.batch_csv, c.batch_id_col],
+        inputs=[c.infer_bundle_path, c.batch_folder, c.batch_csv, c.batch_id_col,
+                c.batch_rank_col, c.batch_top_k],
         outputs=[c.batch_df, c.batch_status, c.batch_results],
     )
     # Save from the full results in state, not the displayed (truncated,
