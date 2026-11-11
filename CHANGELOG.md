@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Batch prediction for tabular models.** In Try Your Model → Batch, load a tabular bundle, upload a CSV and pick an ID column. Every row is scored with the bundle's saved preprocessing (scaling, one-hot categories, blank cells as in training), and the results CSV (`batch_predictions_*.csv`) copies every column the model does not use (IDs, labels) unchanged, with the chosen ID first, plus `prediction`, `confidence`, `confidence_score` and one numeric `prob_<class>` column per class (classification) or the predicted value (regression). Tabular Autoencoder bundles write a per-row `anomaly_score` instead. A CSV missing a feature column is refused with the column names; unseen category values and non-numeric cells are scored and listed in the status.
+
+### Changed
+- Batch prediction results now include `confidence_score`, the confidence as a number from 0 to 1, next to the existing `confidence` text (for example `87.3%`), which is unchanged.
+- Save CSV writes the full batch results; the on-screen table shows the first 500 rows.
+
 ## [2.0.0] - 2026-10-15
 
 A stability release after a full audit: training results you can trust, data that can't be corrupted, current dependencies with no known vulnerabilities, and a notarized macOS download. It's a major version because of the breaking changes below.

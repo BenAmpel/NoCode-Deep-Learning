@@ -74,21 +74,89 @@ def _predict_text_with_explanation(bp, txt):
 # ── Batch prediction ──────────────────────────────────────────────────────
 
 
-def _batch_predict(bundle_path: str, folder_path: str):
+_PREVIEW_ROWS = 500
+
+
+def _batch_predict(bundle_path: str, folder_path: str, csv_file=None, id_col=None):
+    """Score a folder of files, or a CSV for tabular bundles.
+
+    Returns ``(preview, status, full_results)``: the table shows at most
+    ``_PREVIEW_ROWS`` rows, and Save writes ``full_results`` (held in a
+    ``gr.State``) so IDs and numbers are saved exactly as computed.
+    """
     if not bundle_path:
-        return None, "⚠️ Select a bundle first."
+        return None, "⚠️ Select a bundle first.", None
+    try:
+        from ui.inference_helpers import _cached_bundle
+        bundle = _cached_bundle(bundle_path)
+        mod = bundle.get("preprocessing", {}).get("modality", "image")
+    except Exception as exc:
+        return None, f"⚠️ Could not load bundle: {exc}", None
+
+    if mod == "tabular":
+        return _batch_predict_tabular(bundle_path, csv_file, id_col)
+    df, status = _batch_predict_folder(bundle_path, folder_path, mod)
+    return df, status, df
+
+
+def _batch_predict_tabular(bundle_path: str, csv_file, id_col):
+    csv_path = _upload_path(csv_file)
+    if not csv_path:
+        return None, "⚠️ This is a tabular bundle: upload a CSV with one row per prediction.", None
+    from ui.tabular_batch import TabularBatchError, is_autoencoder, predict_csv
+    try:
+        df, notes = predict_csv(bundle_path, csv_path, id_col or None)
+    except TabularBatchError as exc:
+        return None, f"⚠️ {exc}", None
+    except Exception as exc:
+        return None, f"⚠️ Batch prediction failed: {type(exc).__name__}: {exc}", None
+
+    from ui.inference_helpers import _cached_bundle
+    prep = _cached_bundle(bundle_path).get("preprocessing", {})
+    what = "Computed anomaly scores for" if is_autoencoder(prep) else "Scored"
+    status = f"✅ {what} **{len(df):,}** rows."
+    if len(df) > _PREVIEW_ROWS:
+        status += f" The table shows the first {_PREVIEW_ROWS}; Save writes all of them."
+    if notes:
+        status += "\n\n" + notes
+    return df.head(_PREVIEW_ROWS), status, df
+
+
+def _upload_path(f) -> str | None:
+    if not f:
+        return None
+    if isinstance(f, (str, Path)):
+        return str(f)
+    return getattr(f, "name", None) or getattr(f, "path", None)
+
+
+def _batch_csv_columns(csv_file, bundle_path):
+    """Fill the ID-column dropdown from an uploaded CSV's header."""
+    import gradio as gr
+    csv_path = _upload_path(csv_file)
+    if not csv_path:
+        return gr.update(choices=[], value=None)
+    try:
+        from ui.tabular_batch import default_id_column, read_columns
+        columns = read_columns(csv_path)
+    except Exception:
+        return gr.update(choices=[], value=None)
+    prep = {}
+    if bundle_path:
+        try:
+            from ui.inference_helpers import _cached_bundle
+            prep = _cached_bundle(bundle_path).get("preprocessing", {})
+        except Exception:
+            prep = {}
+    return gr.update(choices=columns, value=default_id_column(columns, prep))
+
+
+def _batch_predict_folder(bundle_path: str, folder_path: str, mod: str):
     folder = Path(folder_path.strip()) if folder_path else None
     if not folder or not folder.is_dir():
         return None, f"⚠️ Folder not found: `{folder_path}`"
 
-    try:
-        from ui.inference_helpers import (
-            _cached_bundle, predict_image, predict_audio, predict_text,
-        )
-        bundle = _cached_bundle(bundle_path)
-        mod = bundle.get("preprocessing", {}).get("modality", "image")
-    except Exception as exc:
-        return None, f"⚠️ Could not load bundle: {exc}"
+    from ui.inference_helpers import predict_image, predict_audio, predict_text
 
     _EXT_MAP = {
         "image":     {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"},
@@ -110,6 +178,8 @@ def _batch_predict(bundle_path: str, folder_path: str):
     if not files:
         return None, f"⚠️ No {mod} files found in `{folder_path}`."
 
+    # "confidence" stays text ("87.3%") because existing scripts parse it that
+    # way; "confidence_score" is the same number as a 0-1 float.
     rows = []
     for fpath in files:
         try:
@@ -117,14 +187,15 @@ def _batch_predict(bundle_path: str, folder_path: str):
             preds = fn(bundle_path, inp)
             top = preds[0] if preds else {}
             if top.get("error"):
-                rows.append([fpath.name, "ERROR", str(top["error"])])
+                rows.append([fpath.name, "ERROR", str(top["error"]), None])
             else:
-                rows.append([fpath.name, top.get("label", "?"), f"{top.get('confidence', 0)*100:.1f}%"])
+                conf = float(top.get("confidence", 0))
+                rows.append([fpath.name, top.get("label", "?"), f"{conf*100:.1f}%", round(conf, 6)])
         except Exception as exc:
-            rows.append([fpath.name, "ERROR", str(exc)])
+            rows.append([fpath.name, "ERROR", str(exc), None])
 
     import pandas as pd
-    df = pd.DataFrame(rows, columns=["file", "prediction", "confidence"])
+    df = pd.DataFrame(rows, columns=["file", "prediction", "confidence", "confidence_score"])
     status = f"✅ Scored **{len(rows)}** files."
     return df, status
 
@@ -181,13 +252,20 @@ def register(c: Components) -> None:
         outputs=[c.infer_ts_md, c.infer_ts_chart],
     )
 
+    c.batch_csv.change(
+        _batch_csv_columns,
+        inputs=[c.batch_csv, c.infer_bundle_path],
+        outputs=[c.batch_id_col],
+    )
     c.batch_run_btn.click(
         _batch_predict,
-        inputs=[c.infer_bundle_path, c.batch_folder],
-        outputs=[c.batch_df, c.batch_status],
+        inputs=[c.infer_bundle_path, c.batch_folder, c.batch_csv, c.batch_id_col],
+        outputs=[c.batch_df, c.batch_status, c.batch_results],
     )
+    # Save from the full results in state, not the displayed (truncated,
+    # string-typed) table.
     c.batch_save_btn.click(
         _batch_save_csv,
-        inputs=[c.batch_df],
+        inputs=[c.batch_results],
         outputs=[c.batch_save_status],
     )

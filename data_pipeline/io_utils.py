@@ -44,7 +44,7 @@ def safe_extract_zip(zip_path: str | Path, dest: str | Path, *,
         zf.extractall(dest)
 
 
-def _reread_if_other_delimiter(df, path: Path, nrows: int | None, encoding: str):
+def _reread_if_other_delimiter(df, path: Path, nrows: int | None, encoding: str, dtype=None):
     """A ".csv" that parsed as one column is usually ;-, tab- or |-separated
     (semicolons are the norm where the decimal mark is a comma). Detect the
     delimiter from the header and re-read; files that parse fine are untouched.
@@ -67,11 +67,16 @@ def _reread_if_other_delimiter(df, path: Path, nrows: int | None, encoding: str)
         delimiter = max(candidates, key=header.count)
     # ;-separated files come from locales that write decimals as "1,5".
     decimal = "," if delimiter == ";" else "."
-    reread = pd.read_csv(path, nrows=nrows, encoding=encoding, sep=delimiter, decimal=decimal)
+    reread = pd.read_csv(path, nrows=nrows, encoding=encoding, sep=delimiter, decimal=decimal, dtype=dtype)
     return reread if reread.shape[1] > 1 else df
 
 
-def read_structured_file(path: str | Path, *, nrows: int | None = None):
+def read_structured_file(path: str | Path, *, nrows: int | None = None, dtype=None):
+    """Read a structured table file into a DataFrame.
+
+    ``dtype`` is passed to ``pandas.read_csv`` for .csv and .tsv files (for
+    example ``{"id": str}`` to keep leading zeros); other formats ignore it.
+    """
     import pandas as pd
 
     path = Path(path)
@@ -81,26 +86,26 @@ def read_structured_file(path: str | Path, *, nrows: int | None = None):
         last_error = None
         for encoding in _CSV_ENCODINGS:
             try:
-                df = pd.read_csv(path, nrows=nrows, encoding=encoding)
+                df = pd.read_csv(path, nrows=nrows, encoding=encoding, dtype=dtype)
             except UnicodeDecodeError as exc:
                 last_error = exc
                 continue
-            return _reread_if_other_delimiter(df, path, nrows, encoding)
+            return _reread_if_other_delimiter(df, path, nrows, encoding, dtype)
         if last_error is not None:
             raise last_error
-        return pd.read_csv(path, nrows=nrows)
+        return pd.read_csv(path, nrows=nrows, dtype=dtype)
 
     if suffix == ".tsv":
         last_error = None
         for encoding in _CSV_ENCODINGS:
             try:
-                return pd.read_csv(path, sep="\t", nrows=nrows, encoding=encoding)
+                return pd.read_csv(path, sep="\t", nrows=nrows, encoding=encoding, dtype=dtype)
             except UnicodeDecodeError as exc:
                 last_error = exc
                 continue
         if last_error is not None:
             raise last_error
-        return pd.read_csv(path, sep="\t", nrows=nrows)
+        return pd.read_csv(path, sep="\t", nrows=nrows, dtype=dtype)
 
     if suffix == ".json":
         try:

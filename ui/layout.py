@@ -927,26 +927,38 @@ def build_layout() -> tuple[gr.Blocks, Components]:
                                         gr.HTML(_section_intro(
                                             "Batch prediction",
                                             "Point at a folder of files — the app detects the modality from the "
-                                            "loaded bundle and scores every matching file, then lets you download the results as CSV.",
+                                            "loaded bundle and scores every matching file, then lets you download the results as CSV. "
+                                            "For a tabular bundle, upload a CSV instead: every row is scored with the bundle's saved "
+                                            "preprocessing. Columns the model does not use (IDs, labels) are copied to the results unchanged, with the ID column you pick first.",
                                         ))
                                         batch_folder = gr.Textbox(
                                             label="Input folder path",
                                             placeholder="/path/to/folder of images (or audio, text, video…)",
                                             info="Paste an absolute path to a folder containing files to classify.",
                                         )
+                                        batch_csv = gr.File(
+                                            label="Tabular CSV (tabular bundles only)",
+                                            file_types=[".csv", ".tsv"],
+                                            type="filepath",
+                                        )
+                                        batch_id_col = gr.Dropdown(
+                                            label="ID column",
+                                            choices=[],
+                                            value=None,
+                                            info="Placed first in the results so each prediction can be matched to its row; all other non-feature columns are copied too.",
+                                        )
                                         batch_run_btn = gr.Button("🔮 Run Batch Prediction", variant="primary")
                                 with gr.Column():
                                     with gr.Group(elem_classes=["studio-card", "studio-card--soft"]):
-                                        batch_status = gr.Markdown("*Set a bundle and folder path, then click Run.*")
+                                        batch_status = gr.Markdown("*Set a bundle and a folder path (or a CSV for tabular bundles), then click Run.*")
+                                        # Columns depend on the bundle (file vs ID column,
+                                        # classification vs regression vs anomaly score).
                                         batch_df = gr.Dataframe(
-                                            headers=["file", "prediction", "confidence"],
-                                            datatype=["str", "str", "str"],
-                                            row_count=1,
-                                            column_count=3,
                                             interactive=False,
                                             wrap=True,
                                             label="Predictions",
                                         )
+                                        batch_results = gr.State(None)
                                         batch_save_btn = gr.Button("⬇️ Save CSV to outputs/", variant="secondary")
                                         batch_save_status = gr.Markdown("")
 

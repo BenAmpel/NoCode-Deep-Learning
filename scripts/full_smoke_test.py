@@ -612,7 +612,7 @@ def _test_exports_and_inference(training_runs: dict[str, Any], text_fixture: Pat
     )
     fastapi_status = app.gen_fastapi(image_bundle, "image")
     docker_status = app.gen_docker(image_bundle, "image")
-    batch_df, batch_status = app._batch_predict(image_bundle, str(ROOT / "fixtures" / "image_stress_dataset"))
+    batch_df, batch_status, _batch_full = app._batch_predict(image_bundle, str(ROOT / "fixtures" / "image_stress_dataset"))
 
     return {
         "predictions": {
