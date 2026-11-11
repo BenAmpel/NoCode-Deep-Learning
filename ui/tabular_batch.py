@@ -6,10 +6,13 @@ scores exactly as it would in "Try Your Model" or an exported server.
 
 Output columns:
 
-- the chosen ID column, read as text so values like ``00123`` survive;
+- every column the model does not use (IDs, labels, notes), copied as text so
+  values like ``00123`` survive, with the chosen ID column first; a 1-based
+  ``row`` column when there are none;
 - classification: ``prediction``, ``confidence`` (text such as ``"87.3%"``,
-  the same format folder batch prediction writes) and ``confidence_score``
-  (the same number as a 0-1 float);
+  the same format folder batch prediction writes), ``confidence_score``
+  (the same number as a 0-1 float) and one ``prob_<class>`` column per class
+  (0-1 floats, so a binary model's positive-class probability is a number);
 - regression: ``prediction`` (the predicted value, a float);
 - tabular Autoencoder: ``anomaly_score`` (mean squared reconstruction error,
   as in the Evaluate tab; higher means more unusual).
@@ -97,10 +100,17 @@ def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = Non
     if id_col and id_col not in header:
         raise TabularBatchError(f"ID column `{id_col}` is not in the CSV.")
 
-    # Categorical values and the ID are read as text: a category column that
-    # holds only digits would otherwise parse as numbers and miss every
-    # training category, and IDs would lose leading zeros.
-    text_cols = {c: str for c in categorical_cols}
+    # Every column the model does not use is copied to the results, with the
+    # chosen ID column first.
+    passthrough = [c for c in header if c not in feature_cols]
+    if id_col:
+        # Also copied when it is a feature column, so it can be the key.
+        passthrough = [id_col] + [c for c in passthrough if c != id_col]
+
+    # Categorical values and passed-through columns are read as text: a
+    # category column that holds only digits would otherwise parse as numbers
+    # and miss every training category, and IDs would lose leading zeros.
+    text_cols = {c: str for c in categorical_cols + passthrough}
     if id_col:
         text_cols[id_col] = str
     try:
@@ -117,6 +127,9 @@ def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = Non
     autoencoder = is_autoencoder(prep)
     regression = bundle.task == "regression"
 
+    class_labels = class_labels_in_order(bundle) if not (autoencoder or regression) else []
+    prob_cols = {label: f"prob_{label}" for label in class_labels}
+
     out: dict[str, list] = {}
     if autoencoder:
         out["anomaly_score"] = []
@@ -125,6 +138,8 @@ def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = Non
         if not regression:
             out["confidence"] = []
             out["confidence_score"] = []
+            for col in prob_cols.values():
+                out[col] = []
     errors = 0
 
     for raw in records:
@@ -132,15 +147,18 @@ def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = Non
             if autoencoder:
                 out["anomaly_score"].append(_reconstruction_error(bundle, raw))
                 continue
-            result = bundle.predict(raw, top_k=1)
             if regression:
-                out["prediction"].append(float(result["value"]))
-            else:
-                top = result["predictions"][0]
-                conf = float(top["confidence"])
-                out["prediction"].append(top["label"])
-                out["confidence"].append(f"{conf * 100:.1f}%")
-                out["confidence_score"].append(round(conf, 6))
+                out["prediction"].append(float(bundle.predict(raw, top_k=1)["value"]))
+                continue
+            preds = bundle.predict(raw, top_k=max(1, len(class_labels)))["predictions"]
+            top = preds[0]
+            conf = float(top["confidence"])
+            out["prediction"].append(top["label"])
+            out["confidence"].append(f"{conf * 100:.1f}%")
+            out["confidence_score"].append(round(conf, 6))
+            by_label = {p["label"]: float(p["confidence"]) for p in preds}
+            for label, col in prob_cols.items():
+                out[col].append(round(by_label.get(label, np.nan), 6))
         except Exception as exc:
             errors += 1
             msg = f"{type(exc).__name__}: {exc}"
@@ -152,15 +170,31 @@ def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = Non
                 out["prediction"].append("ERROR")
                 out["confidence"].append(msg)
                 out["confidence_score"].append(np.nan)
+                for col in prob_cols.values():
+                    out[col].append(np.nan)
 
-    if id_col:
-        ids = df[id_col].reset_index(drop=True)
-        result_df = pd.DataFrame({id_col: ids, **out})
+    if passthrough:
+        # A passed-through column that shares a name with an output column
+        # (say the CSV already has a "prediction") keeps its values as
+        # "<name>_input".
+        kept = {}
+        for col in passthrough:
+            name = col
+            while name in out or name in kept:
+                name = f"{name}_input"
+            kept[name] = df[col].reset_index(drop=True)
+        result_df = pd.DataFrame({**kept, **out})
     else:
         result_df = pd.DataFrame({ROW_COLUMN: np.arange(1, len(df) + 1), **out})
     if errors:
         notes.append(f"⚠️ {errors:,} row(s) could not be scored.")
     return result_df, "\n".join(f"- {n}" for n in notes)
+
+
+def class_labels_in_order(bundle) -> list[str]:
+    """Class labels in model output order (index 0 first)."""
+    labels = getattr(bundle, "labels", {}) or {}
+    return [labels[k] for k in sorted(labels, key=lambda k: int(k))]
 
 
 def _reconstruction_error(bundle, raw: dict) -> float:

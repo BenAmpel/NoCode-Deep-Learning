@@ -929,7 +929,7 @@ def build_layout() -> tuple[gr.Blocks, Components]:
                                             "Point at a folder of files — the app detects the modality from the "
                                             "loaded bundle and scores every matching file, then lets you download the results as CSV. "
                                             "For a tabular bundle, upload a CSV instead: every row is scored with the bundle's saved "
-                                            "preprocessing, and the ID column you pick is copied to the results unchanged.",
+                                            "preprocessing. Columns the model does not use (IDs, labels) are copied to the results unchanged, with the ID column you pick first.",
                                         ))
                                         batch_folder = gr.Textbox(
                                             label="Input folder path",
@@ -945,7 +945,7 @@ def build_layout() -> tuple[gr.Blocks, Components]:
                                             label="ID column",
                                             choices=[],
                                             value=None,
-                                            info="Copied to the results as-is so each prediction can be matched to its row.",
+                                            info="Placed first in the results so each prediction can be matched to its row; all other non-feature columns are copied too.",
                                         )
                                         batch_run_btn = gr.Button("🔮 Run Batch Prediction", variant="primary")
                                 with gr.Column():

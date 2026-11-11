@@ -69,15 +69,23 @@ def test_classification_matches_single_row_path_and_saves_numeric_confidence(tmp
 
     preview, status, full = infer._batch_predict(bundle, "", str(csv_path), "applicant_id")
     assert status.startswith("✅"), status
-    assert list(full.columns) == ["applicant_id", "prediction", "confidence", "confidence_score"]
+    from ui.tabular_batch import class_labels_in_order
+    from ui.inference_helpers import _runtime_bundle
+    classes = class_labels_in_order(_runtime_bundle(bundle))
+    prob_cols = [f"prob_{c}" for c in classes]
+    assert list(full.columns) == ["applicant_id", "prediction", "confidence", "confidence_score", *prob_cols]
     assert full["applicant_id"].tolist() == ["00123", "00456", "A-9"]
     assert len(preview) == 3
 
     for i, row in enumerate(BATCH_ROWS):
-        single = predict_tabular(bundle, {k: row[k] for k in FEATURES}, top_k=1)[0]
+        ranked = predict_tabular(bundle, {k: row[k] for k in FEATURES}, top_k=len(classes))
+        single = ranked[0]
         assert full["prediction"][i] == single["label"]
         assert full["confidence_score"][i] == pytest.approx(single["confidence"], abs=1e-6)
         assert full["confidence"][i] == f"{single['confidence'] * 100:.1f}%"
+        for p in ranked:
+            assert full[f"prob_{p['label']}"][i] == pytest.approx(p["confidence"], abs=1e-6)
+        assert sum(full[c][i] for c in prob_cols) == pytest.approx(1.0, abs=1e-4)
 
     # Save writes the full results from state; read the file back.
     monkeypatch.setattr(infer, "_OUTPUTS_ROOT", tmp_path / "saved")
@@ -86,8 +94,33 @@ def test_classification_matches_single_row_path_and_saves_numeric_confidence(tmp
     saved_path = next((tmp_path / "saved").glob("batch_predictions_*.csv"))
     saved = pd.read_csv(saved_path, dtype={"applicant_id": str})
     assert saved["applicant_id"].tolist() == ["00123", "00456", "A-9"]
-    assert pd.api.types.is_float_dtype(saved["confidence_score"])
-    assert saved["confidence_score"].between(0, 1).all()
+    assert saved_path.name.startswith("batch_predictions_")
+    for col in ["confidence_score", *prob_cols]:
+        assert pd.api.types.is_float_dtype(saved[col])
+        assert saved[col].between(0, 1).all()
+
+
+def test_every_non_feature_column_is_passed_through(tmp_path, train_csv):
+    from ui.tabular_batch import predict_csv
+
+    bundle = _export_mlp(tmp_path, train_csv)
+    rows = [
+        dict(r, student_code=code, label=lab, prediction=old)
+        for r, code, lab, old in zip(BATCH_ROWS, ["007", "042", "100"], ["yes", "no", "maybe"], ["x", "y", "z"])
+    ]
+    df, _ = predict_csv(bundle, _write_batch(tmp_path, rows), "student_code")
+    # ID first, then the other non-feature columns in file order; features are not copied.
+    assert list(df.columns[:4]) == ["student_code", "applicant_id", "label", "prediction_input"]
+    assert "age" not in df.columns and "city" not in df.columns
+    assert df["student_code"].tolist() == ["007", "042", "100"]
+    assert df["applicant_id"].tolist() == ["00123", "00456", "A-9"]
+    assert df["label"].tolist() == ["yes", "no", "maybe"]
+    assert df["prediction_input"].tolist() == ["x", "y", "z"]
+    assert set(df["prediction"]) <= {"yes", "no", "maybe"}
+
+    # With no ID chosen the same columns still come through, in file order.
+    df2, _ = predict_csv(bundle, _write_batch(tmp_path, rows, name="b2.csv"))
+    assert list(df2.columns[:4]) == ["applicant_id", "student_code", "label", "prediction_input"]
 
 
 def test_regression_writes_predicted_value(tmp_path, train_csv):
