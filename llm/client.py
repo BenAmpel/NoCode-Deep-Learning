@@ -68,7 +68,7 @@ Transport = Callable[[str, bytes, dict, float], bytes]
 
 def _urllib_transport(url: str, body: bytes, headers: dict, timeout: float) -> bytes:
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (user-chosen URL)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310 (validate() allows http/https only)
         return resp.read()
 
 
