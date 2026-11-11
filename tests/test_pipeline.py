@@ -77,3 +77,28 @@ def test_successful_run_ends_with_a_result(tmp_path, monkeypatch):
     assert isinstance(items[-1], RunResult)
     assert not any(isinstance(i, RunResult) for i in items[:-1])
     assert Path(items[-1].bundle_path).parent == bundles
+
+
+@pytest.mark.parametrize("model_name", ["RandomForest", "MLP"])
+def test_tabular_classifier_bundle_saves_group_values(tmp_path, monkeypatch, model_name):
+    """The fairness panel reads validation group columns from the bundle."""
+    import json
+
+    import pipeline.runner as runner
+    from eval.decision import fairness_report, load_predictions
+
+    monkeypatch.setattr(runner, "OUTPUTS_ROOT", tmp_path / "bundles")
+    # Train on two features only: the others must still be saved as groups.
+    items = list(run(_config(model_name=model_name, feature_cols=["study_hours", "attendance_pct"])))
+    bundle = items[-1].bundle_path
+    art = json.loads((Path(bundle) / "evaluation_artifacts.json").read_text())
+    groups = art.get("group_values") or {}
+    assert groups, "no group_values saved"
+    assert "label" not in groups
+    n = len(art["y_true"])
+    assert all(len(v) == n for v in groups.values())
+    pred = load_predictions(bundle)
+    assert pred.groups
+    col = sorted(pred.groups)[0]
+    md, table = fairness_report(bundle, col, None, 0.5)
+    assert "Impact ratio" in md and len(table) >= 1

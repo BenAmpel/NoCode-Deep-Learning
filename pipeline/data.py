@@ -159,6 +159,7 @@ def load_data(ctx: RunContext) -> Iterator[Update]:
             ctx.temp_files.append(_cleaning_tmp.name)
             data_path = _cleaning_tmp.name
 
+        _tab_meta: dict = {}
         train_loader, val_loader, classes, prep, input_size, \
             X_train, y_train, X_val, y_val = load_tabular_data(
                 data_path, label_col=cfg.label_col, feature_cols=cfg.feature_cols, batch_size=bs,
@@ -166,8 +167,10 @@ def load_data(ctx: RunContext) -> Iterator[Update]:
                 scaling_strategy=str(cfg.tabular_scaling),
                 subset_percent=loader_subset_percent,
                 subset_seed=int(cfg.subset_seed),
-                task=cfg.task)
+                task=cfg.task,
+                meta_out=_tab_meta)
         extra_data.update({"input_size": input_size,
+                            "val_frame": _tab_meta.get("val_frame"),
                             "X_train": X_train, "y_train": y_train,
                             "X_val":   X_val,   "y_val":   y_val})
 

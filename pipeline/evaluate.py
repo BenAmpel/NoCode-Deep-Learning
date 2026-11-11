@@ -174,6 +174,14 @@ def evaluate(ctx: RunContext) -> Iterator[Update]:
                                 }
                                 for row_idx, row in enumerate(X_val_export[:row_limit])
                             ]
+                        val_frame = extra_data.get("val_frame")
+                        if val_frame is not None and len(val_frame) == len(y_true):
+                            try:
+                                from eval.decision import group_columns_for
+                                evaluation_artifacts["group_values"] = group_columns_for(
+                                    val_frame, cfg.label_col)
+                            except Exception as e:
+                                logger.warning("Group values for fairness skipped: %s", e)
             log.log("  ✓ Metrics computed")
         except Exception as e:
             log.log(f"  Metrics error: {e}")

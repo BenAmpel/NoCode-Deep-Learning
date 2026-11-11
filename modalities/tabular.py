@@ -27,7 +27,14 @@ def load_tabular_data(
     subset_percent: float = 100.0,
     subset_seed: int = 42,
     task: str = "classification",
+    meta_out: dict | None = None,
 ) -> tuple[DataLoader, DataLoader, list[str], dict, int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load a CSV for tabular training.
+
+    ``meta_out``, when given, receives ``val_frame``: the validation rows with
+    every original column (including columns left out of the features), in
+    the same order as ``X_val``. The fairness panel groups by these columns.
+    """
     df = read_structured_file(data_path)
     df, dropped_missing = drop_missing_label_rows(df, label_col)
     if df.empty:
@@ -74,6 +81,8 @@ def load_tabular_data(
         train_idx, val_idx = random_split(len(features_df), val_split)
     else:
         train_idx, val_idx = stratified_split(labels.tolist(), val_split)
+    if meta_out is not None:
+        meta_out["val_frame"] = df.iloc[list(val_idx)].reset_index(drop=True)
 
     # Scale numeric features
     num_array = features_df[num_cols].fillna(0).values.astype(np.float32)

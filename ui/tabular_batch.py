@@ -14,6 +14,9 @@ Output columns:
   (the same number as a 0-1 float) and one ``prob_<class>`` column per class
   (0-1 floats, so a binary model's positive-class probability is a number);
 - regression: ``prediction`` (the predicted value, a float);
+- classification also gets one ``prob_<class>`` column per class (0-1
+  floats), so a team can rank or threshold on the class it cares about;
+- any extra columns asked for with ``keep_cols`` (copied as text);
 - tabular Autoencoder: ``anomaly_score`` (mean squared reconstruction error,
   as in the Evaluate tab; higher means more unusual).
 """
@@ -58,7 +61,12 @@ def is_autoencoder(prep: dict) -> bool:
     return str(prep.get("model_name", "")) == "Autoencoder" or prep.get("task") == "anomaly"
 
 
-def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = None) -> tuple[pd.DataFrame, str]:
+def predict_csv(
+    bundle_path: str,
+    csv_path: str | Path,
+    id_col: str | None = None,
+    keep_cols: list[str] | None = None,
+) -> tuple[pd.DataFrame, str]:
     """Score every row of ``csv_path`` with a tabular bundle.
 
     Returns ``(results, notes)`` where ``notes`` is Markdown describing rows
@@ -99,6 +107,10 @@ def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = Non
         )
     if id_col and id_col not in header:
         raise TabularBatchError(f"ID column `{id_col}` is not in the CSV.")
+    keep_cols = [c for c in dict.fromkeys(keep_cols or []) if c and c != id_col]
+    absent = [c for c in keep_cols if c not in header]
+    if absent:
+        raise TabularBatchError("Column(s) not in the CSV: " + ", ".join(f"`{c}`" for c in absent))
 
     # Every column the model does not use is copied to the results, with the
     # chosen ID column first.
@@ -113,6 +125,8 @@ def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = Non
     text_cols = {c: str for c in categorical_cols + passthrough}
     if id_col:
         text_cols[id_col] = str
+    for col in keep_cols:
+        text_cols[col] = str
     try:
         df = read_structured_file(csv_path, dtype=text_cols)
     except Exception as exc:
@@ -173,6 +187,10 @@ def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = Non
                 for col in prob_cols.values():
                     out[col].append(np.nan)
 
+    # Feature columns named in keep_cols (say, a rank-by group that the
+    # model also uses) are copied too, after the pass-through columns.
+    passthrough += [c for c in keep_cols if c not in passthrough]
+    renamed: dict[str, str] = {}
     if passthrough:
         # A passed-through column that shares a name with an output column
         # (say the CSV already has a "prediction") keeps its values as
@@ -183,9 +201,12 @@ def predict_csv(bundle_path: str, csv_path: str | Path, id_col: str | None = Non
             while name in out or name in kept:
                 name = f"{name}_input"
             kept[name] = df[col].reset_index(drop=True)
+            renamed[col] = name
         result_df = pd.DataFrame({**kept, **out})
     else:
         result_df = pd.DataFrame({ROW_COLUMN: np.arange(1, len(df) + 1), **out})
+    # Where each input column ended up, for callers that rank or join on it.
+    result_df.attrs["source_columns"] = renamed
     if errors:
         notes.append(f"⚠️ {errors:,} row(s) could not be scored.")
     return result_df, "\n".join(f"- {n}" for n in notes)
@@ -237,3 +258,52 @@ def _input_notes(df: pd.DataFrame, prep: dict, numeric_cols: list[str], categori
             "categories as all-zero one-hot, the same as during training."
         )
     return notes
+
+
+def rank_score_column(results: pd.DataFrame, positive_class: str | None = None) -> str | None:
+    """The column to rank on: the predicted value (regression), the anomaly
+    score (Autoencoder), or the positive class's probability (classification)."""
+    if "anomaly_score" in results.columns:
+        return "anomaly_score"
+    prob_cols = [c for c in results.columns if str(c).startswith("prob_")]
+    if prob_cols:
+        if positive_class and f"prob_{positive_class}" in prob_cols:
+            return f"prob_{positive_class}"
+        from eval.decision import default_positive_class
+        pos = default_positive_class([c[len("prob_"):] for c in prob_cols])
+        return f"prob_{pos}"
+    if "prediction" in results.columns and pd.api.types.is_numeric_dtype(results["prediction"]):
+        return "prediction"
+    if "confidence_score" in results.columns:
+        return "confidence_score"
+    return None
+
+
+def top_k_per_group(results: pd.DataFrame, group_col: str, score_col: str, k: int) -> pd.DataFrame:
+    """Keep the ``k`` highest-scoring rows within each value of ``group_col``.
+
+    Adds a ``rank`` column (1 = best). Rows whose score is missing (failed
+    rows) rank last; ties keep the CSV's original order. Rows with a blank
+    group value form their own group.
+    """
+    if group_col not in results.columns:
+        raise TabularBatchError(f"Rank-by column `{group_col}` is not in the results.")
+    if score_col not in results.columns:
+        raise TabularBatchError(f"Score column `{score_col}` is not in the results.")
+    try:
+        k = int(k)
+    except (TypeError, ValueError):
+        raise TabularBatchError("Top k must be a whole number.") from None
+    if k < 1:
+        raise TabularBatchError("Top k must be at least 1.")
+    work = results.reset_index(drop=True).copy()
+    work["_order"] = np.arange(len(work))
+    work["_score"] = pd.to_numeric(work[score_col], errors="coerce").fillna(-np.inf)
+    work["_group"] = work[group_col].astype(object).where(work[group_col].notna(), "(missing)")
+    work = work.sort_values(["_group", "_score", "_order"], ascending=[True, False, True], kind="stable")
+    rank_name = "rank"
+    while rank_name in results.columns:
+        rank_name = f"top_k_{rank_name}"
+    work[rank_name] = work.groupby("_group", sort=False).cumcount() + 1
+    work = work[work[rank_name] <= k].sort_values(["_group", rank_name], kind="stable")
+    return work.drop(columns=["_order", "_score", "_group"]).reset_index(drop=True)

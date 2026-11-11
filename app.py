@@ -15,7 +15,7 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 
 from config import DEVICE
 from pipeline import RunConfig
-from ui.callbacks import annotate, data, detect, evaluate, export, infer, train
+from ui.callbacks import annotate, data, decision, detect, evaluate, export, infer, llm, train
 from ui.helpers import _OUTPUTS_ROOT
 from ui.layout import build_layout
 from ui.theme import APP_THEME, _APP_CSS_PATH, _SYNC_DARK_CLASS_JS
@@ -62,6 +62,8 @@ with demo:
     ])
     annotate.register(c)
     infer.register(c)
+    decision.register(c)
+    llm.register(c)
 
 
 def launch_app(
