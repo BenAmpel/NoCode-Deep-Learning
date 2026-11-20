@@ -118,3 +118,66 @@ jobs:
           name: NoCode-DL-macos
           path: dist/NoCode-DL-*.pkg
           retention-days: 30
+
+  rust-launcher:
+    # The opt-in native launcher (build_macos_installer.py --rust-launcher):
+    # it must set up its own Python with the bundled uv, with no python.org
+    # install and no admin prompt, then run the same first launch.
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the app with the native launcher
+        run: python packaging/build_macos_installer.py --version 1.0.0-ci --rust-launcher --app-only "$RUNNER_TEMP/app"
+
+      - name: The executable is the native launcher, not a script
+        run: file "$RUNNER_TEMP/app/NoCode-DL.app/Contents/MacOS/NoCode-DL" | grep -q "Mach-O 64-bit executable arm64"
+
+      - name: First launch with the native launcher (smoke mode)
+        timeout-minutes: 60
+        env:
+          NOCODE_DL_SMOKE_TEST: "1"
+        run: |
+          set +e
+          "$RUNNER_TEMP/app/NoCode-DL.app/Contents/MacOS/NoCode-DL"
+          code=$?
+          set -e
+          LOGS="$HOME/Library/Logs/NoCode-DL"
+          echo "Launcher exit code: $code"
+          echo "===== launcher.log ====="; cat "$LOGS/launcher.log" || true
+          mkdir -p "$RUNNER_TEMP/first-run"; cp "$LOGS"/*.log "$RUNNER_TEMP/first-run/" || true
+          test "$code" -eq 0
+          # The runner has other Pythons; the app must have used its private one.
+          grep -q "\[launcher\] Using Python: $HOME/Library/Application Support/NoCode-DL/python/" "$LOGS/launcher.log"
+          # ... and installed nothing outside its own folders.
+          test ! -e "$HOME/.local/bin/python3.12"
+          grep -q "Contents/Helpers/uv pip install" "$LOGS/launcher.log"
+          grep -q "answered HTTP 200" "$LOGS/server.log"
+          grep -q "Launch and shutdown succeeded" "$LOGS/server.log"
+          grep -E "progress window (shown|unavailable)" "$LOGS/launcher.log"
+
+      - name: Upload first-launch logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-rust-launcher-first-launch
+          path: ${{ runner.temp }}/first-run
+          if-no-files-found: ignore
+          retention-days: 14
+
+  rust-launcher-windows-build:
+    # The Windows side of launcher/ is not wired into the installer yet; this
+    # keeps it compiling (Job Object, MessageBox, no-console flags).
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Build the native launcher
+        run: cargo build --release --locked --manifest-path launcher/Cargo.toml

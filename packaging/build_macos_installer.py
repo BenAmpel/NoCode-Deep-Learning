@@ -100,6 +100,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional notarytool keychain profile. Used only when signing is enabled.",
     )
     parser.add_argument(
+        "--rust-launcher",
+        action="store_true",
+        help="Use the native launcher in launcher/ (built with cargo) instead of the bash one. "
+             "It sets up a private Python with the bundled uv, so no administrator prompt.",
+    )
+    parser.add_argument(
         "--app-only",
         metavar="DIR",
         default="",
@@ -456,6 +462,25 @@ def copy_source_tree(version: str) -> None:
     (SOURCE_COPY_DIR / ".bundle_version").write_text(version + "\n", encoding="utf-8")
 
 
+LAUNCHER_CRATE = ROOT / "launcher"
+
+
+def build_rust_launcher() -> None:
+    """Build launcher/ and install it as the app's executable.
+
+    ``--locked`` builds exactly the committed Cargo.lock. The binary replaces
+    the bash script at the same path, so Info.plist and signing don't change.
+    """
+    subprocess.run(
+        ["cargo", "build", "--release", "--locked", "--manifest-path", str(LAUNCHER_CRATE / "Cargo.toml")],
+        check=True,
+    )
+    built = LAUNCHER_CRATE / "target" / "release" / "nocode-dl-launcher"
+    dest = MACOS_DIR / APP_NAME
+    shutil.copy2(built, dest)
+    dest.chmod(0o755)
+
+
 def write_launcher() -> None:
     launcher = """#!/bin/bash
 set -euo pipefail
@@ -739,7 +764,10 @@ def main() -> int:
     icon_path = generate_branding_assets(version)
     shutil.copy2(icon_path, APP_RESOURCES_DIR / icon_path.name)
     bundle_uv()
-    write_launcher()
+    if args.rust_launcher:
+        build_rust_launcher()
+    else:
+        write_launcher()
     write_info_plist(version)
     if args.app_sign_identity:
         print("Signing app bundle...")
