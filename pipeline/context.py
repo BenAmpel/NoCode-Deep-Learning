@@ -17,6 +17,7 @@ class RunResult:
     metrics: dict = field(default_factory=dict)
     eval_summary: str = ""
     training_summary: str = ""
+    pitfalls: list | None = None   # eval.pitfalls findings; None = no checks for this task
     arch_fig: Any = None
     tsne_fig: Any = None
     cm_fig: Any = None

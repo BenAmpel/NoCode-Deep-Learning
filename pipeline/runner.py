@@ -6,6 +6,7 @@ UI's ``run_pipeline`` generator formats errors for display, and
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -22,6 +23,8 @@ from pipeline.progress import RunLog, Update
 from pipeline.train import train
 from training import cancel as _cancel
 from ui.project_state import load_project_state, save_project_state
+
+logger = logging.getLogger("nocode_dl")
 
 OUTPUTS_ROOT = Path(__file__).resolve().parent.parent / "outputs"
 
@@ -107,8 +110,21 @@ def execute(ctx: RunContext) -> Iterator[Update | RunResult]:
     yield from build_model(ctx)
     yield from train(ctx)
     yield from evaluate(ctx)
+    check_pitfalls(ctx)
     yield from export(ctx, str(OUTPUTS_ROOT))
     yield ctx.result
+
+
+def check_pitfalls(ctx: RunContext) -> None:
+    """Spot common mistakes in the finished run; it must never fail the run."""
+    try:
+        from eval.pitfalls import pitfalls_for_run
+        ctx.result.pitfalls = pitfalls_for_run(ctx)
+        if ctx.result.pitfalls:
+            ctx.log.log(f"Pitfall check: {len(ctx.result.pitfalls)} thing(s) to look at")
+    except Exception as e:
+        logger.warning("Pitfall check failed: %s", e)
+        ctx.result.pitfalls = None
 
 
 def cleanup(ctx: RunContext) -> None:
