@@ -91,7 +91,8 @@ def prepare_run(cfg: RunConfig, log: RunLog, progress: Callable | None = None) -
         runtime_device="cpu" if (cfg.modality == "video" and DEVICE == "mps") else DEVICE,
         data_path=cfg.data_path,
     )
-    set_seed(DEFAULTS["seed"])
+    ctx.seed = int(DEFAULTS["seed"])
+    set_seed(ctx.seed)
     _cancel.reset()
     import matplotlib
     matplotlib.use("Agg")

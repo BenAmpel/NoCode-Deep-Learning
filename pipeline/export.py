@@ -60,6 +60,18 @@ def export(ctx: RunContext, output_dir: str) -> Iterator[Update]:
         log.log(w)
         yield Update()
 
+    # A record of what ran (data fingerprint, split, seed, settings, device,
+    # versions, metrics) for reports and grading. It must never fail the run.
+    try:
+        from export.run_record import MARKDOWN_NAME, write_run_record
+        write_run_record(ctx, bundle_path, training_seed=ctx.seed)
+        log.log(f"Run record written: {MARKDOWN_NAME} (methods paragraph) and run_record.json")
+        yield Update()
+    except Exception as e:
+        logger.warning("Could not write the run record: %s", e)
+        log.log(f"⚠️ Could not write the run record: {e}")
+        yield Update()
+
     # ── 8. Save run history ───────────────────────────────────────────────
     try:
         from training.run_comparison import save_run
