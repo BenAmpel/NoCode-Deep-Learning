@@ -236,6 +236,36 @@ def test_macos_launcher_exports_bundled_uv(tmp_path, monkeypatch):
     assert builder.UV_HELPER.relative_to(builder.CONTENTS) == Path("Helpers/uv")
 
 
+def test_rust_launcher_builds_the_locked_crate_into_the_app(tmp_path, monkeypatch):
+    builder = _load_builder("build_macos_installer")
+    crate = tmp_path / "launcher"
+    built = crate / "target" / "release" / "nocode-dl-launcher"
+    built.parent.mkdir(parents=True)
+    built.write_bytes(b"\xcf\xfa\xed\xfe")
+    calls = []
+    monkeypatch.setattr(builder, "LAUNCHER_CRATE", crate)
+    monkeypatch.setattr(builder, "MACOS_DIR", tmp_path)
+    monkeypatch.setattr(builder.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    builder.build_rust_launcher()
+
+    assert calls == [["cargo", "build", "--release", "--locked",
+                      "--manifest-path", str(crate / "Cargo.toml")]]
+    exe = tmp_path / builder.APP_NAME
+    assert exe.read_bytes() == b"\xcf\xfa\xed\xfe"
+    assert exe.stat().st_mode & 0o111
+
+
+def test_rust_launcher_crate_is_committed_with_its_lockfile():
+    crate = Path(__file__).resolve().parent.parent / "launcher"
+    assert (crate / "Cargo.toml").is_file()
+    # --locked fails without it; a missing lockfile would only show up in CI.
+    assert (crate / "Cargo.lock").is_file()
+    source = (crate / "src" / "main.rs").read_text()
+    # Never write a python3.12 shim into ~/.local/bin or the Windows registry.
+    assert '"--no-bin"' in source and '"--no-registry"' in source
+
+
 def test_time_left_follows_measured_progress():
     # Windows CI showed "85% · ~8m 33s remaining": the estimate counted down
     # from the 10-minute typical install while pip was nearly done.

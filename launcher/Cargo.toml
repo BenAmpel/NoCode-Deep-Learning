@@ -1,0 +1,26 @@
+[package]
+name = "nocode-dl-launcher"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Native launcher for NoCode-DL: sets up a private Python with the bundled uv, then starts the Python bootstrap."
+
+[[bin]]
+name = "nocode-dl-launcher"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
