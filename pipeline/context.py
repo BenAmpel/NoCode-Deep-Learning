@@ -41,6 +41,7 @@ class RunContext:
     runtime_device: str       # what this run trains on (video falls back from MPS)
     data_path: str            # cfg.data_path, or a cleaned temporary copy of it
     temp_files: list[str] = field(default_factory=list)  # removed when the run ends
+    seed: int = 0             # the training seed prepare_run set
 
     # Filled in by the stages, in order.
     extra_data: dict = field(default_factory=dict)
