@@ -66,7 +66,8 @@ def main() -> int:
 
     from runtime.healthcheck import run_healthcheck
 
-    for line in run_healthcheck(server_port=args.server_port):
+    full_check = args.health_check_only or args.smoke_test
+    for line in run_healthcheck(server_port=args.server_port, import_all=full_check):
         print(f"[health] {line}")
 
     if args.health_check_only:
