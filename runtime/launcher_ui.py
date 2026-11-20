@@ -55,7 +55,8 @@ MEASURED_ETA_MIN = 0.1
 
 _WHEEL = re.compile(r"(?P<name>[A-Za-z0-9_.]+?)-(?P<version>\d[^-]*)-.*\.whl")
 _SDIST = re.compile(r"(?P<name>[A-Za-z0-9_.-]+?)-(?P<version>\d[\w.]*)\.(?:tar\.gz|zip)")
-_SIZE = re.compile(r"\(([\d.]+\s*[kMG]B)\)")
+_SIZE = re.compile(r"\(([\d.]+)\s*([kMG])i?B\)")  # pip "(1.0 MB)", uv "(5.3MiB)"
+_UV_COUNT = re.compile(r"^(Resolved|Prepared|Installed|Audited|Bytecode compiled) (\d+) (?:packages?|files?)\b")
 
 
 def _pretty_name(raw: str) -> str:
@@ -80,6 +81,26 @@ def parse_pip_line(line: str) -> tuple[str, str] | None:
         return "venv", "Checking the existing Python environment"
     if line.startswith("$") and "--upgrade pip" in line:
         return "pip", "Updating the package installer"
+    if line.startswith("$") and " pip install " in line and "--index-url" in line:
+        return "pip", "Looking up PyTorch"
+    if line.startswith("$") and " pip install " in line and " -r " in line:
+        return "pip", "Working out which packages are needed"
+    # uv (see runtime_setup.uv_install_commands) prints a total, then only
+    # the larger downloads by name, then totals for each stage.
+    uv_count = _UV_COUNT.match(line)
+    if uv_count:
+        stage, count = uv_count.group(1), int(uv_count.group(2))
+        if stage == "Resolved":
+            return "resolve", f"Found {count} packages"
+        if stage == "Prepared":
+            return "install", f"Installing {count} packages"
+        if stage == "Installed":  # --compile-bytecode runs next and can take a while
+            return "compile", f"Installed {count} packages; preparing them for first use"
+        if stage == "Bytecode compiled":
+            return "done", "Installed and ready"
+        return "done", "Everything is installed"
+    if line.startswith("Downloaded "):
+        return "downloaded", f"Downloaded {line[len('Downloaded '):].strip()}"
     if line.startswith("Collecting "):
         return "collect", f"Looking up {_pretty_name(line[len('Collecting '):])}"
     if line.startswith("Requirement already satisfied: "):
@@ -90,7 +111,7 @@ def parse_pip_line(line: str) -> tuple[str, str] | None:
         match = _WHEEL.match(target) or _SDIST.match(target)
         name = f"{match.group('name')} {match.group('version')}" if match else target
         size = _SIZE.search(rest)
-        return "download", f"Downloading {name}" + (f" ({size.group(1)})" if size else "")
+        return "download", f"Downloading {name}" + (f" ({size.group(1)} {size.group(2)}B)" if size else "")
     if line.startswith("Installing collected packages:"):
         pkgs = [p.strip() for p in line.split(":", 1)[1].split(",") if p.strip()]
         shown = ", ".join(pkgs[:3]) + (f" +{len(pkgs) - 3} more" if len(pkgs) > 3 else "")
@@ -222,6 +243,8 @@ class Progress:
         self.fraction = 0.0
         self.fun = False
         self.packages_seen = 0
+        self.downloads_started = 0  # uv: named downloads begun and finished
+        self.downloads_done = 0
         self._shown = 0.0
         self.error: str | None = None
         self.url: str | None = None  # set while the app runs and the window stays up
@@ -257,13 +280,25 @@ class Progress:
         self.set_detail(detail, now)
         if kind == "venv":
             self.fraction = max(self.fraction, 0.02)
+        elif kind == "resolve":  # uv knows the full list before downloading
+            self.fraction = max(self.fraction, 0.08)
+        elif kind == "downloaded":
+            # uv downloads in parallel and names only the larger files, so
+            # finished / begun is the progress through the download stage.
+            self.downloads_done += 1
+            share = self.downloads_done / max(self.downloads_started, self.downloads_done)
+            self.fraction = max(self.fraction, 0.08 + 0.77 * share)
         elif kind in ("collect", "download"):
             if kind == "collect":
                 self.packages_seen += 1
+            else:
+                self.downloads_started += 1
             # Downloading is most of the time; leave the rest for installing.
             self.fraction = max(self.fraction, 0.85 * min(self.packages_seen / EXPECTED_PACKAGES, 1.0))
         elif kind == "install":
             self.fraction = max(self.fraction, 0.88)
+        elif kind == "compile":
+            self.fraction = max(self.fraction, 0.94)
         elif kind == "done":
             self.fraction = 1.0
 

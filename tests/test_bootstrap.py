@@ -70,8 +70,11 @@ def test_windows_upgrade_does_not_copy_runtime_into_itself(tmp_path):
     target = bundle / "app"
     _write(target / ".bundle_version", "1.0.0")
     model = _write(target / "outputs" / "model.pt", "weights")
+    _write(bundle / "bin" / "uv.exe", "uv")
+    _write(bundle / "uv-cache" / "wheels" / "torch.whl", "cache")
     bootstrap_windows._sync_bundle_to_runtime(bundle, target)
     assert not (target / "app").exists()
+    assert not (target / "bin").exists() and not (target / "uv-cache").exists()
     assert model.read_text(encoding="utf-8") == "weights"
 
 
@@ -88,6 +91,18 @@ def test_windows_upgrade_does_not_copy_runtime_into_itself(tmp_path):
     ("Installing collected packages: a, b, c, d, e", "Installing 5 packages: a, b, c +2 more"),
     ("Successfully installed a-1 b-2", "Installed 2 packages"),
     ("  Using cached torch-2.9.0.whl", None),
+    # uv, as captured from a real piped `uv pip install`
+    ("$ /x/uv pip install --python /x/python --compile-bytecode -r /x/requirements.txt",
+     "Working out which packages are needed"),
+    ("Using Python 3.12.15 environment at: /x/.venv", None),
+    ("Resolved 9 packages in 2.32s", "Found 9 packages"),
+    ("Downloading numpy (5.3MiB)", "Downloading numpy (5.3 MB)"),
+    (" Downloaded numpy", "Downloaded numpy"),
+    ("Prepared 9 packages in 2m 12s", "Installing 9 packages"),
+    ("Installed 9 packages in 32ms", "Installed 9 packages; preparing them for first use"),
+    ("Bytecode compiled 82 files in 38ms", "Installed and ready"),
+    ("Audited 112 packages in 40ms", "Everything is installed"),
+    (" + numpy==2.5.5", None),
     ("", None),
 ])
 def test_pip_detail(line, expected):
@@ -178,12 +193,17 @@ def test_headless_window_reports_worker_error(monkeypatch, tmp_path):
     assert not progress.window_shown
 
 
-def test_windows_launcher_script(tmp_path):
+def _load_builder(name):
     # By path: the PyPI `packaging` library shadows the packaging/ folder.
-    path = Path(__file__).resolve().parent.parent / "packaging" / "build_windows_installer.py"
-    spec = importlib.util.spec_from_file_location("build_windows_installer", path)
+    path = Path(__file__).resolve().parent.parent / "packaging" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
+    return builder
+
+
+def test_windows_launcher_script(tmp_path, monkeypatch):
+    builder = _load_builder("build_windows_installer")
 
     script = builder.launcher_ps1()
     script.encode("ascii")  # PowerShell 5.1 reads BOM-less files as ANSI
@@ -196,10 +216,24 @@ def test_windows_launcher_script(tmp_path):
     # Hidden window: nothing may wait on console input.
     assert "Read-Host \"" not in script
     assert "-WindowStyle Hidden" in builder.SHORTCUT_PARAMETERS
+    assert '$env:NCDL_UV = $uv' in script and 'bin\\uv.exe' in script
 
+    staged_uv = []
+    monkeypatch.setattr(builder, "stage_uv", staged_uv.append)  # no download in tests
     builder.stage_files(tmp_path / "staged", "1.2.3")
+    assert staged_uv == [tmp_path / "staged"]
     bat = (tmp_path / "staged" / "NoCode-DL.bat").read_text(encoding="utf-8")
     assert "exit /b %ERRORLEVEL%" in bat
+
+
+def test_macos_launcher_exports_bundled_uv(tmp_path, monkeypatch):
+    builder = _load_builder("build_macos_installer")
+    monkeypatch.setattr(builder, "MACOS_DIR", tmp_path)
+    builder.write_launcher()
+    script = (tmp_path / builder.APP_NAME).read_text()
+    assert 'export NCDL_UV="$APP_DIR/Helpers/uv"' in script
+    assert script.index("NCDL_UV") < script.index("exec arch -arm64")
+    assert builder.UV_HELPER.relative_to(builder.CONTENTS) == Path("Helpers/uv")
 
 
 def test_time_left_follows_measured_progress():
@@ -215,3 +249,23 @@ def test_time_left_follows_measured_progress():
     assert progress.eta_text(start + 90).endswith("~12s remaining")  # 90 s * 0.12 / 0.88
     progress.pip_line("Successfully installed a-1 b-2")
     assert progress.eta_text(start + 95).endswith("almost ready\u2026")
+
+
+def test_install_progress_follows_uv():
+    progress = launcher_ui.Progress()
+    progress.phase("Installing", span=(0.0, 1.0))
+    progress.pip_line("Creating virtual environment at x ...")
+    progress.pip_line("Resolved 112 packages in 1.9s")
+    assert progress.overall() == pytest.approx(0.08)
+    for name in ("torch", "numpy", "pandas", "scipy"):
+        progress.pip_line(f"Downloading {name} (50.0MiB)")
+    progress.pip_line(" Downloaded numpy")
+    progress.pip_line(" Downloaded pandas")
+    assert progress.overall() == pytest.approx(0.08 + 0.77 * 0.5)
+    assert progress.detail_text() == "Downloaded pandas"
+    progress.pip_line("Prepared 112 packages in 40s")
+    assert progress.overall() == pytest.approx(0.88)
+    progress.pip_line("Installed 112 packages in 3s")
+    assert progress.overall() == pytest.approx(0.94)  # bytecode compile still to come
+    progress.pip_line("Bytecode compiled 9120 files in 11s")
+    assert progress.overall() == pytest.approx(1.0)

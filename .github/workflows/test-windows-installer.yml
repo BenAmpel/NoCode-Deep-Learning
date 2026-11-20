@@ -139,7 +139,9 @@ jobs:
           $launcher = Get-Content "$logs\launcher.log" -Raw
           $server = Get-Content "$logs\server.log" -Raw
           if ($launcher -notmatch "progress window shown") { throw "The progress window was not shown" }
-          if ($launcher -notmatch "Successfully installed") { throw "pip output did not reach launcher.log" }
+          # The installer bundles uv, so the install must have gone through it.
+          if ($launcher -notmatch "bin\\uv\.exe pip install") { throw "the bundled uv did not run the install" }
+          if ($launcher -notmatch "(?m)^Installed \d+ packages") { throw "uv output did not reach launcher.log" }
           if ($server -notmatch "answered HTTP 200") { throw "The app did not answer HTTP" }
           if ($server -notmatch "Launch and shutdown succeeded") { throw "The smoke test did not finish" }
 
