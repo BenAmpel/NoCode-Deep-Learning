@@ -246,6 +246,7 @@ def build_record(ctx: Any, bundle_path: str, *, training_seed: int) -> dict:
             "libraries": _library_versions(),
         },
         "settings": settings,
+        "pitfalls": getattr(ctx.result, "pitfalls", None),
     }
     return _jsonable(record)
 
@@ -318,6 +319,18 @@ def methods_paragraph(record: dict) -> str:
     return " ".join(parts)
 
 
+def _pitfall_lines(findings: list | None) -> list[str]:
+    """The 'Pitfall check' section; nothing for tasks the coach does not cover."""
+    if findings is None:
+        return []
+    lines = ["## Pitfall check", ""]
+    if not findings:
+        return lines + ["No common mistakes were spotted in the validation results.", ""]
+    for f in findings:
+        lines += [f"- **{f['title']}** ({f['severity']}). {f['evidence']} {f['why']} Try: {f['try']}"]
+    return lines + [""]
+
+
 def render_markdown(record: dict) -> str:
     data, split, model, train = record["data"], record["split"], record["model"], record["training"]
     env, metrics, fp = record["environment"], record["metrics"], record["data"]["fingerprint"]
@@ -380,6 +393,7 @@ def render_markdown(record: dict) -> str:
         "|---|---|",
         *[f"| {k} | {_fmt(v)} |" for k, v in metrics["values"].items()],
         "",
+        *_pitfall_lines(record.get("pitfalls")),
         "## Environment",
         "",
         *table([

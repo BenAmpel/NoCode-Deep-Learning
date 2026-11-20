@@ -38,6 +38,14 @@ from ui.layout import Components
 _STOPPED_MESSAGE = "⏹ Training stopped. Nothing was exported for this run."
 
 
+def _with_pitfalls(pitfalls: list | None, training_summary: str) -> str:
+    """The Run summary card: the pitfall check first, then the loss-curve summary."""
+    from eval.pitfalls import render_markdown
+
+    parts = [p for p in (render_markdown(pitfalls), training_summary) if p]
+    return "\n\n---\n\n".join(parts)
+
+
 def _format_run_error(exc: Exception) -> str:
     """Status text for a failed run: a friendly message, then the traceback.
 
@@ -144,7 +152,7 @@ def run_pipeline(
             mis_df=gr.update(value=result.mis_df),
             bundle=result.bundle_path,
             arch=gr.update(value=result.arch_fig),
-            train_summary=result.training_summary,
+            train_summary=_with_pitfalls(result.pitfalls, result.training_summary),
             reg_plot=gr.update(value=result.reg_fig),
             anomaly_plot=gr.update(value=result.anomaly_fig),
             eval_kpis=_format_eval_kpis(result.eval_summary, history, cfg.task),
