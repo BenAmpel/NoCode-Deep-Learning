@@ -40,6 +40,10 @@ SYNC_EXCLUDES = {
     # The install folder is both the bundle and the parent of the runtime
     # copy, so without this an upgrade copies the old app/ into app/app/.
     "app",
+    # The bundled uv (bin/uv.exe runs from the install folder) and its
+    # package cache, which sits beside .venv and can reach gigabytes.
+    "bin",
+    "uv-cache",
     "build",
     "dist",
 }

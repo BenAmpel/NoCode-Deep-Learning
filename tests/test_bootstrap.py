@@ -70,8 +70,11 @@ def test_windows_upgrade_does_not_copy_runtime_into_itself(tmp_path):
     target = bundle / "app"
     _write(target / ".bundle_version", "1.0.0")
     model = _write(target / "outputs" / "model.pt", "weights")
+    _write(bundle / "bin" / "uv.exe", "uv")
+    _write(bundle / "uv-cache" / "wheels" / "torch.whl", "cache")
     bootstrap_windows._sync_bundle_to_runtime(bundle, target)
     assert not (target / "app").exists()
+    assert not (target / "bin").exists() and not (target / "uv-cache").exists()
     assert model.read_text(encoding="utf-8") == "weights"
 
 
