@@ -32,6 +32,29 @@ def run(cmd: list[str], env: dict[str, str] | None = None) -> None:
     subprocess.run(cmd, check=True, cwd=PROJECT_ROOT, env=env, stderr=subprocess.STDOUT)
 
 
+def _install_with_uv(uv: Path, python: Path, venv_dir: Path) -> bool:
+    """Install with the bundled uv. False when uv could not finish (blocked
+    by antivirus, a network or certificate setup it handles differently from
+    pip...), so the caller falls back to pip."""
+    env = uv_env(venv_dir)
+    try:
+        for cmd in uv_install_commands(uv, python):
+            run(cmd, env=env)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"uv could not finish the install ({exc}); using pip instead.", flush=True)
+        return False
+    return True
+
+
+def _install_with_pip(python: Path) -> None:
+    # A venv uv made has no pip; give it one before using pip on it.
+    if subprocess.run([str(python), "-m", "pip", "--version"], capture_output=True, check=False).returncode != 0:
+        run([str(python), "-m", "ensurepip", "--upgrade"])
+    run([str(python), "-m", "pip", "install", "--upgrade", "pip", "--retries", "5", "--timeout", "60"])
+    for cmd in pip_install_commands(python):
+        run(cmd)
+
+
 def _can_reuse(venv_dir: Path) -> bool:
     """Keep the existing environment if it was built by this Python on this CPU.
 
@@ -85,17 +108,10 @@ def main() -> int:
 
     python = venv_python_path(venv_dir)
     try:
-        if uv is not None:
-            env = uv_env(venv_dir)
-            for cmd in uv_install_commands(uv, python):
-                run(cmd, env=env)
-        else:
-            # A venv uv made has no pip; give it one before using pip on it.
-            if subprocess.run([str(python), "-m", "pip", "--version"], capture_output=True, check=False).returncode != 0:
-                run([str(python), "-m", "ensurepip", "--upgrade"])
-            run([str(python), "-m", "pip", "install", "--upgrade", "pip", "--retries", "5", "--timeout", "60"])
-            for cmd in pip_install_commands(python):
-                run(cmd)
+        if uv is not None and not _install_with_uv(uv, python, venv_dir):
+            uv = None
+        if uv is None:
+            _install_with_pip(python)
     except subprocess.CalledProcessError as exc:
         print(
             f"\nDependency install failed (exit code {exc.returncode}). Check your internet "

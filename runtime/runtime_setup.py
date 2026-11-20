@@ -137,8 +137,11 @@ def bundled_uv() -> Path | None:
 def uv_env(venv_dir: Path) -> dict[str, str]:
     """Environment for uv: its cache sits beside the venv (in the app's own
     folder, not ~/.cache), it never downloads a Python of its own here, and
-    it retries flaky networks like the pip commands do."""
+    it retries flaky networks like the pip commands do. It trusts the
+    system's certificate store, as pip does, so networks that inspect TLS
+    (campus and company proxies) work the same with both."""
     env = dict(os.environ)
+    env.setdefault("UV_SYSTEM_CERTS", "1")
     env.setdefault("UV_CACHE_DIR", str(venv_dir.parent / "uv-cache"))
     env["UV_PYTHON_DOWNLOADS"] = "never"
     env["UV_NO_PROGRESS"] = "1"

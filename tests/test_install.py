@@ -192,3 +192,35 @@ def test_pip_path_restores_pip_in_a_venv_uv_made(tmp_path, monkeypatch):
     assert install.main() == 0
     assert calls[1][1:] == ["-m", "ensurepip", "--upgrade"]
     assert calls[2][1:4] == ["-m", "pip", "install"]
+
+
+@pytest.mark.parametrize("uv_failure", [
+    OSError("blocked by antivirus"),
+    subprocess.CalledProcessError(2, ["uv"]),
+])
+def test_uv_failure_falls_back_to_pip(tmp_path, monkeypatch, uv_failure):
+    uv = tmp_path / "uv"
+    uv.write_text("")
+    uv.chmod(0o755)
+    monkeypatch.setenv(rs.UV_ENV_VAR, str(uv))
+    venv = tmp_path / "venv"
+    _make_venv(venv, requirements_hash="old")
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[0] == str(uv):
+            raise uv_failure
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["install.py", "--venv-dir", str(venv)])
+    assert install.main() == 0
+    assert calls[0][0] == str(uv)
+    assert any(cmd[1:4] == ["-m", "pip", "install"] for cmd in calls[1:])
+    assert json.loads(rs.install_state_path(venv).read_text())["requirements_hash"] != "old"
+
+
+def test_uv_trusts_the_system_certificate_store(tmp_path, monkeypatch):
+    monkeypatch.delenv("UV_SYSTEM_CERTS", raising=False)
+    assert rs.uv_env(tmp_path / "venv")["UV_SYSTEM_CERTS"] == "1"
