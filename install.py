@@ -11,20 +11,25 @@ from pathlib import Path
 from runtime.runtime_setup import (
     PROJECT_ROOT,
     VENV_UNAVAILABLE_EXIT,
+    bundled_uv,
     load_install_state,
     pip_install_commands,
     requirement_names,
     resolve_venv_dir,
     save_install_state,
+    uv_env,
+    uv_install_commands,
     venv_python_path,
 )
 
 SUPPORTED_PYTHON = ((3, 11), (3, 13))  # numpy 2.4 / scikit-learn 1.8 need >= 3.11
 
 
-def run(cmd: list[str]) -> None:
+def run(cmd: list[str], env: dict[str, str] | None = None) -> None:
     print("$", " ".join(cmd), flush=True)
-    subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
+    # uv writes its progress to stderr; fold it into stdout so the launcher's
+    # progress window and launcher.log see it in order.
+    subprocess.run(cmd, check=True, cwd=PROJECT_ROOT, env=env, stderr=subprocess.STDOUT)
 
 
 def _can_reuse(venv_dir: Path) -> bool:
@@ -63,12 +68,14 @@ def main() -> int:
         )
 
     venv_dir = resolve_venv_dir(args.venv_dir)
+    uv = bundled_uv()
     if args.fresh or not _can_reuse(venv_dir):
         print(f"Creating virtual environment at {venv_dir} ...", flush=True)
         if venv_dir.exists():
             shutil.rmtree(venv_dir)
         try:
-            venv.EnvBuilder(with_pip=True).create(venv_dir)
+            # uv installs into any venv, so the venv needs no pip of its own.
+            venv.EnvBuilder(with_pip=uv is None).create(venv_dir)
         except Exception as exc:  # e.g. a Python without the venv/ensurepip modules
             print(f"Could not create a virtual environment: {exc}", file=sys.stderr, flush=True)
             shutil.rmtree(venv_dir, ignore_errors=True)
@@ -78,9 +85,17 @@ def main() -> int:
 
     python = venv_python_path(venv_dir)
     try:
-        run([str(python), "-m", "pip", "install", "--upgrade", "pip", "--retries", "5", "--timeout", "60"])
-        for cmd in pip_install_commands(python):
-            run(cmd)
+        if uv is not None:
+            env = uv_env(venv_dir)
+            for cmd in uv_install_commands(uv, python):
+                run(cmd, env=env)
+        else:
+            # A venv uv made has no pip; give it one before using pip on it.
+            if subprocess.run([str(python), "-m", "pip", "--version"], capture_output=True, check=False).returncode != 0:
+                run([str(python), "-m", "ensurepip", "--upgrade"])
+            run([str(python), "-m", "pip", "install", "--upgrade", "pip", "--retries", "5", "--timeout", "60"])
+            for cmd in pip_install_commands(python):
+                run(cmd)
     except subprocess.CalledProcessError as exc:
         print(
             f"\nDependency install failed (exit code {exc.returncode}). Check your internet "

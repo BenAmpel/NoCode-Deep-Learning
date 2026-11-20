@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zlib
 from datetime import datetime
@@ -42,6 +43,16 @@ PYTHON_PKG_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/{PYTHON_PK
 PYTHON_PKG_SHA256 = "8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4"
 VENDOR_DIR = ROOT / "packaging" / "vendor"
 VENDOR_PYTHON_PKG = VENDOR_DIR / PYTHON_PKG_NAME
+# uv installs the packages on first launch (several times faster than pip).
+# It ships inside the .app as a signed helper; the launcher exports NCDL_UV.
+UV_VERSION = "0.13.6"
+UV_ARCHIVE_NAME = f"uv-aarch64-apple-darwin-{UV_VERSION}.tar.gz"
+UV_URL = f"https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/uv-aarch64-apple-darwin.tar.gz"
+UV_SHA256 = "60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472"
+UV_ARCHIVE_MEMBER = "uv-aarch64-apple-darwin/uv"
+VENDOR_UV_ARCHIVE = VENDOR_DIR / UV_ARCHIVE_NAME
+HELPERS_DIR = CONTENTS / "Helpers"
+UV_HELPER = HELPERS_DIR / "uv"
 RUNTIME_ITEMS = [
     "SETUP.md",
     "app.py",
@@ -149,6 +160,41 @@ def ensure_python_pkg() -> Path:
             f"expected {PYTHON_PKG_SHA256}, got {sha256_value}"
         )
     return VENDOR_PYTHON_PKG
+
+
+def ensure_uv_archive() -> Path:
+    VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+    if not VENDOR_UV_ARCHIVE.exists():
+        print(f"Downloading uv {UV_VERSION} from {UV_URL}")
+        # GitHub redirects release downloads to its asset CDN.
+        download_file(
+            UV_URL,
+            VENDOR_UV_ARCHIVE,
+            allowed_hosts={"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"},
+            expected_sha256=UV_SHA256,
+        )
+    sha256_value = file_sha256(VENDOR_UV_ARCHIVE)
+    if sha256_value != UV_SHA256:
+        raise RuntimeError(
+            f"uv archive checksum mismatch for {VENDOR_UV_ARCHIVE}: expected {UV_SHA256}, got {sha256_value}"
+        )
+    return VENDOR_UV_ARCHIVE
+
+
+def bundle_uv() -> None:
+    """Put the pinned uv binary at Contents/Helpers/uv (Apple's place for helper tools)."""
+    archive = ensure_uv_archive()
+    HELPERS_DIR.mkdir(parents=True, exist_ok=True)
+    # Read the one member by name rather than extracting the archive.
+    with tarfile.open(archive, "r:gz") as tar:
+        member = tar.getmember(UV_ARCHIVE_MEMBER)
+        if not member.isfile():
+            raise RuntimeError(f"{UV_ARCHIVE_MEMBER} in {archive.name} is not a regular file")
+        source = tar.extractfile(member)
+        assert source is not None
+        with source, UV_HELPER.open("wb") as out:
+            shutil.copyfileobj(source, out)
+    UV_HELPER.chmod(0o755)
 
 
 def _clamp(value: float) -> int:
@@ -469,6 +515,11 @@ fi
 
 mkdir -p "$LOG_DIR"
 
+# install.py uses this bundled uv instead of pip when it is present.
+if [ -x "$APP_DIR/Helpers/uv" ]; then
+  export NCDL_UV="$APP_DIR/Helpers/uv"
+fi
+
 # Force native arm64 execution so pip installs arm64 packages instead of
 # x86_64 ones, which would happen if the app were launched via Rosetta.
 # (`uname -m` reports x86_64 under Rosetta, so it can't be used to decide;
@@ -636,6 +687,8 @@ def sign_app_bundle(identity: str, hardened_runtime: bool, keychain: str = "") -
 
     This has to happen before build_component_pkg(): the component pkg is a
     snapshot of COMPONENT_ROOT, so signing afterwards ships an unsigned app.
+    Nested code (the uv helper) is signed first: the bundle's signature seals
+    it, and notarization rejects any Mach-O without its own signature.
     """
     cmd = ["codesign", "--force", "--sign", _identity_hash(identity, keychain)]
     if keychain:
@@ -644,8 +697,9 @@ def sign_app_bundle(identity: str, hardened_runtime: bool, keychain: str = "") -
         cmd.append("--timestamp")  # secure timestamp is required for notarization
     if hardened_runtime:
         cmd.extend(["--options", "runtime"])
-    cmd.append(str(APP_BUNDLE))
-    subprocess.run(cmd, check=True)
+    if UV_HELPER.exists():
+        subprocess.run([*cmd, str(UV_HELPER)], check=True)
+    subprocess.run([*cmd, str(APP_BUNDLE)], check=True)
     subprocess.run(
         ["codesign", "--verify", "--strict", "--verbose=2", str(APP_BUNDLE)],
         check=True,
@@ -684,6 +738,7 @@ def main() -> int:
     copy_source_tree(version)
     icon_path = generate_branding_assets(version)
     shutil.copy2(icon_path, APP_RESOURCES_DIR / icon_path.name)
+    bundle_uv()
     write_launcher()
     write_info_plist(version)
     if args.app_sign_identity:

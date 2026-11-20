@@ -8,8 +8,9 @@ here instead of minutes later at Apple:
 - the .app inside passes ``codesign --verify --strict``, is not ad-hoc signed,
   uses the hardened runtime, has a secure timestamp and no ``get-task-allow``
   entitlement;
-- every Mach-O binary in the payload is signed the same way (today there are
-  none: the app is Python source plus a bash launcher).
+- every Mach-O binary in the payload is signed the same way (today that is
+  the bundled uv in Contents/Helpers; the rest is Python source and a bash
+  launcher).
 
 With ``--developer-id`` it also requires Developer ID certificates, which is
 what build_macos_installer.py asks for before it submits for notarization.

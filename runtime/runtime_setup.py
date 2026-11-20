@@ -113,13 +113,60 @@ def pip_install_commands(python: Path | str) -> list[list[str]]:
     base = [str(python), "-m", "pip", "install", *_PIP_NETWORK_FLAGS]
     commands = []
     if sys.platform.startswith("linux"):
-        torch_pins = [
-            line.strip() for line in REQUIREMENTS_FILE.read_text().splitlines()
-            if line.strip().split("==")[0] in {"torch", "torchvision", "torchaudio"}
-        ]
-        commands.append([*base, "--index-url", TORCH_CPU_INDEX, *torch_pins])
+        commands.append([*base, "--index-url", TORCH_CPU_INDEX, *_torch_pins()])
     commands.append([*base, "-r", str(REQUIREMENTS_FILE)])
     return commands
+
+
+# The installers ship a pinned uv next to the app and point NCDL_UV at it.
+# uv resolves and downloads in parallel and installs from its cache, so a
+# first launch takes a fraction of pip's time. Without it (a dev checkout,
+# or a bundle built before uv shipped) install.py uses pip as before.
+UV_ENV_VAR = "NCDL_UV"
+_UV_NETWORK_ENV = {"UV_HTTP_TIMEOUT": "60", "UV_HTTP_RETRIES": "5"}
+
+
+def bundled_uv() -> Path | None:
+    raw = os.environ.get(UV_ENV_VAR, "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    return path if path.is_file() and os.access(path, os.X_OK) else None
+
+
+def uv_env(venv_dir: Path) -> dict[str, str]:
+    """Environment for uv: its cache sits beside the venv (in the app's own
+    folder, not ~/.cache), it never downloads a Python of its own here, and
+    it retries flaky networks like the pip commands do."""
+    env = dict(os.environ)
+    env.setdefault("UV_CACHE_DIR", str(venv_dir.parent / "uv-cache"))
+    env["UV_PYTHON_DOWNLOADS"] = "never"
+    env["UV_NO_PROGRESS"] = "1"
+    for key, value in _UV_NETWORK_ENV.items():
+        env.setdefault(key, value)
+    return env
+
+
+def uv_install_commands(uv: Path | str, python: Path | str) -> list[list[str]]:
+    """The uv equivalent of pip_install_commands, with the same two-step
+    Linux torch install (one index per command, never mixed).
+
+    --compile-bytecode matches pip, which writes .pyc files at install time;
+    without it the first app launch would compile every module itself.
+    """
+    base = [str(uv), "pip", "install", "--python", str(python), "--compile-bytecode"]
+    commands = []
+    if sys.platform.startswith("linux"):
+        commands.append([*base, "--index-url", TORCH_CPU_INDEX, *_torch_pins()])
+    commands.append([*base, "-r", str(REQUIREMENTS_FILE)])
+    return commands
+
+
+def _torch_pins() -> list[str]:
+    return [
+        line.strip() for line in REQUIREMENTS_FILE.read_text().splitlines()
+        if line.strip().split("==")[0] in {"torch", "torchvision", "torchaudio"}
+    ]
 
 
 def find_free_port(start: int = 7860, attempts: int = 20, host: str = "127.0.0.1") -> int:

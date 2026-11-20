@@ -17,10 +17,13 @@ Output
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import struct
 import subprocess
+import sys
+import zipfile
 import zlib
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +33,18 @@ APP_NAME = "NoCode-DL"
 ROOT = Path(__file__).resolve().parent.parent
 DIST_ROOT = ROOT / "dist"
 VENDOR_DIR = ROOT / "packaging" / "vendor"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from data_pipeline.network_utils import download_file
+
+# uv installs the packages on first launch (several times faster than pip).
+# x86_64 only: Windows on Arm runs it emulated, and uv still picks wheels for
+# the target Python's own architecture. The launcher exports NCDL_UV.
+UV_VERSION = "0.13.6"
+UV_URL = f"https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/uv-x86_64-pc-windows-msvc.zip"
+UV_SHA256 = "a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f"
+VENDOR_UV_ARCHIVE = VENDOR_DIR / f"uv-x86_64-pc-windows-msvc-{UV_VERSION}.zip"
 
 PYTHON_VERSION = "3.12.10"
 PYTHON_INSTALLER_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-{{arch}}.exe"
@@ -163,6 +178,10 @@ if (-not (Test-Path $python)) {
     Fail "Python could not be found or installed. Please install Python 3.12 from https://www.python.org and open __APP__ again."
 }
 
+# install.py uses this bundled uv instead of pip when it is present.
+$uv = Join-Path $PSScriptRoot "bin\\uv.exe"
+if (Test-Path $uv) { $env:NCDL_UV = $uv }
+
 # bootstrap_windows.py shows the progress window, writes logs to
 # %LOCALAPPDATA%\\__APP__\\logs and reports its own errors; its exit code is the app's.
 Write-Host "[__APP__] Using Python: $python"
@@ -251,6 +270,34 @@ def _generate_icon_ico(path: Path) -> None:
 
 # ── Staging ──────────────────────────────────────────────────────────────────
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def stage_uv(staging: Path) -> None:
+    """Put the pinned uv.exe at bin/uv.exe in the staged app."""
+    if not VENDOR_UV_ARCHIVE.exists():
+        print(f"  Downloading uv {UV_VERSION} from {UV_URL}")
+        download_file(
+            UV_URL,
+            VENDOR_UV_ARCHIVE,
+            allowed_hosts={"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"},
+            expected_sha256=UV_SHA256,
+        )
+    actual = _sha256(VENDOR_UV_ARCHIVE)
+    if actual != UV_SHA256:
+        raise RuntimeError(f"uv archive checksum mismatch for {VENDOR_UV_ARCHIVE}: expected {UV_SHA256}, got {actual}")
+    (staging / "bin").mkdir(parents=True, exist_ok=True)
+    # Read the one member by name rather than extracting the archive.
+    with zipfile.ZipFile(VENDOR_UV_ARCHIVE) as archive, archive.open("uv.exe") as src, \
+            (staging / "bin" / "uv.exe").open("wb") as out:
+        shutil.copyfileobj(src, out)
+
+
 def stage_files(staging: Path, version: str) -> None:
     """Copy runtime items into the staging directory."""
     if staging.exists():
@@ -268,6 +315,8 @@ def stage_files(staging: Path, version: str) -> None:
             shutil.copy2(src, dst)
         else:
             print(f"  WARNING: {item} not found, skipping")
+
+    stage_uv(staging)
 
     # Write bundle version
     (staging / ".bundle_version").write_text(version, encoding="utf-8")
